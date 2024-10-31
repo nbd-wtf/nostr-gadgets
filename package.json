@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "@nostr/tools": "npm:@jsr/nostr__tools@^2.9.4",
+    "dataloader": "^2.2.2",
+    "mnemonist": "^0.39.8"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}
