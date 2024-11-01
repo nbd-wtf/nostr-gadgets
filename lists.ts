@@ -1,3 +1,8 @@
+/**
+ * @module
+ * Contains functions for optimized fetching of replaceable lists associated with a pubkey.
+ */
+
 import DataLoader from 'dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
@@ -15,6 +20,9 @@ function randomPick<L>(list: L[]): L {
   return list[serial % list.length]
 }
 
+/**
+ * Representation of a relay entry as found in a kind:10002 list.
+ */
 export type RelayItem = {
   url: string
   read: boolean
@@ -35,11 +43,22 @@ export type RelayItem = {
  */
 export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<I[]>
 
+/**
+ * A ListFetcher for kind:10002 relay lists.
+ *
+ * Returns a list of RelayItem.
+ */
 export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
   10002,
   RELAYLIST_RELAYS,
   itemsFromTags<RelayItem>(nip65RelayFromTag),
 )
+
+/**
+ * A ListFetcher for kind:3 follow lists.
+ *
+ * Returns a list of pubkeys as strings.
+ */
 export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
   3,
   METADATA_QUERY_RELAYS,

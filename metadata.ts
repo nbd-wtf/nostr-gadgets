@@ -1,3 +1,8 @@
+/**
+ * @module
+ * Contains types and a function for optimized loading of profile metadata for any pubkey.
+ */
+
 import DataLoader from 'dataloader'
 import type { Filter } from '@nostr/tools/filter'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
