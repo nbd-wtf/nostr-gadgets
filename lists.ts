@@ -21,12 +21,18 @@ export type RelayItem = {
   write: boolean
 }
 
-export const loadRelayList = makeListFetcher<RelayItem>(
+export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<I[]>
+
+export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
   10002,
   RELAYLIST_RELAYS,
   itemsFromTags<RelayItem>(nip65RelayFromTag),
 )
-export const loadFollowsList = makeListFetcher<string>(3, METADATA_QUERY_RELAYS, itemsFromTags<string>(pFromTag))
+export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
+  3,
+  METADATA_QUERY_RELAYS,
+  itemsFromTags<string>(pFromTag),
+)
 
 function itemsFromTags<I>(
   tagProcessor: (tag: string[]) => Promise<I | undefined> | I | undefined,
@@ -41,7 +47,7 @@ export function makeListFetcher<I>(
   kind: number,
   hardcodedRelays: string[],
   process: (event: NostrEvent | undefined) => Promise<I[]> | I[],
-) {
+): ListFetcher<I> {
   const cache = dataloaderCache<I[]>()
 
   const dataloader = new DataLoader<{ target: string; relays: string[] }, I[], string>(
