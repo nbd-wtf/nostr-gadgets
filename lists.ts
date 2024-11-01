@@ -104,17 +104,21 @@ export function makeListFetcher<I>(
     },
   )
 
-  return async function (pubkey: string): Promise<I[]> {
-    let relays: string[] = []
-    if (kind !== 10002) {
-      const rl = await loadRelayList(pubkey)
-      relays = rl
-        .filter(({ write }) => write)
-        .map(({ url }) => url)
-        .slice(0, 3)
-    }
+  return async function (pubkey: string, hints: string[] = []): Promise<I[]> {
+    let relays: string[] = hints
 
-    return await dataloader.load({ target: pubkey, relays })
+    if (kind === 10002) {
+      return await dataloader.load({ target: pubkey, relays })
+    } else {
+      const rl = await loadRelayList(pubkey, hints)
+      relays.push(
+        ...rl
+          .filter(({ write }) => write)
+          .map(({ url }) => url)
+          .slice(0, 3),
+      )
+      return await dataloader.load({ target: pubkey, relays })
+    }
   }
 }
 
