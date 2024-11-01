@@ -1,5 +1,5 @@
 import type { NostrEvent } from '@nostr/tools/pure'
-import LRUCache from 'mnemonist/lru-cache'
+import { LRUCache } from 'mnemonist'
 import type { CacheMap } from 'dataloader'
 
 export function dataloaderCache<V>(): CacheMap<string, Promise<V>> {
