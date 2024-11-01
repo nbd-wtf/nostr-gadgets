@@ -11,3 +11,7 @@ npx jsr add @nostr/tools
 ## Documentation
 
 https://jsr.io/@nostr/gadgets/doc
+
+## Source code
+
+https://github.com/nbd-wtf/nostr-gadgets

@@ -21,6 +21,18 @@ export type RelayItem = {
   write: boolean
 }
 
+/**
+ * A ListFetcher is a function that can be called to return a list of items, these items are parsed out from
+ * the Nostr event according to a function given at the time of creation through makeListFetcher().
+ *
+ * Relays will be chosen smartly based on the pubkey and context: they will be a combination of relays given
+ * at makeListFetcher() (generally "global indexer" relays like purplepag.es) and the target user's kind 10002
+ * relays list.
+ *
+ * Results will be cached in memory, so it's safe to call it infinite times in a row with the same pubkey.
+ *
+ * It is also safe to call it with multiple different pubkeys, requests to the same relay will be batched together.
+ */
 export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<I[]>
 
 export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
@@ -43,6 +55,14 @@ function itemsFromTags<I>(
   }
 }
 
+/**
+ * makeListFetcher is the function used to create a ListFetcher which should then be used throughout the rest of
+ * an application's lifetime.
+ *
+ * It is generally suited to abstract loading and fetching of NIP-51 lists.
+ *
+ * Take a look at the loadFollowsList and and loadRelayList implementations for more insight on how to use this.
+ */
 export function makeListFetcher<I>(
   kind: number,
   hardcodedRelays: string[],

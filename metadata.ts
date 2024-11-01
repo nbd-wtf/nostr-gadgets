@@ -6,6 +6,9 @@ import { dataloaderCache } from './utils'
 import { pool } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 
+/**
+ * ProfileMetadata contains information directly parsed from a kind:0 content. nip05 is not verified.
+ */
 export type ProfileMetadata = {
   name?: string
   picture?: string
@@ -18,6 +21,12 @@ export type ProfileMetadata = {
   lud06?: string
 }
 
+/**
+ * An object containing all necessary information available about a Nostr user.
+ *
+ * USers for whom no information is unknown will generally have just a pubkey and npub, and shortName
+ * will be an ugly short string based on the npub.
+ */
 export type NostrUser = {
   pubkey: string
   npub: string
@@ -27,6 +36,9 @@ export type NostrUser = {
   lastUpdated: number
 }
 
+/**
+ * Generates a placeholder for when we (still) don't have any information about a user.
+ */
 export function bareNostrUser(input: string): NostrUser {
   let npub: string
   let pubkey: string
@@ -51,6 +63,10 @@ export function bareNostrUser(input: string): NostrUser {
   }
 }
 
+/**
+ * loadNostrUser uses the same approach as ListFetcher -- caching, baching requests etc -- but for profiles
+ * based on kind:0.
+ */
 export async function loadNostrUser(pubkey: string): Promise<NostrUser> {
   return await metadataLoader.load(pubkey)
 }
