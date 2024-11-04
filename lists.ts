@@ -41,7 +41,7 @@ export type RelayItem = {
  *
  * It is also safe to call it with multiple different pubkeys, requests to the same relay will be batched together.
  */
-export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<I[]>
+export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<{ event: NostrEvent; items: I[] }>
 
 /**
  * A ListFetcher for kind:10002 relay lists.
@@ -87,9 +87,11 @@ export function makeListFetcher<I>(
   hardcodedRelays: string[],
   process: (event: NostrEvent | undefined) => Promise<I[]> | I[],
 ): ListFetcher<I> {
-  const cache = dataloaderCache<I[]>()
+  type R = { event: NostrEvent; items: I[] }
 
-  const dataloader = new DataLoader<{ target: string; relays: string[] }, I[], string>(
+  const cache = dataloaderCache<R>()
+
+  const dataloader = new DataLoader<{ target: string; relays: string[] }, R, string>(
     requests =>
       new Promise(async resolve => {
         const results = new Array<NostrEvent | undefined>(requests.length)
@@ -130,12 +132,18 @@ export function makeListFetcher<I>(
               handle?.close()
             },
             async onclose() {
-              const processed: (I[] | Promise<I[]>)[] = Array(results.length)
-              for (let i = 0; i < results.length; i++) {
-                processed[i] = process(results[i])
-              }
-
-              resolve(await Promise.all(processed))
+              resolve(
+                await Promise.all(
+                  results.map(async event => {
+                    if (event) {
+                      let items = await process(event)
+                      return { event, items }
+                    } else {
+                      return new Error('not found')
+                    }
+                  }),
+                ),
+              )
             },
           })
         } catch (err) {
@@ -149,7 +157,7 @@ export function makeListFetcher<I>(
     },
   )
 
-  return async function (pubkey: string, hints: string[] = []): Promise<I[]> {
+  return async function (pubkey: string, hints: string[] = []): Promise<{ event: NostrEvent; items: I[] }> {
     let relays: string[] = hints
 
     if (kind === 10002) {
@@ -157,7 +165,7 @@ export function makeListFetcher<I>(
     } else {
       const rl = await loadRelayList(pubkey, hints)
       relays.push(
-        ...rl
+        ...rl.items
           .filter(({ write }) => write)
           .map(({ url }) => url)
           .slice(0, 3),

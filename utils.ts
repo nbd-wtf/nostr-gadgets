@@ -55,3 +55,11 @@ export function unique<A>(...arrs: A[][]): A[] {
 export function identity<A>(a: A): boolean {
   return Boolean(a)
 }
+
+export function appendUnique<I>(target: I[], ...newItem: I[]) {
+  let max = newItem.length
+  for (let i = 0; i < max; i++) {
+    let ni = newItem[i]
+    if (target.indexOf(ni) === -1) target.push(ni)
+  }
+}
