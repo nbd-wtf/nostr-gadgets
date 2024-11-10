@@ -1,8 +1,8 @@
 {
   "dependencies": {
+    "@fiatjaf/lru-cache": "npm:@jsr/fiatjaf__lru-cache@^0.0.1",
     "@nostr/tools": "npm:@jsr/nostr__tools@^2.9.4",
-    "dataloader": "^2.2.2",
-    "mnemonist": "^0.39.8"
+    "dataloader": "^2.2.2"
   },
   "devDependencies": {
     "prettier": "^3.3.3"
