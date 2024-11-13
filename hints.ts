@@ -15,7 +15,7 @@ interface HintsDB {
  */
 export class MemoryHints implements HintsDB {
   private relayBySerial: string[] = []
-  private orderedRelaysByPubKey: { [pubkey: string]: RelaysForPubKey } = {}
+  private orderedRelaysByPubKey: { [pubkey: string]: RelayEntry[] } = {}
   private hasLoadedRelaysFor: Set<string> = new Set()
 
   public export(): string {
@@ -77,8 +77,8 @@ export class MemoryHints implements HintsDB {
       // sort entries in descending order based on sum
       rfpk.sort((a, b) => b.sum() - a.sum())
 
-      for (let i = 0; i < n && i < rfpk.entries.length; i++) {
-        urls.push(this.relayBySerial[rfpk.entries[i].Relay])
+      for (let i = 0; i < n && i < rfpk.length; i++) {
+        urls.push(this.relayBySerial[rfpk[i].Relay])
       }
     }
 
@@ -99,8 +99,6 @@ export class MemoryHints implements HintsDB {
     }
   }
 }
-
-type RelaysForPubKey = RelayEntry[]
 
 class RelayEntry {
   public Relay: number
