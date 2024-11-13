@@ -1,7 +1,7 @@
 {
   "dependencies": {
     "@fiatjaf/lru-cache": "npm:@jsr/fiatjaf__lru-cache@^0.0.1",
-    "@nostr/tools": "npm:@jsr/nostr__tools@^2.9.4",
+    "@nostr/tools": "npm:@jsr/nostr__tools@^2.10.3",
     "dataloader": "^2.2.2"
   },
   "devDependencies": {
