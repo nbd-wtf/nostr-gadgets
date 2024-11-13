@@ -11,7 +11,7 @@ export function dataloaderCache<V>(): CacheMap<string, Promise<V>> {
 /**
  * Gets the value of the first tag with the given name -- or returns a default value.
  */
-export function getTagOr(event: NostrEvent, tagName: string, dflt: string = '') {
+export function getTagOr(event: NostrEvent, tagName: string, dflt: string = ''): string {
   return event.tags.find(([t]) => t === tagName)?.[1] || dflt
 }
 
