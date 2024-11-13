@@ -29,8 +29,9 @@ export class MemoryHints implements HintsDB {
   }
 
   public save(pubkey: string, relay: string, key: HintKey, ts: number): void {
-    const relayIndex = this.relayBySerial.indexOf(relay)
+    let relayIndex = this.relayBySerial.indexOf(relay)
     if (relayIndex === -1) {
+      relayIndex = this.relayBySerial.length
       this.relayBySerial.push(relay)
     }
 
@@ -39,7 +40,7 @@ export class MemoryHints implements HintsDB {
       rfpk = []
     }
 
-    const entryIndex = rfpk.findIndex(re => re.Relay === relayIndex)
+    const entryIndex = rfpk.findIndex(re => re.serial === relayIndex)
     if (entryIndex === -1) {
       const entry = new RelayEntry(relayIndex)
       entry.timestamps[key] = ts
@@ -78,7 +79,7 @@ export class MemoryHints implements HintsDB {
       rfpk.sort((a, b) => b.sum() - a.sum())
 
       for (let i = 0; i < n && i < rfpk.length; i++) {
-        urls.push(this.relayBySerial[rfpk[i].Relay])
+        urls.push(this.relayBySerial[rfpk[i].serial])
       }
     }
 
@@ -101,11 +102,11 @@ export class MemoryHints implements HintsDB {
 }
 
 class RelayEntry {
-  public Relay: number
+  public serial: number
   public timestamps: HintKey[] = new Array(7).fill(0)
 
   constructor(relay: number) {
-    this.Relay = relay
+    this.serial = relay
   }
 
   public sum(): number {
