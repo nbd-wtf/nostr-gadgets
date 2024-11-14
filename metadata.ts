@@ -6,6 +6,7 @@
 import DataLoader from 'dataloader'
 import type { Filter } from '@nostr/tools/filter'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
+import { createStore, getMany, setMany } from 'idb-keyval'
 
 import { dataloaderCache } from './utils'
 import { pool } from './global'
@@ -68,31 +69,59 @@ export function bareNostrUser(input: string): NostrUser {
   }
 }
 
+const customStore = createStore('@nostr/gadgets', 'metadata')
+
 /**
  * loadNostrUser uses the same approach as ListFetcher -- caching, baching requests etc -- but for profiles
  * based on kind:0.
  */
-export async function loadNostrUser(pubkey: string): Promise<NostrUser> {
-  return await metadataLoader.load(pubkey)
+export function loadNostrUser(pubkey: string): Promise<NostrUser> {
+  return metadataLoader.load(pubkey)
 }
 
 const metadataLoader = new DataLoader<string, NostrUser, string>(
   async keys =>
     new Promise(async resolve => {
-      const results = new Array<NostrUser | Error>(keys.length)
-      const filter: Filter = { kinds: [0], authors: keys.slice(0) }
+      const filter: Filter = { kinds: [0], authors: [] }
+      const resultIndexByKey = new Map<string, number>()
 
-      // fill in the defaults
-      for (let i = 0; i < keys.length; i++) {
-        const pubkey = keys[i]
-        const npub = npubEncode(pubkey)
-        results[i] = {
-          pubkey: pubkey,
-          npub,
-          shortName: npub.substring(0, 8) + '…' + npub.substring(59),
-          lastUpdated: 0,
-          metadata: {},
-        }
+      // try to get from idb first -- also set up the results array with defaults
+      let results: Array<NostrUser | Error> = await getMany<NostrUser & { lastAttempt: number }>(
+        keys.slice(0),
+        customStore,
+      ).then(results =>
+        results.map((res, i) => {
+          const pubkey = keys[i]
+          resultIndexByKey.set(pubkey, i)
+
+          if (!res) {
+            filter!.authors!.push(pubkey)
+            // we don't have anything for this key, fill in with a placeholder
+            const npub = npubEncode(pubkey)
+            return {
+              pubkey,
+              npub,
+              shortName: npub.substring(0, 8) + '…' + npub.substring(59),
+              lastUpdated: 0,
+              metadata: {},
+              lastAttempt: Math.round(Date.now() / 1000),
+            }
+          } else if (res.lastAttempt < Date.now() / 1000 - 60 * 60 * 24 * 2) {
+            filter!.authors!.push(pubkey)
+            // we have something but it's old, so we will use it but still try to fetch a new version
+            res.lastAttempt = Math.round(Date.now() / 1000)
+            return res
+          } else {
+            // this one is so good we won't try to fetch it again
+            return res
+          }
+        }),
+      )
+
+      // no need to do any requests if we don't have anything to fetch
+      if (filter.authors?.length === 0) {
+        resolve(results)
+        return
       }
 
       try {
@@ -122,6 +151,12 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
           },
           onclose() {
             resolve(results)
+
+            // save our updated results to idb
+            setMany(
+              filter!.authors!.map(pk => [pk, results.find(nu => (nu as NostrUser).pubkey === pk)]),
+              customStore,
+            )
           },
         })
       } catch (err) {
