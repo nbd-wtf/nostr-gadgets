@@ -12,6 +12,8 @@ import { dataloaderCache } from './utils'
 import { pool } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 
+let idserial = 0
+
 /**
  * ProfileMetadata contains information directly parsed from a kind:0 content. nip05 is not verified.
  */
@@ -83,7 +85,6 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
   async keys =>
     new Promise(async resolve => {
       const filter: Filter = { kinds: [0], authors: [] }
-      const resultIndexByKey = new Map<string, number>()
 
       // try to get from idb first -- also set up the results array with defaults
       let results: Array<NostrUser | Error> = await getMany<NostrUser & { lastAttempt: number }>(
@@ -92,7 +93,6 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
       ).then(results =>
         results.map((res, i) => {
           const pubkey = keys[i]
-          resultIndexByKey.set(pubkey, i)
 
           if (!res) {
             filter!.authors!.push(pubkey)
@@ -136,7 +136,7 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
 
       try {
         pool.subscribeManyEose(METADATA_QUERY_RELAYS, [filter], {
-          id: `metadata(${keys.length})`,
+          id: `metadata(${keys.length})-${idserial++}`,
           onevent(evt) {
             for (let i = 0; i < keys.length; i++) {
               if (keys[i] === evt.pubkey) {
