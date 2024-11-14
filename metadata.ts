@@ -108,7 +108,17 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
             }
           } else if (res.lastAttempt < Date.now() / 1000 - 60 * 60 * 24 * 2) {
             filter!.authors!.push(pubkey)
-            // we have something but it's old, so we will use it but still try to fetch a new version
+            // we have something but it's old (2 days), so we will use it but still try to fetch a new version
+            res.lastAttempt = Math.round(Date.now() / 1000)
+            return res
+          } else if (
+            res.lastAttempt < Date.now() / 1000 - 60 * 60 &&
+            !res.metadata.name &&
+            !res.metadata.picture &&
+            !res.metadata.about
+          ) {
+            filter!.authors!.push(pubkey)
+            // we have something but and it's not so old (1 hour), but it's empty, so we will try again
             res.lastAttempt = Math.round(Date.now() / 1000)
             return res
           } else {
