@@ -41,7 +41,8 @@ export type RelayItem = {
  *
  * It is also safe to call it with multiple different pubkeys, requests to the same relay will be batched together.
  */
-export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<{ event: NostrEvent; items: I[] }>
+export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<Result<I>>
+type Result<I> = { event: NostrEvent | undefined; items: I[] }
 
 /**
  * A ListFetcher for kind:10002 relay lists.
@@ -52,6 +53,10 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
   10002,
   RELAYLIST_RELAYS,
   itemsFromTags<RelayItem>(nip65RelayFromTag),
+  (_: string) => [
+    { url: 'wss://relay.damus.io', read: true, write: true },
+    { url: 'wss://nos.lol', read: true, write: true },
+  ],
 )
 
 /**
@@ -63,13 +68,12 @@ export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
   3,
   METADATA_QUERY_RELAYS,
   itemsFromTags<string>(pFromTag),
+  (_: string) => [],
 )
 
-function itemsFromTags<I>(
-  tagProcessor: (tag: string[]) => Promise<I | undefined> | I | undefined,
-): (event: NostrEvent | undefined) => Promise<I[]> {
-  return async (event: NostrEvent | undefined) => {
-    const items = event ? (await Promise.all(event.tags.map(tagProcessor))).filter(identity) : []
+function itemsFromTags<I>(tagProcessor: (tag: string[]) => I | undefined): (event: NostrEvent | undefined) => I[] {
+  return (event: NostrEvent | undefined) => {
+    const items = event ? event.tags.map(tagProcessor).filter(identity) : []
     return items as I[]
   }
 }
@@ -85,13 +89,12 @@ function itemsFromTags<I>(
 export function makeListFetcher<I>(
   kind: number,
   hardcodedRelays: string[],
-  process: (event: NostrEvent | undefined) => Promise<I[]> | I[],
+  process: (event: NostrEvent | undefined) => I[],
+  fallback: (pubkey: string) => I[],
 ): ListFetcher<I> {
-  type R = { event: NostrEvent; items: I[] }
+  const cache = dataloaderCache<Result<I>>()
 
-  const cache = dataloaderCache<R>()
-
-  const dataloader = new DataLoader<{ target: string; relays: string[] }, R, string>(
+  const dataloader = new DataLoader<{ target: string; relays: string[] }, Result<I>, string>(
     requests =>
       new Promise(async resolve => {
         const results = new Array<NostrEvent | undefined>(requests.length)
@@ -132,18 +135,13 @@ export function makeListFetcher<I>(
               handle?.close()
             },
             async onclose() {
-              resolve(
-                await Promise.all(
-                  results.map(async event => {
-                    if (event) {
-                      let items = await process(event)
-                      return { event, items }
-                    } else {
-                      return new Error('not found')
-                    }
-                  }),
-                ),
-              )
+              const processed: (Error | Result<I>)[] = new Array(results.length)
+              for (let i = 0; i < results.length; i++) {
+                const event = results[i]
+                let items = event ? process(event) : fallback(requests[i].target)
+                processed[i] = { event, items }
+              }
+              resolve(processed)
             },
           })
         } catch (err) {
@@ -157,7 +155,7 @@ export function makeListFetcher<I>(
     },
   )
 
-  return async function (pubkey: string, hints: string[] = []): Promise<{ event: NostrEvent; items: I[] }> {
+  return async function (pubkey: string, hints: string[] = []): Promise<Result<I>> {
     let relays: string[] = hints
 
     if (kind === 10002) {
