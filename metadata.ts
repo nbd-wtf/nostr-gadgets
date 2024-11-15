@@ -71,7 +71,7 @@ export function bareNostrUser(input: string): NostrUser {
   }
 }
 
-const customStore = createStore('@nostr/gadgets', 'metadata')
+const customStore = createStore('@nostr/gadgets/metadata', 'cache')
 
 /**
  * loadNostrUser uses the same approach as ListFetcher -- caching, baching requests etc -- but for profiles

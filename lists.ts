@@ -136,7 +136,7 @@ export function makeListFetcher<I>(
   defaultTo: (pubkey: string) => I[],
 ): ListFetcher<I> {
   const cache = dataloaderCache<Result<I>>()
-  const store = createStore('@nostr/gadgets', `list:${kind}`)
+  const store = createStore(`@nostr/gadgets/list:${kind}`, 'cache')
 
   type Request = { target: string; relays: string[] }
 
