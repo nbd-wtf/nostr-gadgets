@@ -175,6 +175,11 @@ export function makeListFetcher<I>(
           }),
         )
 
+        if (remainingRequests.length === 0) {
+          resolve(results)
+          return
+        }
+
         const filtersByRelay: { [url: string]: Filter[] } = {}
         for (let r = 0; r < remainingRequests.length; r++) {
           const req = remainingRequests[r]
@@ -197,7 +202,7 @@ export function makeListFetcher<I>(
           let handle: SubCloser | undefined
           // eslint-disable-next-line prefer-const
           handle = pool.subscribeManyMap(filtersByRelay, {
-            id: `kind:${kind}:batch(${requests.length})-${idserial++}`,
+            id: `kind:${kind}:batch(${remainingRequests.length})-${idserial++}`,
             onevent(evt) {
               for (let r = 0; r < remainingRequests.length; r++) {
                 const req = remainingRequests[r]
