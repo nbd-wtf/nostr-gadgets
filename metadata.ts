@@ -254,7 +254,7 @@ function enhanceNostrUserWithEvent(nu: NostrUser, evt: NostrEvent) {
   if (md.picture) nu.image = md.picture
 }
 
-export function nostrUserFromEvent(evt: NostrEvent) {
+export function nostrUserFromEvent(evt: NostrEvent): NostrUser {
   let nu = blankNostrUser(evt.pubkey)
   enhanceNostrUserWithEvent(nu, evt)
   return nu
