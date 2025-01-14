@@ -58,15 +58,16 @@ export class MemoryHints implements HintsDB {
     // try to fetch relays first
     if (!this.hasLoadedRelaysFor.has(pubkey)) {
       try {
-        let {
-          event: { created_at },
-          items,
-        } = await loadRelayList(pubkey)
-        items.forEach(rl => {
-          if (rl.write) {
-            this.save(pubkey, rl.url, HintKey.lastInRelayList, created_at)
-          }
-        })
+        let { event, items } = await loadRelayList(pubkey)
+        if (event) {
+          // we check if event exists here otherwise we will skip this -- because even when we have no event items
+          // will still exist, they will be some hardcoded relays and we don't want to add those to the db.
+          items.forEach(rl => {
+            if (rl.write) {
+              this.save(pubkey, rl.url, HintKey.lastInRelayList, event.created_at)
+            }
+          })
+        }
       } catch (err) {}
       this.hasLoadedRelaysFor.add(pubkey)
     }
@@ -92,9 +93,9 @@ export class MemoryHints implements HintsDB {
       let rfpk = this.orderedRelaysByPubKey[pubkey]
       console.log(`== relay scores for ${pubkey}`)
       for (let i = 0; i < rfpk.entries.length; i++) {
-        const re = rfpk.entries[i]
+        const re = rfpk[i]
         console.log(
-          `  ${i.toString().padStart(3)} :: ${this.relayBySerial[re.Relay].padEnd(30)} (${re.Relay}) ::> ${re.sum().toString().padStart(12)}`,
+          `  ${i.toString().padStart(3)} :: ${this.relayBySerial[re.serial].padEnd(30)} (${re.serial}) ::> ${re.sum().toString().padStart(12)}`,
         )
       }
     }
@@ -115,7 +116,7 @@ class RelayEntry {
     for (let i = 0; i < this.timestamps.length; i++) {
       if (this.timestamps[i] === 0) continue
 
-      const value = (hintBasePoints[i] * 10000000000) / Math.pow(Math.max(now - this.timestamps[i], 1), 1.3)
+      const value = (hintBasePoints[i as HintKey] * 10000000000) / Math.pow(Math.max(now - this.timestamps[i], 1), 1.3)
       sum += value
     }
     return sum
