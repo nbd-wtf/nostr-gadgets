@@ -11,6 +11,7 @@ import { createStore, getMany, setMany } from 'idb-keyval'
 import { dataloaderCache } from './utils'
 import { pool } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
+import { NostrEvent } from '@nostr/tools'
 
 let idserial = 0
 
@@ -97,15 +98,9 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
           if (!res) {
             filter!.authors!.push(pubkey)
             // we don't have anything for this key, fill in with a placeholder
-            const npub = npubEncode(pubkey)
-            return {
-              pubkey,
-              npub,
-              shortName: npub.substring(0, 8) + '…' + npub.substring(59),
-              lastUpdated: 0,
-              metadata: {},
-              lastAttempt: Math.round(Date.now() / 1000),
-            }
+            let nu = blankNostrUser(pubkey)
+            ;(nu as any).lastAttempt = Math.round(Date.now() / 1000)
+            return nu
           } else if (res.lastAttempt < Date.now() / 1000 - 60 * 60 * 24 * 2) {
             filter!.authors!.push(pubkey)
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
@@ -143,17 +138,7 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
                 const nu = results[i] as NostrUser
                 if (nu.lastUpdated > evt.created_at) return
 
-                let md: any = {}
-                try {
-                  md = JSON.parse(evt!.content)
-                } catch {
-                  /**/
-                }
-
-                nu.metadata = md
-                nu.shortName = md.name || md.display_name || md.nip05?.split('@')?.[0] || nu.shortName
-
-                if (md.picture) nu.image = md.picture
+                enhanceNostrUserWithEvent(nu, evt)
 
                 return
               }
@@ -181,3 +166,34 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
     cacheMap: dataloaderCache<NostrUser>(),
   },
 )
+
+function blankNostrUser(pubkey: string): NostrUser {
+  const npub = npubEncode(pubkey)
+  return {
+    pubkey,
+    npub,
+    shortName: npub.substring(0, 8) + '…' + npub.substring(59),
+    lastUpdated: 0,
+    metadata: {},
+  }
+}
+
+function enhanceNostrUserWithEvent(nu: NostrUser, evt: NostrEvent) {
+  let md: any = {}
+  try {
+    md = JSON.parse(evt.content)
+  } catch {
+    /**/
+  }
+
+  nu.metadata = md
+  nu.shortName = md.name || md.display_name || md.nip05?.split('@')?.[0] || nu.shortName
+
+  if (md.picture) nu.image = md.picture
+}
+
+export function nostrUserFromEvent(evt: NostrEvent) {
+  let nu = blankNostrUser(evt.pubkey)
+  enhanceNostrUserWithEvent(nu, evt)
+  return nu
+}
