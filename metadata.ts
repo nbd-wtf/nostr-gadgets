@@ -11,9 +11,11 @@ import { createStore, getMany, setMany } from 'idb-keyval'
 import { dataloaderCache } from './utils'
 import { pool } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
+import { loadRelayList } from './lists'
 import { NostrEvent } from '@nostr/tools'
 
 let idserial = 0
+let next = 0
 
 /**
  * ProfileMetadata contains information directly parsed from a kind:0 content. nip05 is not verified.
@@ -74,35 +76,43 @@ export function bareNostrUser(input: string): NostrUser {
 
 const customStore = createStore('@nostr/gadgets/metadata', 'cache')
 
+type NostrUserRequest = {
+  pubkey: string
+  relays?: string[]
+}
+
 /**
  * loadNostrUser uses the same approach as ListFetcher -- caching, baching requests etc -- but for profiles
  * based on kind:0.
  */
-export function loadNostrUser(pubkey: string): Promise<NostrUser> {
-  return metadataLoader.load(pubkey)
+export function loadNostrUser(request: NostrUserRequest | string): Promise<NostrUser> {
+  if (typeof request === 'string') {
+    return metadataLoader.load({ pubkey: request })
+  }
+  return metadataLoader.load(request)
 }
 
-const metadataLoader = new DataLoader<string, NostrUser, string>(
-  async keys =>
+const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
+  async requests =>
     new Promise(async resolve => {
-      const filter: Filter = { kinds: [0], authors: [] }
+      const toFetch: NostrUserRequest[] = []
 
       // try to get from idb first -- also set up the results array with defaults
       let results: Array<NostrUser | Error> = await getMany<NostrUser & { lastAttempt: number }>(
-        keys.slice(0),
+        requests.map(r => r.pubkey),
         customStore,
       ).then(results =>
         results.map((res, i) => {
-          const pubkey = keys[i]
+          const req = requests[i]
 
           if (!res) {
-            filter!.authors!.push(pubkey)
+            toFetch.push(req)
             // we don't have anything for this key, fill in with a placeholder
-            let nu = blankNostrUser(pubkey)
+            let nu = blankNostrUser(req.pubkey)
             ;(nu as any).lastAttempt = Math.round(Date.now() / 1000)
             return nu
           } else if (res.lastAttempt < Date.now() / 1000 - 60 * 60 * 24 * 2) {
-            filter!.authors!.push(pubkey)
+            toFetch.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
             res.lastAttempt = Math.round(Date.now() / 1000)
             return res
@@ -112,7 +122,7 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
             !res.metadata.picture &&
             !res.metadata.about
           ) {
-            filter!.authors!.push(pubkey)
+            toFetch.push(req)
             // we have something but and it's not so old (1 hour), but it's empty, so we will try again
             res.lastAttempt = Math.round(Date.now() / 1000)
             return res
@@ -124,17 +134,60 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
       )
 
       // no need to do any requests if we don't have anything to fetch
-      if (filter.authors?.length === 0) {
+      if (toFetch.length === 0) {
         resolve(results)
         return
       }
 
+      // gather relays for each pubkey that needs fetching
+      const relaysByPubkey: { [pubkey: string]: string[] } = {}
+      for (let i = 0; i < toFetch.length; i++) {
+        const { pubkey, relays = [] } = toFetch[i]
+
+        // start with provided relays (up to 3)
+        const selectedRelays = new Set<string>(relays.slice(0, 3))
+
+        try {
+          // add relays from their relay list (up to 3 write-enabled relays)
+          const { items } = await loadRelayList(pubkey)
+          let gathered = 0
+          for (let j = 0; j < items.length; j++) {
+            if (items[j].write) {
+              selectedRelays.add(items[j].url)
+              gathered++
+              if (gathered >= 3) break
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load relay list for', pubkey, err)
+        }
+
+        // ensure we have at least one hardcoded relay and no more than 7 total
+        do {
+          selectedRelays.add(METADATA_QUERY_RELAYS[next])
+          next++
+        } while (selectedRelays.size < 5)
+
+        relaysByPubkey[pubkey] = Array.from(selectedRelays)
+      }
+
       try {
-        pool.subscribeManyEose(METADATA_QUERY_RELAYS, [filter], {
-          id: `metadata(${keys.length})-${idserial++}`,
+        // create a map of filters by relay
+        const filtersByRelay: { [url: string]: Filter[] } = {}
+        for (const [pubkey, relays] of Object.entries(relaysByPubkey)) {
+          for (const relay of relays) {
+            if (!filtersByRelay[relay]) {
+              filtersByRelay[relay] = [{ kinds: [0], authors: [] }]
+            }
+            filtersByRelay[relay][0].authors!.push(pubkey)
+          }
+        }
+
+        pool.subscribeManyMap(filtersByRelay, {
+          id: `metadata(${requests.length})-${idserial++}`,
           onevent(evt) {
-            for (let i = 0; i < keys.length; i++) {
-              if (keys[i] === evt.pubkey) {
+            for (let i = 0; i < requests.length; i++) {
+              if (requests[i].pubkey === evt.pubkey) {
                 const nu = results[i] as NostrUser
                 if (nu.lastUpdated > evt.created_at) return
 
@@ -148,10 +201,15 @@ const metadataLoader = new DataLoader<string, NostrUser, string>(
             resolve(results)
 
             // save our updated results to idb
-            setMany(
-              filter!.authors!.map(pk => [pk, results.find(nu => (nu as NostrUser).pubkey === pk)]),
-              customStore,
-            )
+            let idbSave: [IDBValidKey, any][] = []
+            for (let i = 0; i < results.length; i++) {
+              let res = results[i] as NostrUser
+              if (res.pubkey) {
+                idbSave.push([res.pubkey, res])
+              }
+            }
+
+            setMany(idbSave, customStore)
           },
         })
       } catch (err) {

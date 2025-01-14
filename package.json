@@ -1,4 +1,5 @@
 {
+  "type": "module",
   "dependencies": {
     "@fiatjaf/lru-cache": "npm:@jsr/fiatjaf__lru-cache@^0.0.1",
     "@nostr/tools": "npm:@jsr/nostr__tools@^2.10.3",

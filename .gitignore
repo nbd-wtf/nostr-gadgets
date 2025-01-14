@@ -6,3 +6,4 @@ package-lock.json
 lib
 test.html
 bench.js
+deno.lock
