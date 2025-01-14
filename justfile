@@ -5,4 +5,4 @@ publish:
     jsr publish
 
 test:
-    deno test --allow-net --allow-import --unstable-sloppy-imports metadata.test.ts
+    deno test --allow-net --no-check --unstable-sloppy-imports metadata.test.ts

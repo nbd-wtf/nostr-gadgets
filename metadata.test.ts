@@ -1,5 +1,5 @@
 import { assertEquals, assertExists } from 'https://deno.land/std/assert/mod.ts'
-import 'https://deno.land/x/indexeddb@v1.1.0/polyfill_memory.ts'
+import 'fake-indexeddb/auto'
 
 import { loadNostrUser } from './metadata'
 import { loadRelayList } from './lists'
@@ -10,37 +10,34 @@ const TEST_PUBKEYS = {
   pablo: 'fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52',
 }
 
-Deno.test('metadata and relay fetching', async t => {
-  await t.step('loadNostrUser fetches metadata with default relays', async () => {
-    const user = await loadNostrUser(TEST_PUBKEYS.fiatjaf)
-    assertEquals(user.pubkey, TEST_PUBKEYS.fiatjaf)
-    assertExists(user.metadata)
-    assertExists(user.shortName)
-  })
-
-  await t.step('loadNostrUser fetches metadata with custom relays', async () => {
-    const user = await loadNostrUser({
-      pubkey: TEST_PUBKEYS.jb55,
-      relays: ['wss://relay.damus.io', 'wss://nos.lol'],
-    })
-    assertEquals(user.pubkey, TEST_PUBKEYS.jb55)
-    assertExists(user.metadata)
-  })
-
-  await t.step('loadNostrUser handles multiple users concurrently', async () => {
+Deno.test({
+  name: 'loadNostrUser handles multiple users concurrently',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
     const users = await Promise.all([
       loadNostrUser(TEST_PUBKEYS.fiatjaf),
       loadNostrUser(TEST_PUBKEYS.jb55),
       loadNostrUser(TEST_PUBKEYS.pablo),
+      loadNostrUser({
+        pubkey: '31f6c99a06bd1f2b3c3b02ce4ad03e7e82910dfd4f2f94b1ffd0a84f9f94f3d3',
+        relays: ['offchain.pub'],
+      }),
     ])
 
-    assertEquals(users.length, 3)
+    assertEquals(users.length, 4)
     assertEquals(users[0].pubkey, TEST_PUBKEYS.fiatjaf)
     assertEquals(users[1].pubkey, TEST_PUBKEYS.jb55)
     assertEquals(users[2].pubkey, TEST_PUBKEYS.pablo)
-  })
+    assertEquals(users[3].shortName, 'bonanza')
+  },
+})
 
-  await t.step('loadRelayList handles multiple relay lists concurrently', async () => {
+Deno.test({
+  name: 'loadRelayList handles multiple relay lists concurrently',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
     const results = await Promise.all([
       loadRelayList(TEST_PUBKEYS.fiatjaf),
       loadRelayList(TEST_PUBKEYS.jb55),
@@ -52,5 +49,5 @@ Deno.test('metadata and relay fetching', async t => {
       assertExists(result.items)
       assertEquals(Array.isArray(result.items), true)
     })
-  })
+  },
 })

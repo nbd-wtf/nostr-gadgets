@@ -141,35 +141,36 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
 
       // gather relays for each pubkey that needs fetching
       const relaysByPubkey: { [pubkey: string]: string[] } = {}
-      for (let i = 0; i < toFetch.length; i++) {
-        const { pubkey, relays = [] } = toFetch[i]
 
-        // start with provided relays (up to 3)
-        const selectedRelays = new Set<string>(relays.slice(0, 3))
+      await Promise.all(
+        toFetch.map(async ({ pubkey, relays = [] }) => {
+          // start with provided relays (up to 3)
+          const selectedRelays = new Set<string>(relays.slice(0, 3))
 
-        try {
-          // add relays from their relay list (up to 3 write-enabled relays)
-          const { items } = await loadRelayList(pubkey)
-          let gathered = 0
-          for (let j = 0; j < items.length; j++) {
-            if (items[j].write) {
-              selectedRelays.add(items[j].url)
-              gathered++
-              if (gathered >= 3) break
+          try {
+            // add relays from their relay list (up to 3 write-enabled relays)
+            const { items } = await loadRelayList(pubkey)
+            let gathered = 0
+            for (let j = 0; j < items.length; j++) {
+              if (items[j].write) {
+                selectedRelays.add(items[j].url)
+                gathered++
+                if (gathered >= 3) break
+              }
             }
+          } catch (err) {
+            console.error('Failed to load relay list for', pubkey, err)
           }
-        } catch (err) {
-          console.error('Failed to load relay list for', pubkey, err)
-        }
 
-        // ensure we have at least one hardcoded relay and no more than 7 total
-        do {
-          selectedRelays.add(METADATA_QUERY_RELAYS[next])
-          next++
-        } while (selectedRelays.size < 5)
+          // ensure we have at least one hardcoded relay and no more than 7 total
+          do {
+            selectedRelays.add(METADATA_QUERY_RELAYS[next])
+            next++
+          } while (selectedRelays.size < 3)
 
-        relaysByPubkey[pubkey] = Array.from(selectedRelays)
-      }
+          relaysByPubkey[pubkey] = Array.from(selectedRelays)
+        }),
+      )
 
       try {
         // create a map of filters by relay
@@ -183,7 +184,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
           }
         }
 
-        pool.subscribeManyMap(filtersByRelay, {
+        let h = pool.subscribeManyMap(filtersByRelay, {
           id: `metadata(${requests.length})-${idserial++}`,
           onevent(evt) {
             for (let i = 0; i < requests.length; i++) {
@@ -197,8 +198,10 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
               }
             }
           },
-          onclose() {
+          oneose() {
             resolve(results)
+
+            h.close()
 
             // save our updated results to idb
             let idbSave: [IDBValidKey, any][] = []
@@ -220,6 +223,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
       }
     }),
   {
+    cacheKeyFn: r => r.pubkey,
     cache: true,
     cacheMap: dataloaderCache<NostrUser>(),
   },
