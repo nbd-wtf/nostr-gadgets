@@ -35,7 +35,7 @@ export type ProfileMetadata = {
 /**
  * An object containing all necessary information available about a Nostr user.
  *
- * USers for whom no information is unknown will generally have just a pubkey and npub, and shortName
+ * Users for whom no information is unknown will generally have just a pubkey and npub, and shortName
  * will be an ugly short string based on the npub.
  */
 export type NostrUser = {
@@ -96,6 +96,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
   async requests =>
     new Promise(async resolve => {
       const toFetch: NostrUserRequest[] = []
+      let now = Math.round(Date.now() / 1000)
 
       // try to get from idb first -- also set up the results array with defaults
       let results: Array<NostrUser | Error> = await getMany<NostrUser & { lastAttempt: number }>(
@@ -109,15 +110,15 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
             toFetch.push(req)
             // we don't have anything for this key, fill in with a placeholder
             let nu = blankNostrUser(req.pubkey)
-            ;(nu as any).lastAttempt = Math.round(Date.now() / 1000)
+            ;(nu as any).lastAttempt = now
             return nu
-          } else if (res.lastAttempt < Date.now() / 1000 - 60 * 60 * 24 * 2) {
+          } else if (res.lastAttempt < now - 60 * 60 * 24 * 2) {
             toFetch.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-            res.lastAttempt = Math.round(Date.now() / 1000)
+            res.lastAttempt = now
             return res
           } else if (
-            res.lastAttempt < Date.now() / 1000 - 60 * 60 &&
+            res.lastAttempt < now - 60 * 60 &&
             !res.metadata.name &&
             !res.metadata.picture &&
             !res.metadata.about

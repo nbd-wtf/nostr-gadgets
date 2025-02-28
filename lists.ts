@@ -144,6 +144,7 @@ export function makeListFetcher<I>(
     requests =>
       new Promise(async resolve => {
         let remainingRequests: (Request & { index: number })[] = []
+        let now = Math.round(Date.now() / 1000)
 
         // try to get from idb first -- also set up the results array with defaults
         let results: Result<I>[] = await getMany<Result<I> & { lastAttempt: number }>(
@@ -157,16 +158,16 @@ export function makeListFetcher<I>(
             if (!res) {
               remainingRequests.push(req)
               // we don't have anything for this key, fill in with a placeholder
-              return { items: defaultTo(req.target), event: null }
-            } else if (res.lastAttempt < Date.now() / 1000 - 60 * 60 * 24 * 2) {
+              return { items: defaultTo(req.target), event: null, lastAttempt: now }
+            } else if (!res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-              res.lastAttempt = Math.round(Date.now() / 1000)
+              res.lastAttempt = now
               return res
             } else if (res.event === null && res.lastAttempt < Date.now() / 1000 - 60 * 60) {
               remainingRequests.push(req)
               // we have something but and it's not so old (1 hour), but it's empty, so we will try again
-              res.lastAttempt = Math.round(Date.now() / 1000)
+              res.lastAttempt = now
               return res
             } else {
               // this one is so good we won't try to fetch it again
