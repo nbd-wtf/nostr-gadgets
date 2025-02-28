@@ -8,6 +8,7 @@ const TEST_PUBKEYS = {
   fiatjaf: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
   jb55: '32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245',
   pablo: 'fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52',
+  daniele: '7bdef7be22dd8e59f4600e044aa53a1cf975a9dc7d27df5833bc77db784a5805',
 }
 
 Deno.test({
@@ -19,17 +20,15 @@ Deno.test({
       loadNostrUser(TEST_PUBKEYS.fiatjaf),
       loadNostrUser(TEST_PUBKEYS.jb55),
       loadNostrUser(TEST_PUBKEYS.pablo),
-      loadNostrUser({
-        pubkey: '31f6c99a06bd1f2b3c3b02ce4ad03e7e82910dfd4f2f94b1ffd0a84f9f94f3d3',
-        relays: ['offchain.pub'],
-      }),
+      loadNostrUser(TEST_PUBKEYS.daniele),
     ])
 
     assertEquals(users.length, 4)
     assertEquals(users[0].pubkey, TEST_PUBKEYS.fiatjaf)
+    assertEquals(users[0].shortName, 'fiatjaf')
     assertEquals(users[1].pubkey, TEST_PUBKEYS.jb55)
     assertEquals(users[2].pubkey, TEST_PUBKEYS.pablo)
-    assertEquals(users[3].shortName, 'bonanza')
+    assertEquals(users[3].shortName, 'dtonon')
   },
 })
 
