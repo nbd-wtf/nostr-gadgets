@@ -93,7 +93,7 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
  *
  * Returns a list of MutedEntity.
  */
-export const LoadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntity>(
+export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntity>(
   10000,
   [],
   itemsFromTags<MutedEntity>((tag: string[]): MutedEntity | undefined => {
