@@ -15,7 +15,6 @@ import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { dataloaderCache, identity } from './utils'
 
 let serial = 0
-let idserial = 0
 
 /**
  * Representation of a relay entry as found in a kind:10002 list.
@@ -51,8 +50,6 @@ type Result<I> = { event: NostrEvent | null; items: I[] }
 
 /**
  * A ListFetcher for kind:3 follow lists.
- *
- * Returns a list of pubkeys as strings.
  */
 export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
   3,
@@ -67,8 +64,6 @@ export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
 
 /**
  * A ListFetcher for kind:10002 relay lists.
- *
- * Returns a list of RelayItem.
  */
 export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
   10002,
@@ -90,8 +85,6 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
 
 /**
  * A ListFetcher for kind:10000 mute lists.
- *
- * Returns a list of MutedEntity.
  */
 export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntity>(
   10000,
@@ -114,7 +107,9 @@ export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntit
   _ => [],
 )
 
-function itemsFromTags<I>(tagProcessor: (tag: string[]) => I | undefined): (event: NostrEvent | undefined) => I[] {
+export function itemsFromTags<I>(
+  tagProcessor: (tag: string[]) => I | undefined,
+): (event: NostrEvent | undefined) => I[] {
   return (event: NostrEvent | undefined) => {
     const items = event ? event.tags.map(tagProcessor).filter(identity) : []
     return items as I[]
@@ -203,7 +198,7 @@ export function makeListFetcher<I>(
           let handle: SubCloser | undefined
           // eslint-disable-next-line prefer-const
           handle = pool.subscribeManyMap(filtersByRelay, {
-            id: `kind:${kind}:batch(${remainingRequests.length})-${idserial++}`,
+            label: `kind:${kind}:batch(${remainingRequests.length})`,
             onevent(evt) {
               for (let r = 0; r < remainingRequests.length; r++) {
                 const req = remainingRequests[r]

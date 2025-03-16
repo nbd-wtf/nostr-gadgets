@@ -14,7 +14,6 @@ import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
 import { NostrEvent } from '@nostr/tools'
 
-let idserial = 0
 let next = 0
 
 /**
@@ -186,7 +185,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
         }
 
         let h = pool.subscribeManyMap(filtersByRelay, {
-          id: `metadata(${requests.length})-${idserial++}`,
+          label: `metadata(${requests.length})`,
           onevent(evt) {
             for (let i = 0; i < requests.length; i++) {
               if (requests[i].pubkey === evt.pubkey) {

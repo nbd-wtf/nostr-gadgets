@@ -4,6 +4,7 @@ import 'fake-indexeddb/auto'
 import { loadNostrUser } from './metadata'
 import { loadRelayList } from './lists'
 import { loadWoT, globalism } from './wot'
+import { loadRelaySets } from './sets'
 
 const TEST_PUBKEYS = {
   fiatjaf: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
@@ -39,6 +40,16 @@ test('loadRelayList', async () => {
   results.forEach(result => {
     expect(result.items).toBeTruthy()
     expect(Array.isArray(result.items)).toEqual(true)
+  })
+})
+
+test('loadRelaySets', async () => {
+  const results = await Promise.all([loadRelaySets(TEST_PUBKEYS.fiatjaf)])
+
+  expect(results.length).toEqual(1)
+  results.forEach(result => {
+    expect(result['JGM9mue0UifwnpT8xQIPkScfqYpQACMR'].items.includes('wss://lockbox.fiatjaf.com/')).toBeTruthy()
+    expect(result['f4qt86BG85u8POyWO6OMWznNg7innDxp'].items.includes('wss://pyramid.fiatjaf.com/')).toBeTruthy()
   })
 })
 
