@@ -7,12 +7,12 @@ import DataLoader from 'dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
+import { createStore, getMany, setMany } from 'idb-keyval'
 
 import { pool } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { dataloaderCache, identity } from './utils'
-import { createStore, getMany, setMany } from 'idb-keyval'
 
 let serial = 0
 let idserial = 0
@@ -166,7 +166,7 @@ export function makeListFetcher<I>(
               return res
             } else if (res.event === null && res.lastAttempt < Date.now() / 1000 - 60 * 60) {
               remainingRequests.push(req)
-              // we have something but and it's not so old (1 hour), but it's empty, so we will try again
+              // we have something and it's not so old (1 hour), but it's empty, so we will try again
               res.lastAttempt = now
               return res
             } else {
