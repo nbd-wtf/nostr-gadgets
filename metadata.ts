@@ -149,14 +149,14 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
           const selectedRelays = new Set<string>(relays.slice(0, 3))
 
           try {
-            // add relays from their relay list (up to 3 write-enabled relays)
+            // add relays from their relay list (up to 2 write-enabled relays)
             const { items } = await loadRelayList(pubkey)
             let gathered = 0
             for (let j = 0; j < items.length; j++) {
               if (items[j].write) {
                 selectedRelays.add(items[j].url)
                 gathered++
-                if (gathered >= 3) break
+                if (gathered >= 2) break
               }
             }
           } catch (err) {
@@ -165,9 +165,9 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
 
           // ensure we have at least one hardcoded relay and no more than 7 total
           do {
-            selectedRelays.add(METADATA_QUERY_RELAYS[next])
+            selectedRelays.add(METADATA_QUERY_RELAYS[next % METADATA_QUERY_RELAYS.length])
             next++
-          } while (selectedRelays.size < 3)
+          } while (selectedRelays.size < 2)
 
           relaysByPubkey[pubkey] = Array.from(selectedRelays)
         }),

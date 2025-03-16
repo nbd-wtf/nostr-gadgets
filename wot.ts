@@ -13,7 +13,7 @@ var store: UseStore
  * Returns a set of all pubkeys in another pubkey's naïve "web-of-trust",
  * i.e. all follows and follows of follows (except for mutes).
  **/
-export async function fetchWoT(pubkey: string): Promise<Set<string>> {
+export async function loadWoT(pubkey: string): Promise<Set<string>> {
   if (!store) store = createStore(`@nostr/gadgets/wot`, 'cache')
 
   const now = Date.now() / 1000
@@ -49,7 +49,7 @@ export async function fetchWoT(pubkey: string): Promise<Set<string>> {
  * Returns the top famous relays among the given pubkeys
  **/
 export async function globalism(pubkeys: string[]): Promise<string[]> {
-  const list = new Array(pubkeys.length * 3)
+  const list: [number, string][] = []
   const rls = await Promise.all(pubkeys.map(pk => loadRelayList(pk)))
   for (let i = 0; i < rls.length; i++) {
     for (let j = 0; j < rls[i].items.length; j++) {
@@ -62,6 +62,6 @@ export async function globalism(pubkeys: string[]): Promise<string[]> {
       curr[0] += 20 / rls[i].items.length
     }
   }
-  list.sort()
+  list.sort(([a], [b]) => b - a)
   return list.map(rs => rs[1])
 }
