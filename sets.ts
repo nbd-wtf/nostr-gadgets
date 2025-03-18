@@ -66,18 +66,21 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         let now = Math.round(Date.now() / 1000)
 
         // try to get from idb first -- also set up the results array with defaults
-        let results: Result<I>[] = await getMany<Result<I> & { lastAttempt: number }>(
+        let results = await getMany<{
+          result: Result<I>
+          lastAttempt: number
+        }>(
           requests.map(r => r.target),
           store,
         ).then(results =>
-          results.map<Result<I>>((res, i) => {
+          results.map((res, i) => {
             const req = requests[i] as Request & { index: number }
             req.index = i
 
             if (!res) {
               remainingRequests.push(req)
               // we don't have anything for this key, fill in with empty object
-              return {}
+              return { lastAttempt: now, result: {} }
             } else if (!res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch new versions
@@ -91,7 +94,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         )
 
         if (remainingRequests.length === 0) {
-          resolve(results)
+          resolve(results.map(r => r.result))
           return
         }
 
@@ -119,7 +122,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
                 const req = remainingRequests[r]
                 if (req.target === evt.pubkey) {
                   const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
-                  const result = results[req.index]
+                  const result = results[req.index].result
                   const existing = result[dTag]
 
                   // only update if this is a newer event for this d tag
@@ -137,7 +140,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
               handle?.close()
             },
             async onclose() {
-              resolve(results)
+              resolve(results.map(r => r.result))
 
               // save our updated results to idb
               setMany(
