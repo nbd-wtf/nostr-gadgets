@@ -162,7 +162,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
             console.error('Failed to load relay list for', pubkey, err)
           }
 
-          // ensure we have at least one hardcoded relay and no more than 7 total
+          // ensure we have at least one hardcoded relay
           do {
             selectedRelays.add(METADATA_QUERY_RELAYS[next % METADATA_QUERY_RELAYS.length])
             next++

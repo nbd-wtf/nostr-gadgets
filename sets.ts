@@ -84,7 +84,6 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
             } else if (!res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch new versions
-              res.lastAttempt = now
               return res
             } else {
               // this one is so good we won't try to fetch it again
@@ -144,7 +143,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
 
               // save our updated results to idb
               setMany(
-                remainingRequests.map(req => [req.target, results[req.index]]),
+                remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
                 store,
               )
             },

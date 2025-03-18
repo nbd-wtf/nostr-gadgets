@@ -153,16 +153,14 @@ export function makeListFetcher<I>(
             if (!res) {
               remainingRequests.push(req)
               // we don't have anything for this key, fill in with a placeholder
-              return { items: defaultTo(req.target), event: null, lastAttempt: now }
+              return { items: defaultTo(req.target), event: null }
             } else if (!res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-              res.lastAttempt = now
               return res
             } else if (res.event === null && res.lastAttempt < Date.now() / 1000 - 60 * 60) {
               remainingRequests.push(req)
               // we have something and it's not so old (1 hour), but it's empty, so we will try again
-              res.lastAttempt = now
               return res
             } else {
               // this one is so good we won't try to fetch it again
@@ -218,7 +216,7 @@ export function makeListFetcher<I>(
 
               // save our updated results to idb
               setMany(
-                remainingRequests.map(req => [req.target, results[req.index]]),
+                remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
                 store,
               )
             },
