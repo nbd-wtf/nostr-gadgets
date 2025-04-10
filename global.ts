@@ -1,4 +1,4 @@
-import { SimplePool } from '@nostr/tools'
+import { SimplePool } from '@nostr/tools/pool'
 import { MemoryHints } from './hints'
 
 /**

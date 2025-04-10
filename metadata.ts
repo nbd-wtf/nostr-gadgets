@@ -5,6 +5,7 @@
 
 import DataLoader from 'dataloader'
 import type { Filter } from '@nostr/tools/filter'
+import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 import { createStore, getMany, setMany } from 'idb-keyval'
 
@@ -12,7 +13,6 @@ import { dataloaderCache } from './utils'
 import { pool } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
-import { NostrEvent } from '@nostr/tools'
 
 let next = 0
 
