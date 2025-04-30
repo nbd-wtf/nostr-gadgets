@@ -5,6 +5,7 @@ import { loadNostrUser } from './metadata'
 import { loadRelayList } from './lists'
 import { loadWoT, globalism } from './wot'
 import { loadRelaySets } from './sets'
+import { outboxFilterRelayBatch } from './outbox'
 
 const TEST_PUBKEYS = {
   fiatjaf: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
@@ -64,4 +65,35 @@ test('globalism', async () => {
   expect(relays.length).toBeGreaterThan(8)
   expect(relays.includes('wss://pyramid.fiatjaf.com/')).toBeTrue()
   expect(relays.includes('wss://relay.damus.io/')).toBeTrue()
+})
+
+test('outbox filter batch', async () => {
+  const result = await outboxFilterRelayBatch(
+    [TEST_PUBKEYS.fiatjaf, TEST_PUBKEYS.jb55, TEST_PUBKEYS.pablo, TEST_PUBKEYS.daniele],
+    {
+      kinds: [1],
+      limit: 10,
+    },
+  )
+
+  expect(result.length).toBeGreaterThan(2)
+  expect(result.length).toBeLessThan(10)
+
+  const counts = {}
+
+  result.forEach(decl => {
+    expect(decl.filter.kinds).toEqual([1])
+    expect(decl.filter.limit).toEqual(10)
+    expect(Array.isArray(decl.filter.authors)).toBeTrue()
+    expect(decl.filter.authors.length).toBeGreaterThan(0)
+
+    decl.filter.authors.forEach(pubkey => {
+      counts[pubkey] = (counts[pubkey] || 0) + 1
+    })
+  })
+
+  expect(counts[TEST_PUBKEYS.fiatjaf]).toBeGreaterThan(2)
+  expect(counts[TEST_PUBKEYS.pablo]).toBeGreaterThan(2)
+  expect(counts[TEST_PUBKEYS.jb55]).toBeGreaterThan(2)
+  expect(counts[TEST_PUBKEYS.daniele]).toBeGreaterThan(2)
 })
