@@ -14,7 +14,10 @@ import { Filter } from '@nostr/tools'
  * it will pick the most popular -- considering the other pubkeys -- so the number of
  * relay connections is minimized.
  */
-export async function outboxFilterRelayBatch(pubkeys: string[], ...baseFilters: Filter[]) {
+export async function outboxFilterRelayBatch(
+  pubkeys: string[],
+  ...baseFilters: Filter[]
+): Promise<{ url: string; filter: Filter }[]> {
   const declaration: { url: string; filter: Filter }[] = []
 
   type Count = { count: number }
