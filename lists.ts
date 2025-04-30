@@ -63,6 +63,34 @@ export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
 )
 
 /**
+ * A ListFetcher for kind:10101 "good wiki authors" list
+ */
+export const loadWikiAuthors: ListFetcher<string> = makeListFetcher<string>(
+  3,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'p') {
+      return tag[1]
+    }
+  }),
+  _ => [],
+)
+
+/**
+ * A ListFetcher for kind:10102 "good wiki relays" list
+ */
+export const loadWikiRelays: ListFetcher<string> = makeListFetcher<string>(
+  10102,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'relay') {
+      return tag[1]
+    }
+  }),
+  _ => [],
+)
+
+/**
  * A ListFetcher for kind:10002 relay lists.
  */
 export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
@@ -174,7 +202,7 @@ export function makeListFetcher<I>(
           return
         }
 
-        const filtersByRelay: { [url: string]: Filter[] } = {}
+        const filterByRelay: { [url: string]: Filter } = {}
         for (let r = 0; r < remainingRequests.length; r++) {
           const req = remainingRequests[r]
           const relays = req.relays.slice(0, Math.min(4, req.relays.length))
@@ -183,44 +211,47 @@ export function makeListFetcher<I>(
           } while (relays.length < 3)
           for (let j = 0; j < relays.length; j++) {
             const url = relays[j]
-            let filters = filtersByRelay[url]
-            if (!filters) {
-              filters = [{ kinds: [kind], authors: [] }]
-              filtersByRelay[url] = filters
+            let filter = filterByRelay[url]
+            if (!filter) {
+              filter = { kinds: [kind], authors: [] }
+              filterByRelay[url] = filter
             }
-            filters[0]?.authors?.push(req.target)
+            filter.authors?.push(req.target)
           }
         }
 
         try {
           let handle: SubCloser | undefined
           // eslint-disable-next-line prefer-const
-          handle = pool.subscribeManyMap(filtersByRelay, {
-            label: `kind:${kind}:batch(${remainingRequests.length})`,
-            onevent(evt) {
-              for (let r = 0; r < remainingRequests.length; r++) {
-                const req = remainingRequests[r]
-                if (req.target === evt.pubkey) {
-                  const previous = results[req.index]?.event
-                  if (previous?.created_at || 0 > evt.created_at) return
-                  results[req.index] = { event: evt, items: process(evt) }
-                  return
+          handle = pool.subscribeMap(
+            Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
+            {
+              label: `kind:${kind}:batch(${remainingRequests.length})`,
+              onevent(evt) {
+                for (let r = 0; r < remainingRequests.length; r++) {
+                  const req = remainingRequests[r]
+                  if (req.target === evt.pubkey) {
+                    const previous = results[req.index]?.event
+                    if (previous?.created_at || 0 > evt.created_at) return
+                    results[req.index] = { event: evt, items: process(evt) }
+                    return
+                  }
                 }
-              }
-            },
-            oneose() {
-              handle?.close()
-            },
-            async onclose() {
-              resolve(results)
+              },
+              oneose() {
+                handle?.close()
+              },
+              async onclose() {
+                resolve(results)
 
-              // save our updated results to idb
-              setMany(
-                remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
-                store,
-              )
+                // save our updated results to idb
+                setMany(
+                  remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
+                  store,
+                )
+              },
             },
-          })
+          )
         } catch (err) {
           resolve(results.map(_ => err as Error))
         }

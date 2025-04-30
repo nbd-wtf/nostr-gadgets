@@ -28,8 +28,20 @@ type Result<I> = {
 /**
  * A SetFetcher for kind:30000 follow sets.
  */
-export const loadFollowsList: SetFetcher<string> = makeSetFetcher<string>(
+export const loadFollowSets: SetFetcher<string> = makeSetFetcher<string>(
   30000,
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'p') {
+      return tag[1]
+    }
+  }),
+)
+
+/**
+ * A SetFetcher for kind:39089 follow packs.
+ */
+export const loadFollowPacks: SetFetcher<string> = makeSetFetcher<string>(
+  39089,
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'p') {
       return tag[1]
@@ -97,57 +109,60 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           return
         }
 
-        const filtersByRelay: { [url: string]: Filter[] } = {}
+        const filterByRelay: { [url: string]: Filter } = {}
         for (let r = 0; r < remainingRequests.length; r++) {
           const req = remainingRequests[r]
           const relays = req.relays.slice(0, Math.min(4, req.relays.length))
           for (let j = 0; j < relays.length; j++) {
             const url = relays[j]
-            let filters = filtersByRelay[url]
-            if (!filters) {
-              filters = [{ kinds: [kind], authors: [] }]
-              filtersByRelay[url] = filters
+            let filter = filterByRelay[url]
+            if (!filter) {
+              filter = { kinds: [kind], authors: [] }
+              filterByRelay[url] = filter
             }
-            filters[0]?.authors?.push(req.target)
+            filter.authors?.push(req.target)
           }
         }
 
         try {
           let handle: SubCloser | undefined
-          handle = pool.subscribeManyMap(filtersByRelay, {
-            label: `kind:${kind}:batch(${remainingRequests.length})`,
-            onevent(evt) {
-              for (let r = 0; r < remainingRequests.length; r++) {
-                const req = remainingRequests[r]
-                if (req.target === evt.pubkey) {
-                  const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
-                  const result = results[req.index].result
-                  const existing = result[dTag]
+          handle = pool.subscribeMap(
+            Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
+            {
+              label: `kind:${kind}:batch(${remainingRequests.length})`,
+              onevent(evt) {
+                for (let r = 0; r < remainingRequests.length; r++) {
+                  const req = remainingRequests[r]
+                  if (req.target === evt.pubkey) {
+                    const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
+                    const result = results[req.index].result
+                    const existing = result[dTag]
 
-                  // only update if this is a newer event for this d tag
-                  if (!existing || existing.event.created_at < evt.created_at) {
-                    result[dTag] = {
-                      event: evt,
-                      items: process(evt),
+                    // only update if this is a newer event for this d tag
+                    if (!existing || existing.event.created_at < evt.created_at) {
+                      result[dTag] = {
+                        event: evt,
+                        items: process(evt),
+                      }
                     }
+                    return
                   }
-                  return
                 }
-              }
-            },
-            oneose() {
-              handle?.close()
-            },
-            async onclose() {
-              resolve(results.map(r => r.result))
+              },
+              oneose() {
+                handle?.close()
+              },
+              async onclose() {
+                resolve(results.map(r => r.result))
 
-              // save our updated results to idb
-              setMany(
-                remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
-                store,
-              )
+                // save our updated results to idb
+                setMany(
+                  remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
+                  store,
+                )
+              },
             },
-          })
+          )
         } catch (err) {
           resolve(results.map(_ => err as Error))
         }
