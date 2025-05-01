@@ -66,7 +66,7 @@ export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
  * A ListFetcher for kind:10101 "good wiki authors" list
  */
 export const loadWikiAuthors: ListFetcher<string> = makeListFetcher<string>(
-  3,
+  10101,
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'p') {
