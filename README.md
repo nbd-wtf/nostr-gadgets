@@ -5,7 +5,7 @@ High-level utils for developing Nostr clients based on [nostr-tools](https://git
 ## Install
 
 ```
-npx jsr add @nostr/tools
+npx jsr add @nostr/gadgets
 ```
 
 ## Documentation
