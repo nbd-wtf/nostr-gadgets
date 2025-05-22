@@ -78,6 +78,7 @@ const customStore = createStore('@nostr/gadgets/metadata', 'cache')
 type NostrUserRequest = {
   pubkey: string
   relays?: string[]
+  forceUpdate?: boolean
 }
 
 /**
@@ -111,7 +112,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
             let nu = blankNostrUser(req.pubkey)
             ;(nu as any).lastAttempt = now
             return nu
-          } else if (res.lastAttempt < now - 60 * 60 * 24 * 2) {
+          } else if (req.forceUpdate || res.lastAttempt < now - 60 * 60 * 24 * 2) {
             toFetch.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
             res.lastAttempt = now
