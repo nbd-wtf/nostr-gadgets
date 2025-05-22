@@ -45,7 +45,7 @@ export type MutedEntity = {
  *
  * It is also safe to call it with multiple different pubkeys, requests to the same relay will be batched together.
  */
-export type ListFetcher<I> = (pubkey: string, hints?: string[]) => Promise<Result<I>>
+export type ListFetcher<I> = (pubkey: string, hints?: string[], forceUpdate?: boolean) => Promise<Result<I>>
 type Result<I> = { event: NostrEvent | null; items: I[] }
 
 /**
@@ -161,7 +161,7 @@ export function makeListFetcher<I>(
   const cache = dataloaderCache<Result<I>>()
   const store = createStore(`@nostr/gadgets/list:${kind}`, 'cache')
 
-  type Request = { target: string; relays: string[] }
+  type Request = { target: string; relays: string[]; forceUpdate?: boolean }
 
   const dataloader = new DataLoader<Request, Result<I>, string>(
     requests =>
@@ -182,7 +182,7 @@ export function makeListFetcher<I>(
               remainingRequests.push(req)
               // we don't have anything for this key, fill in with a placeholder
               return { items: defaultTo(req.target), event: null }
-            } else if (!res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
+            } else if (req.forceUpdate || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
               return res
@@ -263,7 +263,7 @@ export function makeListFetcher<I>(
     },
   )
 
-  return async function (pubkey: string, hints: string[] = []): Promise<Result<I>> {
+  return async function (pubkey: string, hints: string[] = [], forceUpdate?: boolean): Promise<Result<I>> {
     let relays: string[] = hints
 
     if (kind === 10002) {
@@ -276,7 +276,7 @@ export function makeListFetcher<I>(
           .map(({ url }) => url)
           .slice(0, 3),
       )
-      return await dataloader.load({ target: pubkey, relays })
+      return await dataloader.load({ target: pubkey, relays, forceUpdate })
     }
   }
 }
