@@ -229,7 +229,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
   },
 )
 
-function blankNostrUser(pubkey: string): NostrUser {
+export function blankNostrUser(pubkey: string): NostrUser {
   const npub = npubEncode(pubkey)
   return {
     pubkey,
