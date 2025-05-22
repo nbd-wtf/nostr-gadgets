@@ -17,7 +17,7 @@ import { itemsFromTags, loadRelayList } from './lists'
  * A SetFetcher is a function that can be called to return a map of items indexed by d-tag,
  * where each value contains the event and parsed items.
  */
-export type SetFetcher<I> = (pubkey: string, hints?: string[]) => Promise<Result<I>>
+export type SetFetcher<I> = (pubkey: string, hints?: string[], forceUpdate?: boolean) => Promise<Result<I>>
 type Result<I> = {
   [dTag: string]: {
     event: NostrEvent
@@ -69,7 +69,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
   const cache = dataloaderCache<Result<I>>()
   const store = createStore(`@nostr/gadgets/set:${kind}`, 'cache')
 
-  type Request = { target: string; relays: string[] }
+  type Request = { target: string; relays: string[]; forceUpdate?: boolean }
 
   const dataloader = new DataLoader<Request, Result<I>, string>(
     requests =>
@@ -93,7 +93,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
               remainingRequests.push(req)
               // we don't have anything for this key, fill in with empty object
               return { lastAttempt: now, result: {} }
-            } else if (!res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
+            } else if (req.forceUpdate || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch new versions
               return res
@@ -174,7 +174,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
     },
   )
 
-  return async function (pubkey: string, hints: string[] = []): Promise<Result<I>> {
+  return async function (pubkey: string, hints: string[] = [], forceUpdate?: boolean): Promise<Result<I>> {
     let relays: string[] = hints
 
     const rl = await loadRelayList(pubkey, hints)
@@ -184,6 +184,6 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         .map(({ url }) => url)
         .slice(0, 3),
     )
-    return await dataloader.load({ target: pubkey, relays })
+    return await dataloader.load({ target: pubkey, relays, forceUpdate })
   }
 }
