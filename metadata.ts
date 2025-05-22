@@ -4,7 +4,6 @@
  */
 
 import DataLoader from 'dataloader'
-import type { Filter } from '@nostr/tools/filter'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 import { createStore, getMany, setMany } from 'idb-keyval'
@@ -141,7 +140,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
       }
 
       // gather relays for each pubkey that needs fetching
-      const relaysByPubkey: { [pubkey: string]: string[] } = {}
+      const pubkeysByRelay: { [relay: string]: string[] } = {}
 
       await Promise.all(
         toFetch.map(async ({ pubkey, relays = [] }) => {
@@ -169,23 +168,23 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
             next++
           } while (selectedRelays.size < 2)
 
-          relaysByPubkey[pubkey] = Array.from(selectedRelays)
+          for (let relay of selectedRelays) {
+            if (pubkeysByRelay[relay]) {
+              pubkeysByRelay[relay].push(pubkey)
+            } else {
+              pubkeysByRelay[relay] = [pubkey]
+            }
+          }
         }),
       )
 
       try {
-        // create a map of filters by relay
-        const filtersByRelay: { [url: string]: Filter[] } = {}
-        for (const [pubkey, relays] of Object.entries(relaysByPubkey)) {
-          for (const relay of relays) {
-            if (!filtersByRelay[relay]) {
-              filtersByRelay[relay] = [{ kinds: [0], authors: [] }]
-            }
-            filtersByRelay[relay][0].authors!.push(pubkey)
-          }
-        }
+        const requestMap = Object.entries(pubkeysByRelay).map(([relay, pubkeys]) => ({
+          url: relay,
+          filter: { kinds: [0], authors: pubkeys },
+        }))
 
-        let h = pool.subscribeManyMap(filtersByRelay, {
+        let h = pool.subscribeMap(requestMap, {
           label: `metadata(${requests.length})`,
           onevent(evt) {
             for (let i = 0; i < requests.length; i++) {
