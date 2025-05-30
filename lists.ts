@@ -12,7 +12,8 @@ import { createStore, getMany, setMany } from 'idb-keyval'
 import { pool } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
-import { dataloaderCache, identity } from './utils'
+import { dataloaderCache, identity, isHex32 } from './utils'
+import { AddressPointer } from '@nostr/tools/nip19'
 
 let serial = 0
 
@@ -85,6 +86,32 @@ export const loadWikiRelays: ListFetcher<string> = makeListFetcher<string>(
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'relay') {
       return tag[1]
+    }
+  }),
+  _ => [],
+)
+
+/**
+ * A ListFetcher for kind:10012 "favorite relays" list
+ */
+export const loadFavoriteRelays: ListFetcher<string | AddressPointer> = makeListFetcher<string | AddressPointer>(
+  10012,
+  [],
+  itemsFromTags<string | AddressPointer>((tag: string[]): string | AddressPointer | undefined => {
+    if (tag.length >= 2) {
+      switch (tag[0]) {
+        case 'relay':
+          return tag[1]
+        case 'a':
+          const spl = tag[1].split(':')
+          if (!isHex32(spl[1]) || spl[0] !== '30002') return undefined
+          return {
+            identifier: spl.slice(2).join(':'),
+            pubkey: spl[1],
+            kind: parseInt(spl[0]),
+            relays: tag[2] ? [tag[2]] : [],
+          }
+      }
     }
   }),
   _ => [],
