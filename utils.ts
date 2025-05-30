@@ -3,8 +3,10 @@ import LRUCache from '@fiatjaf/lru-cache/lru-cache'
 import type { CacheMap } from 'dataloader'
 
 export function dataloaderCache<V>(): CacheMap<string, Promise<V>> {
-  const cache = new LRUCache<string, Promise<V>>(2000)
-  ;(cache as any).delete = (_key: string) => {}
+  const cache = new LRUCache<string, undefined | Promise<V>>(2000)
+  ;(cache as any).delete = (key: string) => {
+    cache.set(key, undefined)
+  }
   return cache as unknown as CacheMap<string, Promise<V>>
 }
 
