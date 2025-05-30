@@ -134,6 +134,8 @@ export class IDBEventStore {
       task.resolve = resolve
       task.reject = reject
     })
+
+    return task.p
   }
 
   private saveEventsBatch(transaction: IDBTransaction, events: NostrEvent[]): Promise<void>[] {
