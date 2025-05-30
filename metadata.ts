@@ -6,7 +6,7 @@
 import DataLoader from 'dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
-import { createStore, getMany, setMany } from 'idb-keyval'
+import { createStore, getMany, setMany, set } from 'idb-keyval'
 
 import { dataloaderCache } from './utils'
 import { pool } from './global'
@@ -72,7 +72,7 @@ export function bareNostrUser(input: string): NostrUser {
   }
 }
 
-const customStore = createStore('@nostr/gadgets/metadata', 'cache')
+const metadataStore = createStore('@nostr/gadgets/metadata', 'cache')
 
 type NostrUserRequest = {
   pubkey: string
@@ -105,7 +105,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
       // try to get from idb first -- also set up the results array with defaults
       let results: Array<NostrUser | Error> = await getMany<NostrUser & { lastAttempt: number }>(
         requests.map(r => r.pubkey),
-        customStore,
+        metadataStore,
       ).then(results =>
         results.map((res, i): NostrUser => {
           const req = requests[i]
@@ -120,6 +120,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
             // we have the event right here, so just use it
             let nu = blankNostrUser(req.pubkey)
             enhanceNostrUserWithEvent(nu, req.forceUpdate)
+            set(req.pubkey, nu, metadataStore)
             return nu
           } else if (req.forceUpdate === true || res.lastAttempt < now - 60 * 60 * 24 * 2) {
             toFetch.push(req)
@@ -222,7 +223,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
               }
             }
 
-            setMany(idbSave, customStore)
+            setMany(idbSave, metadataStore)
           },
         })
       } catch (err) {

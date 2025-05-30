@@ -7,7 +7,7 @@ import DataLoader from 'dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
-import { createStore, getMany, setMany } from 'idb-keyval'
+import { createStore, getMany, set, setMany } from 'idb-keyval'
 
 import { pool } from './global'
 
@@ -211,7 +211,9 @@ export function makeListFetcher<I>(
               return { items: defaultTo(req.target), event: null }
             } else if (typeof req.forceUpdate === 'object') {
               // we have the event right here, so just use it
-              return { event: req.forceUpdate, items: process(req.forceUpdate) }
+              const final = { event: req.forceUpdate, items: process(req.forceUpdate) }
+              set(req.target, final, store)
+              return final
             } else if (req.forceUpdate === true || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
