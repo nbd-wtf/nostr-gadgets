@@ -77,7 +77,7 @@ const customStore = createStore('@nostr/gadgets/metadata', 'cache')
 type NostrUserRequest = {
   pubkey: string
   relays?: string[]
-  forceUpdate?: boolean
+  forceUpdate?: boolean | NostrEvent
 }
 
 /**
@@ -107,16 +107,21 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
         requests.map(r => r.pubkey),
         customStore,
       ).then(results =>
-        results.map((res, i) => {
+        results.map((res, i): NostrUser => {
           const req = requests[i]
 
-          if (!res) {
+          if (!res && !req.forceUpdate) {
             toFetch.push(req)
             // we don't have anything for this key, fill in with a placeholder
             let nu = blankNostrUser(req.pubkey)
             ;(nu as any).lastAttempt = now
             return nu
-          } else if (req.forceUpdate || res.lastAttempt < now - 60 * 60 * 24 * 2) {
+          } else if (typeof req.forceUpdate === 'object') {
+            // we have the event right here, so just use it
+            let nu = blankNostrUser(req.pubkey)
+            enhanceNostrUserWithEvent(nu, req.forceUpdate)
+            return nu
+          } else if (req.forceUpdate === true || res.lastAttempt < now - 60 * 60 * 24 * 2) {
             toFetch.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
             res.lastAttempt = now
