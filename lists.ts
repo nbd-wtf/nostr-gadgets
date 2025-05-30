@@ -46,7 +46,11 @@ export type MutedEntity = {
  *
  * It is also safe to call it with multiple different pubkeys, requests to the same relay will be batched together.
  */
-export type ListFetcher<I> = (pubkey: string, hints?: string[], forceUpdate?: boolean) => Promise<Result<I>>
+export type ListFetcher<I> = (
+  pubkey: string,
+  hints?: string[],
+  forceUpdate?: boolean | NostrEvent,
+) => Promise<Result<I>>
 type Result<I> = { event: NostrEvent | null; items: I[] }
 
 /**
@@ -295,7 +299,7 @@ export function makeListFetcher<I>(
     },
   )
 
-  return async function (pubkey: string, hints: string[] = [], forceUpdate?: boolean): Promise<Result<I>> {
+  return async function (pubkey: string, hints: string[] = [], forceUpdate?: boolean | NostrEvent): Promise<Result<I>> {
     let relays: string[] = hints
 
     if (kind === 10002) {
