@@ -305,4 +305,130 @@ test('idb store', async () => {
     }
     expect(count).toEqual(2)
   }
+
+  // test replacing
+  {
+    let event = finalizeEvent(
+      {
+        kind: 30023,
+        created_at: 1,
+        tags: [['d', 'bla']],
+        content: 'blablabla',
+      },
+      sk1,
+    )
+
+    await store.replaceEvent(event)
+
+    {
+      let count = 0
+      for await (let evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk1)], kinds: [30023] })) {
+        count++
+        expect(evt.id).toEqual(event.id)
+      }
+      expect(count).toEqual(1)
+    }
+
+    {
+      // it shouldn't return anything for the other user
+      let count = 0
+      for await (let _evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk2)], kinds: [30023] })) {
+        count++
+      }
+      expect(count).toEqual(0)
+    }
+
+    // since this comes from the other user this should not replace, it should be added as a separate thing
+    let fakeReplacement = finalizeEvent(
+      {
+        kind: 30023,
+        created_at: 2,
+        tags: [['d', 'bla']],
+        content: '# bla\n\nblablabla',
+      },
+      sk2,
+    )
+
+    await store.replaceEvent(fakeReplacement)
+
+    {
+      let count = 0
+      for await (let evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk1)], kinds: [30023] })) {
+        count++
+        expect(evt.id).toEqual(event.id)
+      }
+      expect(count).toEqual(1)
+    }
+
+    {
+      let count = 0
+      for await (let evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk2)], kinds: [30023] })) {
+        count++
+        expect(evt.id).toEqual(fakeReplacement.id)
+      }
+      expect(count).toEqual(1)
+    }
+
+    // now this should replace the first event
+    let actualReplacement = finalizeEvent(
+      {
+        kind: 30023,
+        created_at: 100,
+        tags: [['d', 'bla']],
+        content: '# bla\n\nblablabla',
+      },
+      sk1,
+    )
+
+    await store.replaceEvent(actualReplacement)
+
+    {
+      let count = 0
+      for await (let evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk1)], kinds: [30023] })) {
+        count++
+        expect(evt.id).toEqual(actualReplacement.id)
+      }
+      expect(count).toEqual(1)
+    }
+
+    {
+      let count = 0
+      for await (let evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk2)], kinds: [30023] })) {
+        count++
+        expect(evt.id).toEqual(fakeReplacement.id)
+      }
+      expect(count).toEqual(1)
+    }
+
+    // and this has an older timestamp than the actual replacement, so it should not replace anything
+    let olderReplacement = finalizeEvent(
+      {
+        kind: 30023,
+        created_at: 50,
+        tags: [['d', 'bla']],
+        content: '#bla\n\nblablabla',
+      },
+      sk1,
+    )
+
+    await store.replaceEvent(olderReplacement)
+
+    {
+      let count = 0
+      for await (let evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk1)], kinds: [30023] })) {
+        count++
+        expect(evt.id).toEqual(actualReplacement.id)
+      }
+      expect(count).toEqual(1)
+    }
+
+    {
+      let count = 0
+      for await (let evt of store.queryEvents({ '#d': ['bla'], authors: [getPublicKey(sk2)], kinds: [30023] })) {
+        count++
+        expect(evt.id).toEqual(fakeReplacement.id)
+      }
+      expect(count).toEqual(1)
+    }
+  }
 })

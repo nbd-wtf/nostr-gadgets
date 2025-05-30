@@ -222,7 +222,7 @@ export class IDBEventStore {
   async deleteEvent(id: string): Promise<boolean> {
     if (!this.db) await this.init()
 
-    const transaction = this.db!.transaction(['events', 'indexes'], 'readwrite')
+    const transaction = this.db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
 
     return new Promise((resolve, reject) => {
       this.deleteEventInternal(transaction, id).then(resolve).catch(reject)
@@ -252,11 +252,13 @@ export class IDBEventStore {
         const getEventRequest = eventStore.get(serial)
 
         getEventRequest.onsuccess = () => {
-          const event = getEventRequest.result as NostrEvent | undefined
-          if (!event) {
+          const eventData = getEventRequest.result
+          if (!eventData) {
             resolve(false)
             return
           }
+
+          const event: NostrEvent = JSON.parse(eventData)
 
           // delete all indexes for this event
           const deletePromises: Promise<void>[] = []
@@ -304,7 +306,7 @@ export class IDBEventStore {
       throw new DatabaseError('event with values out of expected boundaries')
     }
 
-    const transaction = this.db!.transaction(['events', 'indexes'], 'readwrite', { durability: 'relaxed' })
+    const transaction = this.db!.transaction(['events', 'ids', 'indexes'], 'readwrite', { durability: 'relaxed' })
 
     return new Promise((resolve, reject) => {
       const filter: Filter = {
@@ -381,10 +383,12 @@ export class IDBEventStore {
 
             getEventRequest.onsuccess = () => {
               const eventData = getEventRequest.result
-              if (eventData) {
-                const event: NostrEvent = JSON.parse(eventData)
-                resolve(event)
+              if (!eventData) {
+                resolve(null)
               }
+
+              const event: NostrEvent = JSON.parse(eventData)
+              resolve(event)
             }
 
             getEventRequest.onerror = () => {
@@ -677,19 +681,32 @@ export class IDBEventStore {
           eventPromises.push(
             new Promise<[number, NostrEvent] | null>(resolve => {
               const getEventRequest = eventStore.get(serial)
+
               getEventRequest.onsuccess = () => {
                 const eventData = getEventRequest.result
-                if (eventData) {
-                  const event: NostrEvent = JSON.parse(eventData)
-
-                  // apply extra filtering
-                  if (!filterMatchesTags(extraTagFilter, event)) {
-                    resolve(null)
-                    return
-                  }
-
-                  resolve([serial, event])
+                if (!eventData) {
+                  console.error(
+                    'tried to get event with serial',
+                    serial,
+                    'from query',
+                    query,
+                    'key',
+                    key,
+                    'but it did not exist',
+                  )
+                  resolve(null)
+                  return
                 }
+
+                const event: NostrEvent = JSON.parse(eventData)
+
+                // apply extra filtering
+                if (!filterMatchesTags(extraTagFilter, event)) {
+                  resolve(null)
+                  return
+                }
+
+                resolve([serial, event])
               }
 
               getEventRequest.onerror = () => {
