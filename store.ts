@@ -724,7 +724,7 @@ export class IDBEventStore {
   }
 }
 
-function getTagIndexPrefix(tagValue: string): [Uint8Array, number] {
+function getTagIndexPrefix(tagLetter: string, tagValue: string): [Uint8Array, number] {
   let key: Uint8Array
   let offset: number
 
@@ -732,39 +732,44 @@ function getTagIndexPrefix(tagValue: string): [Uint8Array, number] {
     // assume it's an addressable format, if it isn't we will error
     const { kind, pk, d } = getAddrTagElements(tagValue)
     // store value in the new special "a" tag index
-    key = new Uint8Array(1 + 2 + 8 + d.length + 4 + 4)
+    key = new Uint8Array(1 + 1 + 2 + 8 + d.length + 4 + 4)
     key[0] = INDEX_TAG_ADDR_PREFIX
 
+    // write tag name
+    key[1] = tagLetter.charCodeAt(0) % 256
+
     // write kind as big-endian uint16
-    key[1] = (kind >> 8) & 0xff
-    key[2] = kind & 0xff
+    key[2] = (kind >> 8) & 0xff
+    key[3] = kind & 0xff
 
     // copy first 8 bytes of pubkey
-    putHexAsBytes(key, 1 + 2, pk, 8)
+    putHexAsBytes(key, 1 + 1 + 2, pk, 8)
 
     // copy d tag value
     const encoder = new TextEncoder()
     const dBytes = encoder.encode(d)
-    key.set(dBytes, 1 + 2 + 8)
+    key.set(dBytes, 1 + 1 + 2 + 8)
 
-    offset = 1 + 2 + 8 + d.length
+    offset = 1 + 1 + 2 + 8 + d.length
     return [key, offset]
   } catch {
     try {
       // store value as bytes (if it's not valid hex it will error)
-      key = new Uint8Array(1 + 8 + 4 + 4)
+      key = new Uint8Array(1 + 1 + 8 + 4 + 4)
       key[0] = INDEX_TAG32_PREFIX
-      putHexAsBytes(key, 1, tagValue, 8)
-      offset = 1 + 8
+      key[1] = tagLetter.charCodeAt(0) % 256
+      putHexAsBytes(key, 1 + 1, tagValue, 8)
+      offset = 1 + 1 + 8
       return [key, offset]
     } catch {
       // store whatever as utf-8
       const encoder = new TextEncoder()
       const valueBytes = encoder.encode(tagValue)
-      key = new Uint8Array(1 + valueBytes.length + 4 + 4)
+      key = new Uint8Array(1 + 1 + valueBytes.length + 4 + 4)
       key[0] = INDEX_TAG_PREFIX
-      key.set(valueBytes, 1)
-      offset = 1 + valueBytes.length
+      key[1] = tagLetter.charCodeAt(0) % 256
+      key.set(valueBytes, 1 + 1)
+      offset = 1 + 1 + valueBytes.length
       return [key, offset]
     }
   }
@@ -830,7 +835,7 @@ function* getIndexKeysForEvent(event: NostrEvent, serialOrIdx: number | Uint8Arr
   // by tag value + date
   const seenTagValues = new Set<string>()
   for (const tag of event.tags) {
-    if (tag.length < 2 || tag[0]!.length !== 1 || !tag[1] || tag[1].length === 0 || tag[1].length > 100) {
+    if (tag[0]!.length !== 1 || !tag[1] || tag[1].length > 100) {
       continue
     }
     if (seenTagValues.has(tag[1])) {
@@ -838,7 +843,7 @@ function* getIndexKeysForEvent(event: NostrEvent, serialOrIdx: number | Uint8Arr
     }
     seenTagValues.add(tag[1])
 
-    const [key, offset] = getTagIndexPrefix(tag[1])
+    const [key, offset] = getTagIndexPrefix(tag[0], tag[1])
     key.set(tsBytes, offset)
     key.set(idx, offset + 4)
 
@@ -911,15 +916,14 @@ function prepareQueries(filter: Filter): {
   extraTagFilter: [string, string[]][]
 } {
   const queries: Query[] = []
-  const extraTagFilter: [string, string[]][] = []
+  const extraTagFilter: [tagLetter: string, tagValues: string[]][] = []
   const timestampStartingPoint = invertedTimestampBytes(filter.until || 0xffffffff)
   const timestampEndingPoint = invertedTimestampBytes(filter.since || 0)
 
   // handle high-priority tag filters (these trump everything else)
   const highPriority = ['q', 'e', 'E', 'i', 'I', 'a', 'A', 'g', 'r']
   {
-    let isTagIndex = false
-    let bestPrio = -1
+    let bestPrio = 100
     let bestIndex = -1
     for (let tagName in filter) {
       if (tagName[0] !== '#' || tagName.length !== 2) continue
@@ -934,12 +938,10 @@ function prepareQueries(filter: Filter): {
       }
     }
 
-    if (bestPrio >= 0) {
-      isTagIndex = true
-
-      let [_, tagValues] = extraTagFilter[bestIndex]
+    if (bestIndex >= 0) {
+      let [tagLetter, tagValues] = extraTagFilter[bestIndex]
       for (const value of tagValues) {
-        const [startingPoint, offset] = getTagIndexPrefix(value)
+        const [startingPoint, offset] = getTagIndexPrefix(tagLetter, value)
         startingPoint.set(timestampStartingPoint, offset)
         startingPoint.fill(0x00, offset + 4)
 
@@ -956,8 +958,7 @@ function prepareQueries(filter: Filter): {
       // swap-delete the best one from the list of extras
       extraTagFilter[bestIndex] = extraTagFilter[extraTagFilter.length - 1]
       extraTagFilter.pop()
-    }
-    if (isTagIndex) {
+
       // (this means we had tags in the query so we can exit now with the queries we just gathered)
       return { queries, extraTagFilter }
     }
@@ -1037,12 +1038,11 @@ function prepareQueries(filter: Filter): {
 
   // handle low-priority tag filters (these are worse than kind, authors etc)
   {
-    let isTagIndex = false
-    for (let tagName in filter) {
-      if (tagName[0] !== '#' || tagName.length !== 2) continue
+    for (let i = 0; i < extraTagFilter.length; i++) {
       // naïvely, the first tag we find will be the index
-      for (const value of filter[tagName]) {
-        const [startingPoint, offset] = getTagIndexPrefix(value)
+      let [tagLetter, tagValues] = extraTagFilter[i]
+      for (let value of tagValues) {
+        const [startingPoint, offset] = getTagIndexPrefix(tagLetter, value)
         startingPoint.set(timestampStartingPoint, offset)
         startingPoint.fill(0x00, offset + 4)
 
@@ -1055,15 +1055,12 @@ function prepareQueries(filter: Filter): {
           endingPoint,
         })
       }
-      isTagIndex = true
 
       // remove main index from list of extra tags (swap-delete)
-      let i = extraTagFilter.findIndex(x => x[0] === tagName)
       extraTagFilter[i] = extraTagFilter[extraTagFilter.length - 1]
       extraTagFilter.pop()
-    }
-    if (isTagIndex) {
-      // (this means we had tags in the query so we can exit now with the queries we just gathered)
+
+      // and we're done, we only needed one
       return { queries, extraTagFilter }
     }
   }
