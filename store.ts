@@ -347,6 +347,8 @@ export class IDBEventStore {
   }
 
   async getByIds(ids: string[]): Promise<NostrEvent[]> {
+    if (!this.db) await this.init()
+
     const transaction = this.db!.transaction(['events', 'ids'], 'readonly')
     return this.getByIdsInternal(transaction, ids)
   }
