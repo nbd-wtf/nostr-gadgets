@@ -45,14 +45,25 @@ const INDEX_TAG_PREFIX = 5
 const INDEX_TAG32_PREFIX = 6
 const INDEX_TAG_ADDR_PREFIX = 7
 
+/**
+ * indexeddb store for events with optimized indexes that are small in size and fast in speed.
+ */
 export class IDBEventStore {
   private dbName: string
   private db: IDBDatabase | undefined
 
+  /**
+   * creates a new event store instance.
+   * @param dbName - name of the indexedDB database (default: '@nostr/gadgets/events')
+   */
   constructor(dbName: string = '@nostr/gadgets/events') {
     this.dbName = dbName
   }
 
+  /**
+   * initializes the database connection and creates object stores if needed.
+   * automatically called by other methods if not already initialized, so you can ignore it.
+   */
   async init(): Promise<void> {
     return new Promise((resolve, reject) => {
       const request = indexedDB.open(this.dbName, 1)
@@ -77,6 +88,9 @@ export class IDBEventStore {
     })
   }
 
+  /**
+   * closes the database. you probably do not need this.
+   */
   async close(): Promise<void> {
     if (this.db) {
       this.db.close()
@@ -85,6 +99,14 @@ export class IDBEventStore {
   }
 
   private saveBatch: null | [ids: string[], events: NostrEvent[], tasks: Task[]]
+  /**
+   * saves a nostr event to the store with automatic batching for performance.
+   * (if you want the batching to work you can't `await` it immediately upon calling it)
+   *
+   * @param event - the nostr event to save
+   * @throws {DuplicateEventError} if event already exists
+   * @throws {DatabaseError} if event values are out of bounds or storage fails
+   */
   async saveEvent(event: NostrEvent): Promise<void> {
     if (!this.db) await this.init()
 
@@ -219,6 +241,14 @@ export class IDBEventStore {
     })
   }
 
+  /**
+   * deletes an event from the store by its ID.
+   * removes the event and all associated indexes.
+   *
+   * @param id - hex-encoded event ID to delete
+   * @returns true if event was found and deleted, false if not found
+   * @throws {DatabaseError} if deletion fails
+   */
   async deleteEvent(id: string): Promise<boolean> {
     if (!this.db) await this.init()
 
@@ -298,6 +328,14 @@ export class IDBEventStore {
     })
   }
 
+  /**
+   * replaces an existing event with a new one, handling replaceable/addressable event logic.
+   * i.e., matching same kind/author(/d-tag).
+   * only stores the new event if it's newer than existing one.
+   *
+   * @param event - the replacement event
+   * @throws {DatabaseError} if event values are out of bounds or storage fails
+   */
   async replaceEvent(event: NostrEvent): Promise<void> {
     if (!this.db) await this.init()
 
@@ -350,6 +388,13 @@ export class IDBEventStore {
     })
   }
 
+  /**
+   * retrieves events by their IDs.
+   * this is equivalent to passing a {ids: [...]} filter to queryEvents(), but slightly faster/simpler.
+   *
+   * @param ids - array of hex-encoded event IDs to fetch
+   * @returns array of found events (may be shorter than input if some IDs not found)
+   */
   async getByIds(ids: string[]): Promise<NostrEvent[]> {
     if (!this.db) await this.init()
 
@@ -403,6 +448,15 @@ export class IDBEventStore {
     return idEventResults.filter(evt => !!evt)
   }
 
+  /**
+   * queries events using a nostr filter, any filters supported (except "search").
+   * the actual limit of the query will be the minimum between the filter "limit" if it exists
+   * and the maxLimit param.
+   *
+   * @param filter - nostr filter specification
+   * @param maxLimit - maximum number of events to return (default: 500)
+   * @yields events matching the filter criteria
+   */
   async *queryEvents(filter: Filter, maxLimit: number = 500): AsyncGenerator<NostrEvent> {
     if (!this.db) await this.init()
 
@@ -932,7 +986,7 @@ function getDTag(tags: string[][]): string {
 
 function prepareQueries(filter: Filter): {
   queries: Query[]
-  extraTagFilter: [string, string[]][]
+  extraTagFilter: [tagLetter: string, tagValues: string[]][]
 } {
   const queries: Query[] = []
   const extraTagFilter: [tagLetter: string, tagValues: string[]][] = []
