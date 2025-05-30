@@ -915,6 +915,54 @@ function prepareQueries(filter: Filter): {
   const timestampStartingPoint = invertedTimestampBytes(filter.until || 0xffffffff)
   const timestampEndingPoint = invertedTimestampBytes(filter.since || 0)
 
+  // handle high-priority tag filters (these trump everything else)
+  const highPriority = ['q', 'e', 'E', 'i', 'I', 'a', 'A', 'g', 'r']
+  {
+    let isTagIndex = false
+    let bestPrio = -1
+    let bestIndex = -1
+    for (let tagName in filter) {
+      if (tagName[0] !== '#' || tagName.length !== 2) continue
+
+      // add everything as tag filters (this will be used by other queries afterwards even if we don't go with this)
+      extraTagFilter.push([tagName[1], filter[tagName]])
+
+      let prio = highPriority.indexOf(tagName[1])
+      if (prio >= 0 && prio < bestPrio) {
+        bestPrio = prio
+        bestIndex = extraTagFilter.length - 1
+      }
+    }
+
+    if (bestPrio >= 0) {
+      isTagIndex = true
+
+      let [_, tagValues] = extraTagFilter[bestIndex]
+      for (const value of tagValues) {
+        const [startingPoint, offset] = getTagIndexPrefix(value)
+        startingPoint.set(timestampStartingPoint, offset)
+        startingPoint.fill(0x00, offset + 4)
+
+        const endingPoint = startingPoint.slice()
+        endingPoint.set(timestampEndingPoint, offset)
+        endingPoint.fill(0xff, offset + 4)
+
+        queries.push({
+          startingPoint,
+          endingPoint,
+        })
+      }
+
+      // swap-delete the best one from the list of extras
+      extraTagFilter[bestIndex] = extraTagFilter[extraTagFilter.length - 1]
+      extraTagFilter.pop()
+    }
+    if (isTagIndex) {
+      // (this means we had tags in the query so we can exit now with the queries we just gathered)
+      return { queries, extraTagFilter }
+    }
+  }
+
   if (filter.authors && filter.authors.length > 0) {
     // handle combined author + kind filter
     if (filter.kinds && filter.kinds.length > 0) {
@@ -940,12 +988,6 @@ function prepareQueries(filter: Filter): {
         }
       }
 
-      for (let tagName in filter) {
-        if (tagName[0] === '#' && tagName.length === 2) {
-          extraTagFilter.push([tagName[1], filter[tagName]])
-        }
-      }
-
       return { queries, extraTagFilter }
     }
 
@@ -965,12 +1007,6 @@ function prepareQueries(filter: Filter): {
         startingPoint,
         endingPoint,
       })
-    }
-
-    for (let tagName in filter) {
-      if (tagName[0] === '#' && tagName.length === 2) {
-        extraTagFilter.push([tagName[1], filter[tagName]])
-      }
     }
 
     return { queries, extraTagFilter }
@@ -996,21 +1032,14 @@ function prepareQueries(filter: Filter): {
       })
     }
 
-    for (let tagName in filter) {
-      if (tagName[0] === '#' && tagName.length === 2) {
-        extraTagFilter.push([tagName[1], filter[tagName]])
-      }
-    }
-
     return { queries, extraTagFilter }
   }
 
-  // handle tag filters
-  let haveFirstTag = false
-  for (let tagName in filter) {
-    if (tagName[0] !== '#' || tagName.length !== 2) continue
-
-    if (!haveFirstTag) {
+  // handle low-priority tag filters (these are worse than kind, authors etc)
+  {
+    let isTagIndex = false
+    for (let tagName in filter) {
+      if (tagName[0] !== '#' || tagName.length !== 2) continue
       // naïvely, the first tag we find will be the index
       for (const value of filter[tagName]) {
         const [startingPoint, offset] = getTagIndexPrefix(value)
@@ -1026,16 +1055,17 @@ function prepareQueries(filter: Filter): {
           endingPoint,
         })
       }
-      haveFirstTag = true
-    } else {
-      // after that we'll just use them as filters
-      extraTagFilter.push([tagName[1], filter[tagName]])
-    }
-  }
+      isTagIndex = true
 
-  if (queries.length) {
-    // (this means we had tags in the query so we can exit now with the results we just gathered)
-    return { queries, extraTagFilter }
+      // remove main index from list of extra tags (swap-delete)
+      let i = extraTagFilter.findIndex(x => x[0] === tagName)
+      extraTagFilter[i] = extraTagFilter[extraTagFilter.length - 1]
+      extraTagFilter.pop()
+    }
+    if (isTagIndex) {
+      // (this means we had tags in the query so we can exit now with the queries we just gathered)
+      return { queries, extraTagFilter }
+    }
   }
 
   // fallback: query by created_at only
