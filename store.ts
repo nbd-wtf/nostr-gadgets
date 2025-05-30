@@ -237,10 +237,10 @@ export class IDBEventStore {
     putHexAsBytes(idKey, 0, id, 8)
 
     return new Promise((resolve, reject) => {
-      const getRequest = idStore.get(idKey.buffer)
+      const idReq = idStore.get(idKey.buffer)
 
-      getRequest.onsuccess = () => {
-        const serial = getRequest.result as number | undefined
+      idReq.onsuccess = () => {
+        const serial = idReq.result as number | undefined
         if (serial === undefined) {
           resolve(false) // event not found
           return
@@ -288,8 +288,8 @@ export class IDBEventStore {
         }
       }
 
-      getRequest.onerror = () => {
-        reject(new DatabaseError(`failed to find event for deletion: ${getRequest.error?.message}`))
+      idReq.onerror = () => {
+        reject(new DatabaseError(`failed to find event for deletion: ${idReq.error?.message}`))
       }
     })
   }
@@ -369,7 +369,12 @@ export class IDBEventStore {
 
           const idReq = idStore.get(idKey.buffer)
           idReq.onsuccess = () => {
-            const serial = idReq.result as number
+            const serial = idReq.result as number | undefined
+            if (serial === undefined) {
+              resolve(null) // event not found
+              return
+            }
+
             const getEventRequest = eventStore.get(serial)
 
             getEventRequest.onsuccess = () => {
