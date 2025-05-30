@@ -88,6 +88,11 @@ export function loadNostrUser(request: NostrUserRequest | string): Promise<Nostr
   if (typeof request === 'string') {
     return metadataLoader.load({ pubkey: request })
   }
+
+  if (request.forceUpdate) {
+    metadataLoader.clear(request)
+  }
+
   return metadataLoader.load(request)
 }
 

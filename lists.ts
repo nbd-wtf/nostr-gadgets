@@ -276,7 +276,14 @@ export function makeListFetcher<I>(
           .map(({ url }) => url)
           .slice(0, 3),
       )
-      return await dataloader.load({ target: pubkey, relays, forceUpdate })
+
+      const req = { target: pubkey, relays, forceUpdate }
+
+      if (forceUpdate) {
+        dataloader.clear(req)
+      }
+
+      return await dataloader.load(req)
     }
   }
 }
