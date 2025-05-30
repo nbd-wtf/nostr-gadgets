@@ -136,7 +136,7 @@ export class IDBEventStore {
     })
   }
 
-  saveEventsBatch(transaction: IDBTransaction, events: NostrEvent[]): Promise<void>[] {
+  private saveEventsBatch(transaction: IDBTransaction, events: NostrEvent[]): Promise<void>[] {
     const idStore = transaction.objectStore('ids')
     const promises = new Array<Promise<void>>(events.length)
 
