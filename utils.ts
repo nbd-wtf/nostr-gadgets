@@ -21,7 +21,13 @@ export function getTagOr(event: NostrEvent, tagName: string, dflt: string = ''):
  * Checks if a string is a 64-char lowercase hex string as most Nostr ids and pubkeys.
  */
 export function isHex32(input: string): boolean {
-  return Boolean(input.match(/^[a-f0-9]{64}$/))
+  for (let i = 0; i < 64; i++) {
+    let cc = input.charCodeAt(i)
+    if (isNaN(cc) || cc < 48 || cc > 102 || (cc > 57 && cc < 97)) {
+      return false
+    }
+  }
+  return true
 }
 
 /**

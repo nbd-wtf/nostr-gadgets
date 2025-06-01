@@ -60,7 +60,7 @@ export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
   3,
   METADATA_QUERY_RELAYS,
   itemsFromTags<string>((tag: string[]): string | undefined => {
-    if (tag.length >= 2 && tag[0] === 'p') {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
       return tag[1]
     }
   }),
@@ -74,7 +74,7 @@ export const loadWikiAuthors: ListFetcher<string> = makeListFetcher<string>(
   10101,
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
-    if (tag.length >= 2 && tag[0] === 'p') {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
       return tag[1]
     }
   }),
@@ -152,9 +152,13 @@ export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntit
     if (tag.length >= 2) {
       switch (tag[0]) {
         case 'p':
-          return { label: 'pubkey', value: tag[1] }
+          if (isHex32(tag[1])) {
+            return { label: 'pubkey', value: tag[1] }
+          }
         case 'e':
-          return { label: 'thread', value: tag[1] }
+          if (isHex32(tag[1])) {
+            return { label: 'thread', value: tag[1] }
+          }
         case 't':
           return { label: 'hashtag', value: tag[1] }
         case 'word':

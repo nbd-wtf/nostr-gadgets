@@ -10,7 +10,7 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { createStore, getMany, setMany } from 'idb-keyval'
 
 import { pool } from './global'
-import { dataloaderCache } from './utils'
+import { dataloaderCache, isHex32 } from './utils'
 import { itemsFromTags, loadRelayList } from './lists'
 
 /**
@@ -31,7 +31,7 @@ type Result<I> = {
 export const loadFollowSets: SetFetcher<string> = makeSetFetcher<string>(
   30000,
   itemsFromTags<string>((tag: string[]): string | undefined => {
-    if (tag.length >= 2 && tag[0] === 'p') {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
       return tag[1]
     }
   }),
@@ -43,7 +43,7 @@ export const loadFollowSets: SetFetcher<string> = makeSetFetcher<string>(
 export const loadFollowPacks: SetFetcher<string> = makeSetFetcher<string>(
   39089,
   itemsFromTags<string>((tag: string[]): string | undefined => {
-    if (tag.length >= 2 && tag[0] === 'p') {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
       return tag[1]
     }
   }),
