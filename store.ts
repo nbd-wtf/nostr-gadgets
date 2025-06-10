@@ -518,7 +518,6 @@ export class IDBEventStore {
     let sndPhaseHasResultsPending = false
 
     let remainingUnexhausted = queries.length
-    let batchSizePerQuery = batchSizePerNumberOfQueries(limit, remainingUnexhausted)
     let firstPhaseTotalPulled = 0
 
     function exhaust(q: number) {
@@ -533,7 +532,7 @@ export class IDBEventStore {
 
     // main iteration loop
     for (let c = 0; ; c++) {
-      batchSizePerQuery = batchSizePerNumberOfQueries(limit, remainingUnexhausted)
+      let batchSizePerQuery = batchSizePerNumberOfQueries(limit, remainingUnexhausted)
 
       // process each query in batches
       for (let q = 0; q < queries.length; q++) {
@@ -1157,11 +1156,9 @@ function prepareQueries(filter: Filter): {
 }
 
 function batchSizePerNumberOfQueries(totalFilterLimit: number, numberOfQueries: number): number {
-  if (numberOfQueries === 1 || totalFilterLimit * numberOfQueries < 50) {
-    return totalFilterLimit
-  }
+  if (totalFilterLimit <= 10) return totalFilterLimit
 
-  return Math.ceil(Math.pow(totalFilterLimit, 0.8) / Math.pow(numberOfQueries, 0.71))
+  return Math.ceil(Math.pow(totalFilterLimit, 0.8) / Math.pow(numberOfQueries, 0.11))
 }
 
 function swapDelete<A>(arr: A[], i: number): A[] {
