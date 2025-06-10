@@ -66,12 +66,13 @@ export class OutboxManager {
     }
   }
 
-  async sync(authors: string[], signal?: AbortSignal) {
+  async sync(authors: string[], signal?: AbortSignal): Promise<boolean> {
     this.guardSyncing(authors)
     this.markSyncing(authors)
 
     // sync up each of the pubkeys to present
     console.log('starting catch up sync')
+    let addedNewEventsOnSync = false
     const now = Math.round(Date.now() / 1000)
     const promises: Promise<void>[] = []
     for (let i = 0; i < authors.length; i++) {
@@ -91,7 +92,6 @@ export class OutboxManager {
         sem.acquire().then(async () => {
           if (signal?.aborted) {
             sem.release()
-            this.releaseSyncing(authors)
             return
           }
 
@@ -102,7 +102,6 @@ export class OutboxManager {
 
           if (signal?.aborted) {
             sem.release()
-            this.releaseSyncing(authors)
             return
           }
 
@@ -123,7 +122,6 @@ export class OutboxManager {
 
           if (signal?.aborted) {
             sem.release()
-            this.releaseSyncing(authors)
             return
           }
 
@@ -139,6 +137,7 @@ export class OutboxManager {
           for (let event of events) {
             try {
               await this.store.saveEvent(event)
+              addedNewEventsOnSync = true
             } catch (err) {
               if (err instanceof DuplicateEventError) {
                 console.warn('tried to save duplicate:', event)
@@ -172,6 +171,8 @@ export class OutboxManager {
     this.saveThresholds()
     console.debug(`all caught up`)
     this.releaseSyncing(authors)
+
+    return addedNewEventsOnSync
   }
 
   async live(authors: string[], onUpdate: () => void, signal: AbortSignal) {
