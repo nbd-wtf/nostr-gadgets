@@ -3,7 +3,7 @@
   "dependencies": {
     "@fiatjaf/lru-cache": "npm:@jsr/fiatjaf__lru-cache@^0.0.1",
     "@henrygd/semaphore": "npm:@jsr/henrygd__semaphore@^0.0.2",
-    "@nostr/tools": "npm:@jsr/nostr__tools@^2.14.3",
+    "@nostr/tools": "npm:@jsr/nostr__tools@^2.15.0",
     "dataloader": "^2.2.2",
     "idb-keyval": "^6.2.1"
   },
