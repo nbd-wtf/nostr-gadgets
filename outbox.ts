@@ -185,7 +185,7 @@ export class OutboxManager {
 
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
-      async onevent(event) {
+      onevent: async event => {
         try {
           await this.store.saveEvent(event)
           this.thresholds[event.pubkey][1] = Math.round(Date.now() / 1000)
