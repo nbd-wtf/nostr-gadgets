@@ -706,15 +706,19 @@ export class IDBEventStore {
     since: undefined | number,
   ): Promise<[hasMore: boolean, iterEvents: IterEvent[]]> {
     const results: IterEvent[] = []
+    let rawResultsCount = 0 // these are not counting the results we skip
 
     return new Promise(resolve => {
       const range = IDBKeyRange.bound(query.startingPoint.buffer, query.endingPoint.buffer, true, true)
-      let skipUntilLastFetched = !!query.lastFetched
+      let skipUntilLastFetched = !!query.lastFetched // this will always be true except in the first query
+      // we will always have at least one repeated result because we'll include the timestamp of the last fetched
 
       const keysReq = indexStore.getAllKeys(range, batchSize)
       keysReq.onsuccess = async () => {
-        const eventPromises: Promise<[serial: number, event: NostrEvent] | null>[] = []
-        for (let key of keysReq.result) {
+        const eventPromises: Promise<NostrEvent | null>[] = []
+        rawResultsCount = keysReq.result.length
+        for (let i = 0; i < keysReq.result.length; i++) {
+          let key = keysReq.result[i]
           let indexKey = key as ArrayBuffer
           // extract idx from index key
           const idx = new Uint8Array(indexKey.slice(indexKey.byteLength - 4))
@@ -731,8 +735,11 @@ export class IDBEventStore {
             continue
           }
 
+          // this will be used in the next query, for skipping repeated results
+          query.lastFetched = serial
+
           eventPromises.push(
-            new Promise<[number, NostrEvent] | null>(resolve => {
+            new Promise<NostrEvent | null>(resolve => {
               const getEventRequest = eventStore.get(serial)
 
               getEventRequest.onsuccess = () => {
@@ -759,7 +766,7 @@ export class IDBEventStore {
                   return
                 }
 
-                resolve([serial, event])
+                resolve(event)
               }
 
               getEventRequest.onerror = () => {
@@ -770,18 +777,18 @@ export class IDBEventStore {
           )
         }
 
-        for (let res of await Promise.all(eventPromises)) {
-          if (!res) continue
+        for (let evt of await Promise.all(eventPromises)) {
+          if (!evt) continue
+
           results.push({
-            event: res[1],
+            event: evt,
             q: queryIndex,
           })
-          query.lastFetched = res[0]
         }
 
         let hasMore = false
         // update startingPoint if we are going to do this query again
-        if (results.length === batchSize) {
+        if (rawResultsCount === batchSize) {
           const last = results[results.length - 1]
           if (!since || last.event.created_at !== since) {
             const timestampStartingPoint = invertedTimestampBytes(last.event.created_at)
