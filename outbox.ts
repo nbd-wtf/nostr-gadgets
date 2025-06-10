@@ -76,6 +76,8 @@ export class OutboxManager {
     const now = Math.round(Date.now() / 1000)
     const promises: Promise<void>[] = []
     for (let i = 0; i < authors.length; i++) {
+      if (signal?.aborted) break
+
       let pubkey = authors[i]
       let bound = this.thresholds[pubkey]
       let newest = bound ? bound[1] : undefined
@@ -169,9 +171,9 @@ export class OutboxManager {
 
     // now we've caught up with the current moment for everybody
     this.saveThresholds()
-    console.debug(`all caught up`)
     this.releaseSyncing(authors)
 
+    console.debug('sync done')
     return addedNewEventsOnSync
   }
 
@@ -210,7 +212,10 @@ export class OutboxManager {
     this.markSyncing(authors)
 
     // from all our authors check which ones need a new page fetch
-    for (let pubkey of authors) {
+    for (let i = 0; i < authors.length; i++) {
+      if (signal?.aborted) break
+      let pubkey = authors[i]
+
       const sem = getSemaphore('outbox-sync', 15) // do it only 15 pubkeys at a time
       await sem.acquire().then(async () => {
         if (signal?.aborted) {
@@ -284,8 +289,8 @@ export class OutboxManager {
     }
 
     this.saveThresholds()
-    console.debug('paginated back')
     this.releaseSyncing(authors)
+    console.debug('before done')
   }
 }
 
