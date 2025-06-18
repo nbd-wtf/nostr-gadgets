@@ -36,7 +36,7 @@ export class DatabaseError extends Error {
   }
 }
 
-// Constants matching the Go implementation
+// constants matching the Go implementation
 const INDEX_CREATED_AT_PREFIX = 1
 const INDEX_KIND_PREFIX = 2
 const INDEX_PUBKEY_PREFIX = 3
@@ -339,7 +339,7 @@ export class IDBEventStore {
   async replaceEvent(event: NostrEvent): Promise<void> {
     if (!this.db) await this.init()
 
-    // Sanity checking
+    // sanity checking
     if (event.created_at > 0xffffffff || event.kind > 0xffff) {
       throw new DatabaseError('event with values out of expected boundaries')
     }
@@ -665,12 +665,12 @@ export class IDBEventStore {
             continue
           }
 
-          // Clear results and add to second phase participants
+          // clear results and add to second phase participants
           results[q] = []
           sndPhaseParticipants.push(q)
         }
 
-        // Initialize second phase result arrays
+        // initialize second phase result arrays
         sndPhaseResultsA = []
         sndPhaseResultsB = []
         sndPhase = true
@@ -1191,31 +1191,78 @@ function compareIterEvent(a: IterEvent, b: IterEvent): number {
 }
 
 function mergeSortMultiple(batches: IterEvent[][], limit: number): IterEvent[] {
-  // Clear empty batches
-  const nonEmptyBatches = batches.filter(batch => batch.length > 0)
+  // clear up empty lists here while simultaneously computing the total count.
+  // this helps because if there are a bunch of empty lists then this pre-clean
+  //   step will get us in the faster 'merge' branch otherwise we would go to the other.
+  // we would have to do the cleaning anyway inside it.
+  // and even if we still go on the other we save one iteration by already computing the
+  //   total count.
+  let total = 0
+  for (let i = batches.length - 1; i >= 0; i--) {
+    if (batches[i].length === 0) {
+      batches = swapDelete(batches, i)
+    } else {
+      total += batches[i].length
+    }
+  }
 
-  if (nonEmptyBatches.length === 0) {
+  if (limit === -1) {
+    limit = total
+  }
+
+  // this amazing equation will ensure that if one of the two sides goes very small (like 1 or 2)
+  //   the other can go very high (like 500) and we're still in the 'merge' branch.
+  // if values go somewhere in the middle then they may match the 'merge' branch (batches=20,limit=70)
+  //   or not (batches=25, limit=60)
+  if (Math.log(batches.length * 2) + Math.log(limit) < 8) {
+    // use merge sort
+    return mergeFuncNoEmptyListsIntoSlice(batches, limit)
+  } else {
+    // use quicksort in a dumb way that will still be fast because it's cheated
+    let result: IterEvent[] = new Array(total)
+    let lastIndex = 0
+    for (const batch of batches) {
+      result.splice(lastIndex, batch.length, ...batch)
+      lastIndex += batch.length
+    }
+
+    result.sort(compareIterEvent)
+
+    // reverse the array
+    for (let i = 0, j = total - 1; i < j; i++, j--) {
+      ;[result[i], result[j]] = [result[j], result[i]]
+    }
+
+    if (limit < result.length) {
+      return result.slice(0, limit)
+    }
+    return result
+  }
+}
+
+function mergeFuncNoEmptyListsIntoSlice(batches: IterEvent[][], limit: number): IterEvent[] {
+  if (batches.length === 0) {
     return []
   }
 
-  if (nonEmptyBatches.length === 1) {
-    return nonEmptyBatches[0]!.slice(0, limit)
+  if (batches.length === 1) {
+    const result = batches[0].slice(0, limit)
+    // reverse for newest first
+    return result.reverse()
   }
 
-  // Simple merge sort implementation
-  let result: IterEvent[] = []
-  const indices = new Array(nonEmptyBatches.length).fill(0)
+  const result: IterEvent[] = []
+  const indices = new Array(batches.length).fill(0)
 
   while (result.length < limit) {
     let minIndex = -1
     let minEvent: IterEvent | null = null
 
-    // Find the minimum event across all batches
-    for (let i = 0; i < nonEmptyBatches.length; i++) {
-      if (indices[i]! < nonEmptyBatches[i]!.length) {
-        const event = nonEmptyBatches[i]![indices[i]!]
-        if (minEvent === null || compareIterEvent(event, minEvent) > 0) {
-          // reverse order for newest first
+    // find the minimum event across all batches
+    for (let i = 0; i < batches.length; i++) {
+      if (indices[i] < batches[i].length) {
+        const event = batches[i][indices[i]]
+        if (minEvent === null || compareIterEvent(event, minEvent) < 0) {
           minEvent = event
           minIndex = i
         }
@@ -1223,14 +1270,16 @@ function mergeSortMultiple(batches: IterEvent[][], limit: number): IterEvent[] {
     }
 
     if (minIndex === -1) {
-      break // All batches exhausted
+      // all batches exhausted
+      break
     }
 
     result.push(minEvent!)
-    indices[minIndex]!++
+    indices[minIndex]++
   }
 
-  return result
+  // reverse for newest first
+  return result.reverse()
 }
 
 function putHexAsBytes(target: Uint8Array, offset: number, hex: string, bytesToWrite: number) {
