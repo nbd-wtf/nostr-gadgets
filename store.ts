@@ -707,6 +707,7 @@ export class IDBEventStore {
   ): Promise<[hasMore: boolean, iterEvents: IterEvent[]]> {
     const results: IterEvent[] = []
     let rawResultsCount = 0 // these are not counting the results we skip
+    let last: NostrEvent | null = null
 
     return new Promise(resolve => {
       const range = IDBKeyRange.bound(query.startingPoint.buffer, query.endingPoint.buffer, true, true)
@@ -758,15 +759,7 @@ export class IDBEventStore {
                   return
                 }
 
-                const event: NostrEvent = JSON.parse(eventData)
-
-                // apply extra filtering
-                if (!filterMatchesTags(extraTagFilter, event)) {
-                  resolve(null)
-                  return
-                }
-
-                resolve(event)
+                resolve(JSON.parse(eventData) as NostrEvent)
               }
 
               getEventRequest.onerror = () => {
@@ -777,8 +770,17 @@ export class IDBEventStore {
           )
         }
 
-        for (let evt of await Promise.all(eventPromises)) {
-          if (!evt) continue
+        let events = await Promise.all(eventPromises)
+        for (let i = 0; i < events.length; i++) {
+          const evt = events[i]
+
+          // keep this for use in the next iteration
+          last = evt
+
+          // apply extra filtering
+          if (!evt || !filterMatchesTags(extraTagFilter, evt)) {
+            continue
+          }
 
           results.push({
             event: evt,
@@ -788,10 +790,9 @@ export class IDBEventStore {
 
         let hasMore = false
         // update startingPoint if we are going to do this query again
-        if (rawResultsCount === batchSize) {
-          const last = results[results.length - 1]
-          if (!since || last.event.created_at !== since) {
-            const timestampStartingPoint = invertedTimestampBytes(last.event.created_at)
+        if (rawResultsCount === batchSize && last) {
+          if (!since || last.created_at !== since) {
+            const timestampStartingPoint = invertedTimestampBytes(last.created_at)
             query.startingPoint.set(timestampStartingPoint, query.startingPoint.length - 4 - 4)
             hasMore = true
           }

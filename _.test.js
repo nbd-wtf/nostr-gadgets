@@ -243,6 +243,26 @@ test('idb store', async () => {
     expect(count).toEqual(12)
   }
 
+  {
+    let count = 0
+    let filter = { authors: [getPublicKey(sk1), getPublicKey(sk2)], kinds: [1, 11], limit: 60 }
+    for await (let evt of store.queryEvents(filter)) {
+      count++
+      expect(matchFilter(filter, evt)).toBeTrue()
+    }
+    expect(count).toEqual(60)
+  }
+
+  {
+    let count = 0
+    let filter = { authors: [getPublicKey(sk1), getPublicKey(sk2)], kinds: [1, 11, 1111], '#t': ['odd'] }
+    for await (let evt of store.queryEvents(filter)) {
+      count++
+      expect(matchFilter(filter, evt)).toBeTrue()
+    }
+    expect(count).toEqual(400)
+  }
+
   let ids = []
   {
     let count = 0
