@@ -110,17 +110,17 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
         results.map((res, i): NostrUser => {
           const req = requests[i]
 
-          if (!res && !req.forceUpdate) {
-            toFetch.push(req)
-            // we don't have anything for this key, fill in with a placeholder
-            let nu = blankNostrUser(req.pubkey)
-            ;(nu as any).lastAttempt = now
-            return nu
-          } else if (typeof req.forceUpdate === 'object') {
+          if (typeof req.forceUpdate === 'object') {
             // we have the event right here, so just use it
             let nu = blankNostrUser(req.pubkey)
             enhanceNostrUserWithEvent(nu, req.forceUpdate)
             set(req.pubkey, nu, metadataStore)
+            return nu
+          } else if (!res) {
+            toFetch.push(req)
+            // we don't have anything for this key, fill in with a placeholder
+            let nu = blankNostrUser(req.pubkey)
+            ;(nu as any).lastAttempt = now
             return nu
           } else if (req.forceUpdate === true || res.lastAttempt < now - 60 * 60 * 24 * 2) {
             toFetch.push(req)

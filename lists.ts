@@ -213,15 +213,15 @@ export function makeListFetcher<I>(
             const req = requests[i] as Request & { index: number }
             req.index = i
 
-            if (!res && !req.forceUpdate) {
-              remainingRequests.push(req)
-              // we don't have anything for this key, fill in with a placeholder
-              return { items: defaultTo(req.target), event: null }
-            } else if (typeof req.forceUpdate === 'object') {
+            if (typeof req.forceUpdate === 'object') {
               // we have the event right here, so just use it
               const final = { event: req.forceUpdate, items: process(req.forceUpdate) }
               set(req.target, final, store)
               return final
+            } else if (!res) {
+              remainingRequests.push(req)
+              // we don't have anything for this key, fill in with a placeholder
+              return { items: defaultTo(req.target), event: null }
             } else if (req.forceUpdate === true || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
