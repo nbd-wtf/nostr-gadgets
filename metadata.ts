@@ -112,14 +112,14 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
 
           if (typeof req.forceUpdate === 'object') {
             // we have the event right here, so just use it
-            let nu = blankNostrUser(req.pubkey)
+            let nu = bareNostrUser(req.pubkey)
             enhanceNostrUserWithEvent(nu, req.forceUpdate)
             set(req.pubkey, nu, metadataStore)
             return nu
           } else if (!res) {
             toFetch.push(req)
             // we don't have anything for this key, fill in with a placeholder
-            let nu = blankNostrUser(req.pubkey)
+            let nu = bareNostrUser(req.pubkey)
             ;(nu as any).lastAttempt = now
             return nu
           } else if (req.forceUpdate === true || res.lastAttempt < now - 60 * 60 * 24 * 2) {
@@ -240,17 +240,6 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
   },
 )
 
-export function blankNostrUser(pubkey: string): NostrUser {
-  const npub = npubEncode(pubkey)
-  return {
-    pubkey,
-    npub,
-    shortName: npub.substring(0, 8) + '…' + npub.substring(59),
-    lastUpdated: 0,
-    metadata: {},
-  }
-}
-
 function enhanceNostrUserWithEvent(nu: NostrUser, evt: NostrEvent) {
   let md: any = {}
   try {
@@ -261,12 +250,13 @@ function enhanceNostrUserWithEvent(nu: NostrUser, evt: NostrEvent) {
 
   nu.metadata = md
   nu.shortName = md.name || md.display_name || md.nip05?.split('@')?.[0] || nu.shortName
+  nu.lastUpdated = evt.created_at
 
   if (md.picture) nu.image = md.picture
 }
 
 export function nostrUserFromEvent(evt: NostrEvent): NostrUser {
-  let nu = blankNostrUser(evt.pubkey)
+  let nu = bareNostrUser(evt.pubkey)
   enhanceNostrUserWithEvent(nu, evt)
   return nu
 }
