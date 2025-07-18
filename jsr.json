@@ -1,6 +1,6 @@
 {
   "name": "@nostr/gadgets",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "exports": {
     "./global": "./global.ts",
     "./lists": "./lists.ts",

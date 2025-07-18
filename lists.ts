@@ -272,7 +272,7 @@ export function makeListFetcher<I>(
                   const req = remainingRequests[r]
                   if (req.target === evt.pubkey) {
                     const previous = results[req.index]?.event
-                    if (previous?.created_at || 0 > evt.created_at) return
+                    if ((previous?.created_at || 0) > evt.created_at) return
                     results[req.index] = { event: evt, items: process(evt) }
                     return
                   }
