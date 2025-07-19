@@ -8,9 +8,9 @@
     "./metadata": "./metadata.ts",
     "./hints": "./hints.ts",
     "./wot": "./wot.ts",
-    "./utils": "./utils.ts"
-    "./outbox": "./outbox.ts"
-    "./store": "./store.ts"
+    "./utils": "./utils.ts",
+    "./outbox": "./outbox.ts",
+    "./store": "./store.ts",
     "./defaults": "./defaults.ts"
   }
 }
