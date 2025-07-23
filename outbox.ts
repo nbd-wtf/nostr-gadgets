@@ -5,6 +5,7 @@ import { normalizeURL } from '@nostr/tools/utils'
 import { loadRelayList } from './lists.ts'
 import { DuplicateEventError, IDBEventStore } from './store.ts'
 import { pool } from './global.ts'
+import { shuffle } from './utils.ts'
 
 export class SyncRaceError extends Error {
   constructor(pubkey: string) {
@@ -19,7 +20,7 @@ export class SyncRaceError extends Error {
  */
 export class OutboxManager {
   readonly store: IDBEventStore
-  readonly kinds: number[]
+  readonly baseFilters: Filter[]
   private thresholds: { [pubkey: string]: [oldest: number, newest: number] }
   private thresholdsLocalStorageKey: string
   private pool: SimplePool
@@ -27,7 +28,7 @@ export class OutboxManager {
   private currentlySyncing = new Set<string>()
 
   constructor(
-    kinds: number[],
+    baseFilters: Filter[],
     opts?: {
       store?: IDBEventStore
       thresholdsLocalStorageKey?: string
@@ -35,7 +36,7 @@ export class OutboxManager {
       label?: string
     },
   ) {
-    this.kinds = kinds
+    this.baseFilters = baseFilters
     this.store = opts?.store || new IDBEventStore()
     this.thresholdsLocalStorageKey = opts?.thresholdsLocalStorageKey || 'thresholds'
     this.thresholds = JSON.parse(localStorage.getItem(this.thresholdsLocalStorageKey) || '{}')
@@ -60,15 +61,26 @@ export class OutboxManager {
     }
   }
 
-  private releaseSyncing(authors: string[]) {
-    for (let i = 0; i < authors.length; i++) {
-      this.currentlySyncing.delete(authors[i])
-    }
+  isSynced(pubkey: string): boolean {
+    const bound = this.thresholds[pubkey]
+    const newest = bound ? bound[1] : undefined
+    const now = Math.round(Date.now() / 1000)
+    return Boolean(newest && newest > now - 60 * 60 * 2) // 2 hours
   }
 
-  async sync(authors: string[], signal?: AbortSignal): Promise<boolean> {
+  async sync(
+    authors: string[],
+    opts: {
+      signal?: AbortSignal
+      onpubkey?: (pubkey: string) => void
+    } = {},
+  ): Promise<boolean> {
     this.guardSyncing(authors)
     this.markSyncing(authors)
+
+    // this prevents the sync process from always starting at the same point
+    // which can be bad if we're restarting it all the time (closing and reopening the page)
+    shuffle(authors)
 
     // sync up each of the pubkeys to present
     console.log('starting catch up sync')
@@ -76,7 +88,7 @@ export class OutboxManager {
     const now = Math.round(Date.now() / 1000)
     const promises: Promise<void>[] = []
     for (let i = 0; i < authors.length; i++) {
-      if (signal?.aborted) break
+      if (opts.signal?.aborted) break
 
       let pubkey = authors[i]
       let bound = this.thresholds[pubkey]
@@ -86,13 +98,15 @@ export class OutboxManager {
         // if this person was caught up to 2 hours ago there is no need to repeat this
         // (we'll make up for these missing events in the ongoing live subscription)
         console.log(`${i + 1}/${authors.length} skip`, newest, '>', now - 60 * 60 * 2)
+        this.currentlySyncing.delete(pubkey)
         continue
       }
 
-      const sem = getSemaphore('outbox-sync', 15) // do it only 15 pubkeys at a time because of relay limits
+      const sem = getSemaphore('outbox-sync', 15 / this.baseFilters.length) // do it only 15 filters at a time because of relay limits
       promises.push(
         sem.acquire().then(async () => {
-          if (signal?.aborted) {
+          if (opts.signal?.aborted) {
+            this.currentlySyncing.delete(pubkey)
             sem.release()
             return
           }
@@ -102,27 +116,32 @@ export class OutboxManager {
             .slice(0, 4)
             .map(r => r.url)
 
-          if (signal?.aborted) {
+          if (opts.signal?.aborted) {
+            this.currentlySyncing.delete(pubkey)
             sem.release()
             return
           }
 
           let events: NostrEvent[]
           try {
-            events = await Promise.race([
-              this.pool.querySync(
-                relays,
-                { kinds: this.kinds, authors: [pubkey], since: newest, limit: 200 },
-                { label: `catchup-${pubkey.substring(0, 6)}` },
-              ),
-              new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
-            ])
+            events = (
+              await Promise.race([
+                new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
+                Promise.all(
+                  this.baseFilters.map(
+                    f => this.pool.querySync(relays, { ...f, authors: [pubkey], since: newest, limit: 200 }),
+                    { label: `catchup-${pubkey.substring(0, 6)}` },
+                  ),
+                ),
+              ])
+            ).flat()
           } catch (err) {
             console.warn('failed to query events for', pubkey, 'at', relays)
             events = []
           }
 
-          if (signal?.aborted) {
+          if (opts.signal?.aborted) {
+            this.currentlySyncing.delete(pubkey)
             sem.release()
             return
           }
@@ -131,7 +150,7 @@ export class OutboxManager {
             `${i + 1}/${authors.length} catching up with`,
             pubkey,
             relays,
-            { kinds: this.kinds, authors: [pubkey], since: newest },
+            newest,
             `got ${events.length} events`,
             events,
           )
@@ -161,6 +180,9 @@ export class OutboxManager {
           }
           console.debug('new bound for', pubkey, bound)
           this.thresholds[pubkey] = bound
+          this.saveThresholds()
+          opts.onpubkey?.(pubkey)
+          this.currentlySyncing.delete(pubkey)
 
           sem.release()
         }),
@@ -168,22 +190,26 @@ export class OutboxManager {
     }
 
     await Promise.all(promises)
-
-    // now we've caught up with the current moment for everybody
-    this.saveThresholds()
-    this.releaseSyncing(authors)
-
     console.debug('sync done')
     return addedNewEventsOnSync
   }
 
-  async live(authors: string[], onUpdate: () => void, signal: AbortSignal) {
+  async live(
+    authors: string[],
+    opts: {
+      onupdate: () => void
+      signal: AbortSignal
+    },
+  ) {
     this.guardSyncing(authors)
 
-    const declaration = await outboxFilterRelayBatch(authors, {
-      kinds: this.kinds,
-      since: Math.round(Date.now() / 1000) - 60 * 60 * 2, // since 2 hours ago
-    })
+    const declaration = await outboxFilterRelayBatch(
+      authors,
+      ...this.baseFilters.map(f => ({
+        ...f,
+        since: Math.round(Date.now() / 1000) - 60 * 60 * 2, // since 2 hours ago
+      })),
+    )
 
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
@@ -191,7 +217,8 @@ export class OutboxManager {
         try {
           await this.store.saveEvent(event)
           this.thresholds[event.pubkey][1] = Math.round(Date.now() / 1000)
-          onUpdate()
+          opts.onupdate()
+          this.saveThresholds()
         } catch (err) {
           if (err instanceof DuplicateEventError) {
             console.warn('tried to save duplicate from ongoing:', event)
@@ -202,7 +229,7 @@ export class OutboxManager {
       },
     })
 
-    signal.onabort = () => {
+    opts.signal.onabort = () => {
       closer.close()
     }
   }
@@ -210,6 +237,9 @@ export class OutboxManager {
   async before(authors: string[], ts: number, signal?: AbortSignal) {
     this.guardSyncing(authors)
     this.markSyncing(authors)
+
+    // (same as sync(), but not as important)
+    shuffle(authors)
 
     // from all our authors check which ones need a new page fetch
     for (let i = 0; i < authors.length; i++) {
@@ -250,19 +280,22 @@ export class OutboxManager {
           return
         }
 
-        const events = await this.pool.querySync(
-          relays,
-          { kinds: this.kinds, authors: [pubkey], until: oldest, limit: 200 },
-          { label: `page-${pubkey.substring(0, 6)}` },
-        )
+        const events = (
+          await Promise.race([
+            new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
+            Promise.all(
+              this.baseFilters.map(f =>
+                this.pool.querySync(
+                  relays,
+                  { ...f, authors: [pubkey], until: oldest, limit: 200 },
+                  { label: `page-${pubkey.substring(0, 6)}` },
+                ),
+              ),
+            ),
+          ])
+        ).flat()
 
-        console.debug(
-          'paginating to the past',
-          pubkey,
-          relays,
-          { kinds: this.kinds, authors: [pubkey], until: oldest },
-          events,
-        )
+        console.debug('paginating to the past', pubkey, relays, oldest, events)
 
         for (let event of events) {
           try {
@@ -283,13 +316,13 @@ export class OutboxManager {
         }
         console.debug('updated bound for', pubkey, bound)
         this.thresholds[pubkey] = bound
+        this.saveThresholds()
+        this.currentlySyncing.delete(pubkey)
 
         sem.release()
       })
     }
 
-    this.saveThresholds()
-    this.releaseSyncing(authors)
     console.debug('before done')
   }
 }
