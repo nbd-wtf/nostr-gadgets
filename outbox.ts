@@ -61,6 +61,10 @@ export class OutboxManager {
     }
   }
 
+  /**
+   * Returns if a public key is synced up to at least 2 hours ago, which means it
+   * can be dealt with by just calling .live().
+   */
   isSynced(pubkey: string): boolean {
     const bound = this.thresholds[pubkey]
     const newest = bound ? bound[1] : undefined
@@ -102,7 +106,8 @@ export class OutboxManager {
         continue
       }
 
-      const sem = getSemaphore('outbox-sync', 15 / this.baseFilters.length) // do it only 15 filters at a time because of relay limits
+      // do it only 16 filters at a time because of relay limits
+      const sem = getSemaphore('outbox-sync', 16 / this.baseFilters.length)
       promises.push(
         sem.acquire().then(async () => {
           if (opts.signal?.aborted) {
