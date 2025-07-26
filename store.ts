@@ -569,13 +569,13 @@ export class IDBEventStore {
               const nextThreshold = firstPhaseResults[firstPhaseResults.length - 2]
               if (nextThreshold && nextThreshold.event.created_at > oldest.event.created_at) {
                 // one of the stored events is the actual next threshold
-                firstPhaseResults = firstPhaseResults.slice(0, -1)
+                firstPhaseResults.length = firstPhaseResults.length - 1
                 oldest = null
                 results[q].push(ievt)
                 sndPhaseHasResultsPending = true
               } else if (nextThreshold && nextThreshold.event.created_at < ievt.event.created_at) {
                 // the next last event is the next threshold
-                firstPhaseResults = firstPhaseResults.slice(0, -1)
+                firstPhaseResults.length = firstPhaseResults.length - 1
                 results[q]!.push(ievt)
                 sndPhaseHasResultsPending = true
                 if (oldest === null || ievt.event.created_at < oldest?.event.created_at) {
@@ -619,7 +619,7 @@ export class IDBEventStore {
           }
 
           if (exhausted[q]) {
-            sndPhaseParticipants = swapDelete(sndPhaseParticipants, s)
+            swapDelete(sndPhaseParticipants, s)
             s--
           }
         }
@@ -1169,26 +1169,13 @@ function batchSizePerNumberOfQueries(totalFilterLimit: number, numberOfQueries: 
   return Math.ceil(Math.pow(totalFilterLimit, 0.8) / Math.pow(numberOfQueries, 0.11))
 }
 
-function swapDelete<A>(arr: A[], i: number): A[] {
+function swapDelete<A>(arr: A[], i: number): void {
   arr[i] = arr[arr.length - 1]!
-  return arr.slice(0, -1)
+  arr.length = arr.length - 1
 }
 
 function compareIterEvent(a: IterEvent, b: IterEvent): number {
-  if (a.event.id === '') {
-    if (b.event.id === '') {
-      return 0
-    } else {
-      return -1
-    }
-  } else if (b.event.id === '') {
-    return 1
-  }
-
-  if (a.event.created_at === b.event.created_at) {
-    return a.event.id.localeCompare(b.event.id)
-  }
-  return a.event.created_at - b.event.created_at
+  return b.event.created_at - a.event.created_at
 }
 
 function mergeSortMultiple(batches: IterEvent[][], limit: number): IterEvent[] {
@@ -1201,7 +1188,7 @@ function mergeSortMultiple(batches: IterEvent[][], limit: number): IterEvent[] {
   let total = 0
   for (let i = batches.length - 1; i >= 0; i--) {
     if (batches[i].length === 0) {
-      batches = swapDelete(batches, i)
+      swapDelete(batches, i)
     } else {
       total += batches[i].length
     }
@@ -1211,34 +1198,7 @@ function mergeSortMultiple(batches: IterEvent[][], limit: number): IterEvent[] {
     limit = total
   }
 
-  // this amazing equation will ensure that if one of the two sides goes very small (like 1 or 2)
-  //   the other can go very high (like 500) and we're still in the 'merge' branch.
-  // if values go somewhere in the middle then they may match the 'merge' branch (batches=20,limit=70)
-  //   or not (batches=25, limit=60)
-  if (Math.log(batches.length * 2) + Math.log(limit) < 8) {
-    // use merge sort
-    return mergeFuncNoEmptyListsIntoSlice(batches, limit)
-  } else {
-    // use quicksort in a dumb way that will still be fast because it's cheated
-    let result: IterEvent[] = new Array(total)
-    let lastIndex = 0
-    for (const batch of batches) {
-      result.splice(lastIndex, batch.length, ...batch)
-      lastIndex += batch.length
-    }
-
-    result.sort(compareIterEvent)
-
-    // reverse the array
-    for (let i = 0, j = total - 1; i < j; i++, j--) {
-      ;[result[i], result[j]] = [result[j], result[i]]
-    }
-
-    if (limit < result.length) {
-      return result.slice(0, limit)
-    }
-    return result
-  }
+  return mergeFuncNoEmptyListsIntoSlice(batches, limit)
 }
 
 function mergeFuncNoEmptyListsIntoSlice(batches: IterEvent[][], limit: number): IterEvent[] {
@@ -1247,9 +1207,11 @@ function mergeFuncNoEmptyListsIntoSlice(batches: IterEvent[][], limit: number): 
   }
 
   if (batches.length === 1) {
-    const result = batches[0].slice(0, limit)
-    // reverse for newest first
-    return result.reverse()
+    let result = batches[0]
+    if (limit < result.length) {
+      result.length = limit
+    }
+    return result
   }
 
   const result: IterEvent[] = []
@@ -1279,8 +1241,7 @@ function mergeFuncNoEmptyListsIntoSlice(batches: IterEvent[][], limit: number): 
     indices[minIndex]++
   }
 
-  // reverse for newest first
-  return result.reverse()
+  return result
 }
 
 function putHexAsBytes(target: Uint8Array, offset: number, hex: string, bytesToWrite: number) {
