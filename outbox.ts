@@ -3,7 +3,7 @@ import { Filter, NostrEvent, SimplePool } from '@nostr/tools'
 import { normalizeURL } from '@nostr/tools/utils'
 
 import { loadRelayList } from './lists.ts'
-import { DuplicateEventError, IDBEventStore } from './store.ts'
+import { IDBEventStore } from './store.ts'
 import { pool } from './global.ts'
 import { shuffle } from './utils.ts'
 
@@ -161,16 +161,8 @@ export class OutboxManager {
           )
 
           for (let event of events) {
-            try {
-              await this.store.saveEvent(event)
-              addedNewEventsOnSync = true
-            } catch (err) {
-              if (err instanceof DuplicateEventError) {
-                console.warn('tried to save duplicate:', event)
-              } else {
-                throw err
-              }
-            }
+            await this.store.saveEvent(event)
+            addedNewEventsOnSync = true
           }
 
           // update stored bound thresholds for this person since they're caught up to now
@@ -219,18 +211,10 @@ export class OutboxManager {
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
       onevent: async event => {
-        try {
-          await this.store.saveEvent(event)
-          this.thresholds[event.pubkey][1] = Math.round(Date.now() / 1000)
-          opts.onupdate()
-          this.saveThresholds()
-        } catch (err) {
-          if (err instanceof DuplicateEventError) {
-            console.warn('tried to save duplicate from ongoing:', event)
-          } else {
-            throw err
-          }
-        }
+        await this.store.saveEvent(event)
+        this.thresholds[event.pubkey][1] = Math.round(Date.now() / 1000)
+        opts.onupdate()
+        this.saveThresholds()
       },
     })
 
@@ -303,15 +287,7 @@ export class OutboxManager {
         console.debug('paginating to the past', pubkey, relays, oldest, events)
 
         for (let event of events) {
-          try {
-            await this.store.saveEvent(event)
-          } catch (err) {
-            if (err instanceof DuplicateEventError) {
-              console.warn('tried to save duplicate:', event)
-            } else {
-              throw err
-            }
-          }
+          await this.store.saveEvent(event)
         }
 
         // update oldest bound threshold

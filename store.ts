@@ -1,6 +1,6 @@
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
-import { bytesToHex, hexToBytes } from '@nostr/tools/utils'
+import { hexToBytes } from '@nostr/tools/utils'
 import { isReplaceableKind } from '@nostr/tools/kinds'
 
 type IterEvent = {
@@ -18,15 +18,6 @@ type Task = {
   p: Promise<void>
   resolve(): void
   reject(e: Error): void
-}
-
-export class DuplicateEventError extends Error {
-  constructor(event: NostrEvent, prefix: Uint8Array, match: ArrayBuffer) {
-    super(
-      `Event ${JSON.stringify(event)} already exists at key 0x${bytesToHex(new Uint8Array(match))} (searched 0x${bytesToHex(prefix)})`,
-    )
-    this.name = 'DuplicateEventError'
-  }
 }
 
 export class DatabaseError extends Error {
@@ -104,7 +95,6 @@ export class IDBEventStore {
    * (if you want the batching to work you can't `await` it immediately upon calling it)
    *
    * @param event - the nostr event to save
-   * @throws {DuplicateEventError} if event already exists
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
   async saveEvent(event: NostrEvent): Promise<void> {
@@ -175,7 +165,7 @@ export class IDBEventStore {
         const checkRequest = idStore.getKey(idKey.buffer)
         checkRequest.onsuccess = () => {
           if (checkRequest.result && checkRequest.result) {
-            reject(new DuplicateEventError(event, idKey, checkRequest.result as ArrayBuffer))
+            resolve()
             return
           }
 
