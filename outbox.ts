@@ -160,10 +160,8 @@ export class OutboxManager {
             events,
           )
 
-          for (let event of events) {
-            await this.store.saveEvent(event)
-            addedNewEventsOnSync = true
-          }
+          let added = await Promise.all(events.map(event => this.store.saveEvent(event)))
+          addedNewEventsOnSync = added.indexOf(true) !== -1
 
           // update stored bound thresholds for this person since they're caught up to now
           if (bound) {
@@ -286,9 +284,7 @@ export class OutboxManager {
 
         console.debug('paginating to the past', pubkey, relays, oldest, events)
 
-        for (let event of events) {
-          await this.store.saveEvent(event)
-        }
+        await Promise.all(events.map(event => this.store.saveEvent(event)))
 
         // update oldest bound threshold
         if (events.length) {

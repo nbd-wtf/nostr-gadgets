@@ -14,9 +14,9 @@ type Query = {
   lastFetched?: number // idx serial
 }
 
-type Task = {
-  p: Promise<void>
-  resolve(): void
+type SaveTask = {
+  p: Promise<boolean>
+  resolve(isSaved: boolean): void
   reject(e: Error): void
 }
 
@@ -89,15 +89,16 @@ export class IDBEventStore {
     }
   }
 
-  private saveBatch: null | [ids: string[], events: NostrEvent[], tasks: Task[]]
+  private saveBatch: null | [ids: string[], events: NostrEvent[], tasks: SaveTask[]]
   /**
    * saves a nostr event to the store with automatic batching for performance.
    * (if you want the batching to work you can't `await` it immediately upon calling it)
    *
    * @param event - the nostr event to save
+   * @returns boolean - true if the event was new, false if it was already saved
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
-  async saveEvent(event: NostrEvent): Promise<void> {
+  async saveEvent(event: NostrEvent): Promise<boolean> {
     if (!this.db) await this.init()
 
     // sanity checking
@@ -126,7 +127,9 @@ export class IDBEventStore {
 
         const promises = this.saveEventsBatch(transaction, events)
         for (let i = 0; i < promises.length; i++) {
-          promises[i].catch(tasks[i].reject).then(tasks[i].resolve)
+          promises[i].catch(tasks[i].reject).then(isSaved => {
+            if (typeof isSaved !== 'undefined') tasks[i].resolve(isSaved)
+          })
         }
       })
     }
@@ -139,10 +142,10 @@ export class IDBEventStore {
 
     // add a new one
     idx = batch[0].push(event.id) - 1
-    let task = (batch[2][idx] = {} as Task)
+    let task = (batch[2][idx] = {} as SaveTask)
     batch[1][idx] = event
 
-    task.p = new Promise<void>(function (resolve, reject) {
+    task.p = new Promise<boolean>(function (resolve, reject) {
       task.resolve = resolve
       task.reject = reject
     })
@@ -150,14 +153,14 @@ export class IDBEventStore {
     return task.p
   }
 
-  private saveEventsBatch(transaction: IDBTransaction, events: NostrEvent[]): Promise<void>[] {
+  private saveEventsBatch(transaction: IDBTransaction, events: NostrEvent[]): Promise<boolean>[] {
     const idStore = transaction.objectStore('ids')
-    const promises = new Array<Promise<void>>(events.length)
+    const promises = new Array<Promise<boolean>>(events.length)
 
     for (let i = 0; i < events.length; i++) {
       const event = events[i]
 
-      promises[i] = new Promise<void>((resolve, reject) => {
+      promises[i] = new Promise<boolean>((resolve, reject) => {
         // check for duplicates
         const idKey = new Uint8Array(8)
         putHexAsBytes(idKey, 0, event.id, 8)
@@ -165,14 +168,14 @@ export class IDBEventStore {
         const checkRequest = idStore.getKey(idKey.buffer)
         checkRequest.onsuccess = () => {
           if (checkRequest.result && checkRequest.result) {
-            resolve()
+            resolve(false)
             return
           }
 
           // save the event
           this.saveEventInternal(transaction, event)
             .then(() => {
-              resolve()
+              resolve(true)
               transaction.commit()
             })
             .catch(reject)
