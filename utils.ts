@@ -75,6 +75,8 @@ export function appendUnique<I>(target: I[], ...newItem: I[]) {
 export function shuffle<I>(arr: I[]) {
   for (let i = 0; i < arr.length; i++) {
     let prev = Math.round(Math.random() * i)
-    arr[i], (arr[prev] = arr[prev]), arr[i]
+    let tmp = arr[i]
+    arr[i] = arr[prev]
+    arr[prev] = tmp
   }
 }
