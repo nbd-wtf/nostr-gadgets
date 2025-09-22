@@ -53,13 +53,17 @@ export async function globalism(pubkeys: string[]): Promise<string[]> {
   const rls = await Promise.all(pubkeys.map(pk => loadRelayList(pk)))
   for (let i = 0; i < rls.length; i++) {
     for (let j = 0; j < rls[i].items.length; j++) {
-      const relay = normalizeURL(rls[i].items[j].url)
-      let curr = list.find(rs => rs[1] === relay)
-      if (!curr) {
-        curr = [0, relay]
-        list.push(curr)
+      try {
+        const relay = normalizeURL(rls[i].items[j].url)
+        let curr = list.find(rs => rs[1] === relay)
+        if (!curr) {
+          curr = [0, relay]
+          list.push(curr)
+        }
+        curr[0] += 20 / rls[i].items.length
+      } catch (_err) {
+        /***/
       }
-      curr[0] += 20 / rls[i].items.length
     }
   }
   list.sort(([a], [b]) => b - a)
