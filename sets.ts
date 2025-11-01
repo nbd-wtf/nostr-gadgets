@@ -17,8 +17,9 @@ import { itemsFromTags, loadRelayList } from './lists'
  * A SetFetcher is a function that can be called to return a map of items indexed by d-tag,
  * where each value contains the event and parsed items.
  */
-export type SetFetcher<I> = (pubkey: string, hints?: string[], forceUpdate?: boolean) => Promise<Result<I>>
-type Result<I> = {
+export type SetFetcher<I> = (pubkey: string, hints?: string[], forceUpdate?: boolean) => Promise<SetResult<I>>
+
+export type SetResult<I> = {
   [dTag: string]: {
     event: NostrEvent
     items: I[]
@@ -66,12 +67,12 @@ export const loadRelaySets: SetFetcher<string> = makeSetFetcher<string>(
  * differentiated by their "d" tag values.
  */
 export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => I[]): SetFetcher<I> {
-  const cache = dataloaderCache<Result<I>>()
+  const cache = dataloaderCache<SetResult<I>>()
   const store = createStore(`@nostr/gadgets/set:${kind}`, 'cache')
 
   type Request = { target: string; relays: string[]; forceUpdate?: boolean }
 
-  const dataloader = new DataLoader<Request, Result<I>, string>(
+  const dataloader = new DataLoader<Request, SetResult<I>, string>(
     requests =>
       new Promise(async resolve => {
         let remainingRequests: (Request & { index: number })[] = []
@@ -79,7 +80,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
 
         // try to get from idb first -- also set up the results array with defaults
         let results = await getMany<{
-          result: Result<I>
+          result: SetResult<I>
           lastAttempt: number
         }>(
           requests.map(r => r.target),
@@ -174,7 +175,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
     },
   )
 
-  return async function (pubkey: string, hints: string[] = [], forceUpdate?: boolean): Promise<Result<I>> {
+  return async function (pubkey: string, hints: string[] = [], forceUpdate?: boolean): Promise<SetResult<I>> {
     let relays: string[] = hints
 
     const rl = await loadRelayList(pubkey, hints)

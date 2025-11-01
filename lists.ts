@@ -50,8 +50,9 @@ export type ListFetcher<I> = (
   pubkey: string,
   hints?: string[],
   forceUpdate?: boolean | NostrEvent,
-) => Promise<Result<I>>
-type Result<I> = { event: NostrEvent | null; items: I[] }
+) => Promise<ListResult<I>>
+
+export type ListResult<I> = { event: NostrEvent | null; items: I[] }
 
 /**
  * A ListFetcher for kind:3 follow lists.
@@ -193,23 +194,23 @@ export function makeListFetcher<I>(
   process: (event: NostrEvent | undefined) => I[],
   defaultTo: (pubkey: string) => I[],
 ): ListFetcher<I> {
-  const cache = dataloaderCache<Result<I>>()
+  const cache = dataloaderCache<ListResult<I>>()
   const store = createStore(`@nostr/gadgets/list:${kind}`, 'cache')
 
   type Request = { target: string; relays: string[]; forceUpdate?: boolean | NostrEvent }
 
-  const dataloader = new DataLoader<Request, Result<I>, string>(
+  const dataloader = new DataLoader<Request, ListResult<I>, string>(
     requests =>
       new Promise(async resolve => {
         let remainingRequests: (Request & { index: number })[] = []
         let now = Math.round(Date.now() / 1000)
 
         // try to get from idb first -- also set up the results array with defaults
-        let results: Result<I>[] = await getMany<Result<I> & { lastAttempt: number }>(
+        let results: ListResult<I>[] = await getMany<ListResult<I> & { lastAttempt: number }>(
           requests.map(r => r.target),
           store,
         ).then(results =>
-          results.map<Result<I>>((res, i) => {
+          results.map<ListResult<I>>((res, i) => {
             const req = requests[i] as Request & { index: number }
             req.index = i
 
@@ -303,7 +304,11 @@ export function makeListFetcher<I>(
     },
   )
 
-  return async function (pubkey: string, hints: string[] = [], forceUpdate?: boolean | NostrEvent): Promise<Result<I>> {
+  return async function (
+    pubkey: string,
+    hints: string[] = [],
+    forceUpdate?: boolean | NostrEvent,
+  ): Promise<ListResult<I>> {
     let relays: string[] = hints
 
     if (kind === 10002) {
