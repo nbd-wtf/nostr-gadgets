@@ -424,18 +424,52 @@ export class OutboxManager {
     return new Promise((resolve, reject) => {
       const transaction = this.store._db!.transaction(['syncing'], 'readonly')
       const store = transaction.objectStore('syncing')
-      const request = store.getAll()
+      const keys = store.getAllKeys()
+      const values = store.getAll()
 
-      request.onsuccess = () => {
-        const result: { [pubkey: string]: [number, number] } = {}
-        for (const item of request.result) {
-          result[item.key] = item.value
+      const result: [string, [number, number]][] = []
+      let doneFirst = false
+
+      keys.onsuccess = () => {
+        let i = 0
+        if (doneFirst) {
+          for (const item of keys.result) {
+            result[i][0] = item as string
+            i++
+          }
+          resolve(Object.fromEntries(result))
+        } else {
+          for (const item of keys.result) {
+            result[i] = [item as string, [0, 0]]
+            i++
+          }
+          doneFirst = true
         }
-        resolve(result)
       }
 
-      request.onerror = () => {
-        reject(new Error(`failed to get bounds: ${request.error?.message}`))
+      values.onsuccess = () => {
+        let i = 0
+        if (doneFirst) {
+          for (const item of values.result) {
+            result[i][1] = item
+            i++
+          }
+          resolve(Object.fromEntries(result))
+        } else {
+          for (const item of values.result) {
+            result[i] = ['', item]
+            i++
+          }
+          doneFirst = true
+        }
+      }
+
+      keys.onerror = () => {
+        reject(new Error(`failed to get bounds: ${keys.error?.message}`))
+      }
+
+      values.onerror = () => {
+        reject(new Error(`failed to get bounds: ${values.error?.message}`))
       }
     })
   }
