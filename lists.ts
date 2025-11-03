@@ -157,10 +157,12 @@ export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntit
           if (isHex32(tag[1])) {
             return { label: 'pubkey', value: tag[1] }
           }
+          break
         case 'e':
           if (isHex32(tag[1])) {
             return { label: 'thread', value: tag[1] }
           }
+          break
         case 't':
           return { label: 'hashtag', value: tag[1] }
         case 'word':
