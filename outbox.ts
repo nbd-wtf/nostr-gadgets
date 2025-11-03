@@ -25,9 +25,9 @@ export class OutboxManager {
   private nuclearAbort = new AbortController()
   private defaultRelaysForConfusedPeople = BIG_RELAYS_DO_NOT_USE_EVER
 
-  onliveupdate: (event: NostrEvent) => void
-  onsyncupdate: (pubkey: string) => void
-  onbeforeupdate: (pubkey: string) => void
+  private onliveupdate: undefined | ((event: NostrEvent) => void)
+  private onsyncupdate: undefined | ((pubkey: string) => void)
+  private onbeforeupdate: undefined | ((pubkey: string) => void)
 
   constructor(
     baseFilters: Filter[],
@@ -35,6 +35,9 @@ export class OutboxManager {
       store?: IDBEventStore
       pool?: SimplePool
       label?: string
+      onliveupdate?: (event: NostrEvent) => void
+      onsyncupdate?: (pubkey: string) => void
+      onbeforeupdate?: (pubkey: string) => void
       defaultRelaysForConfusedPeople?: string[]
     },
   ) {
@@ -44,6 +47,9 @@ export class OutboxManager {
     this.boundsPromise = this.getBounds()
     this.pool = opts?.pool || pool
     this.label = opts?.label || 'outbox'
+    this.onliveupdate = opts?.onliveupdate
+    this.onsyncupdate = opts?.onsyncupdate
+    this.onbeforeupdate = opts?.onbeforeupdate
     this.defaultRelaysForConfusedPeople = opts?.defaultRelaysForConfusedPeople || this.defaultRelaysForConfusedPeople
   }
 
@@ -107,6 +113,9 @@ export class OutboxManager {
     return Boolean(newest && newest > now - 60 * 60 * 2) // 2 hours
   }
 
+  /**
+   * Returns true if new notes were discovered during the sync.
+   */
   async sync(
     authors: string[],
     opts: {
@@ -241,8 +250,8 @@ export class OutboxManager {
           }
           this.bounds[pubkey] = bound
           await this.setBound(pubkey, bound)
-          this.onsyncupdate?.(pubkey)
           this.finishSyncing(pubkey)
+          this.onsyncupdate?.(pubkey)
 
           sem.release()
         }),
@@ -263,7 +272,7 @@ export class OutboxManager {
   ) {
     await this.ensureBoundsLoaded()
 
-    // do not subscribe live for those that are already subscribed live
+    // do not subscribe live for those that are already subscribed permanently
     for (let i = 0; i < authors.length; i++) {
       const author = authors[i]
 
@@ -277,6 +286,8 @@ export class OutboxManager {
         this.permanentlyLive.add(author)
       }
     }
+
+    if (authors.length === 0) return
 
     // wait for these authors to finish syncing
     await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
@@ -393,6 +404,7 @@ export class OutboxManager {
         this.bounds[pubkey] = bound
         await this.setBound(pubkey, bound)
         this.finishSyncing(pubkey)
+        this.onbeforeupdate?.(pubkey)
 
         sem.release()
       })
