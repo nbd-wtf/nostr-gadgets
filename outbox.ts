@@ -8,17 +8,23 @@ import { pool } from './global.ts'
 import { shuffle } from './utils.ts'
 
 /**
- * OutboxManager handles the pool, store, and thresholds for outbox feeds.
+ * OutboxManager handles the pool, store, and bounds for outbox feeds.
  * Use it to create OutboxFeed instances.
  */
 export class OutboxManager {
   readonly store: IDBEventStore
   readonly baseFilters: Filter[]
-  private thresholds: { [pubkey: string]: [oldest: number, newest: number] }
-  private thresholdsPromise: null | Promise<{ [pubkey: string]: [number, number] }>
+  private bounds: { [pubkey: string]: [oldest: number, newest: number] }
+  private boundsPromise: null | Promise<{ [pubkey: string]: [number, number] }>
   private pool: SimplePool
   private label: string
   private currentlySyncing = new Map<string, () => void>()
+  private permanentlyLive = new Set<string>()
+  private nuclearAbort = new AbortController()
+
+  onliveupdate: (event: NostrEvent) => void
+  onsyncupdate: (pubkey: string) => void
+  onbeforeupdate: (pubkey: string) => void
 
   constructor(
     baseFilters: Filter[],
@@ -30,16 +36,20 @@ export class OutboxManager {
   ) {
     this.baseFilters = baseFilters
     this.store = opts?.store || new IDBEventStore()
-    this.thresholds = {}
-    this.thresholdsPromise = this.getThresholds()
+    this.bounds = {}
+    this.boundsPromise = this.getBounds()
     this.pool = opts?.pool || pool
     this.label = opts?.label || 'outbox'
   }
 
-  private async ensureThresholdsLoaded() {
-    if (this.thresholdsPromise) {
-      this.thresholds = await this.thresholdsPromise
-      this.thresholdsPromise = null
+  close() {
+    this.nuclearAbort.abort('<OutboxManager closed>')
+  }
+
+  private async ensureBoundsLoaded() {
+    if (this.boundsPromise) {
+      this.bounds = await this.boundsPromise
+      this.boundsPromise = null
     }
   }
 
@@ -54,7 +64,6 @@ export class OutboxManager {
    * may have registered for that.
    */
   private finishSyncing(pubkey: string) {
-    console.log('finishing', pubkey)
     const fn = this.currentlySyncing.get(pubkey)
     this.currentlySyncing.delete(pubkey)
     fn?.()
@@ -86,8 +95,8 @@ export class OutboxManager {
    * can be dealt with by just calling .live().
    */
   async isSynced(pubkey: string): Promise<boolean> {
-    await this.ensureThresholdsLoaded()
-    const bound = this.thresholds[pubkey]
+    await this.ensureBoundsLoaded()
+    const bound = this.bounds[pubkey]
     const newest = bound ? bound[1] : undefined
     const now = Math.round(Date.now() / 1000)
     return Boolean(newest && newest > now - 60 * 60 * 2) // 2 hours
@@ -96,11 +105,10 @@ export class OutboxManager {
   async sync(
     authors: string[],
     opts: {
-      signal?: AbortSignal
-      onpubkey?: (pubkey: string) => void
-    } = {},
+      signal: AbortSignal
+    },
   ): Promise<boolean> {
-    await this.ensureThresholdsLoaded()
+    await this.ensureBoundsLoaded()
 
     for (let i = authors.length - 1; i >= 0; i--) {
       if (this.currentlySyncing.has(authors[i])) {
@@ -117,30 +125,38 @@ export class OutboxManager {
     shuffle(authors)
 
     // sync up each of the pubkeys to present
-    console.log('starting sync', authors)
+    console.debug('starting sync', authors)
     let addedNewEventsOnSync = false
     const now = Math.round(Date.now() / 1000)
     const promises: Promise<void>[] = []
     for (let i = 0; i < authors.length; i++) {
-      if (opts.signal?.aborted) break
+      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) break
 
       let pubkey = authors[i]
-      let bound = this.thresholds[pubkey]
+      let bound = this.bounds[pubkey]
       let newest = bound ? bound[1] : undefined
 
       if (newest && newest > now - 60 * 60 * 2) {
         // if this person was caught up to 2 hours ago there is no need to repeat this
         // (we'll make up for these missing events in the ongoing live subscription)
-        console.log(`${i + 1}/${authors.length} skip`, newest, '>', now - 60 * 60 * 2)
+        console.debug(
+          `${i + 1}/${authors.length} skip`,
+          pubkey,
+          'synced up to',
+          new Date(newest * 1000).toLocaleString(),
+          'already',
+        )
         this.finishSyncing(pubkey)
         continue
       }
+
+      console.debug(`${i + 1}/${authors.length} syncing`, pubkey)
 
       // do it only 16 filters at a time because of relay limits
       const sem = getSemaphore('outbox-sync', 16 / this.baseFilters.length)
       promises.push(
         sem.acquire().then(async () => {
-          if (opts.signal?.aborted) {
+          if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
             this.finishSyncing(pubkey)
             sem.release()
             return
@@ -151,7 +167,7 @@ export class OutboxManager {
             .slice(0, 4)
             .map(r => r.url)
 
-          if (opts.signal?.aborted) {
+          if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
             this.finishSyncing(pubkey)
             sem.release()
             return
@@ -161,31 +177,33 @@ export class OutboxManager {
           try {
             events = (
               await Promise.race([
-                new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
+                new Promise<NostrEvent[]>((_, reject) => setTimeout(() => reject(new Error('<timeout>')), 45000)),
                 Promise.all(
                   this.baseFilters.map(
                     f => this.pool.querySync(relays, { ...f, authors: [pubkey], since: newest, limit: 200 }),
-                    { label: `sync-${pubkey.substring(0, 6)}` },
+                    { label: `sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
                   ),
                 ),
               ])
             ).flat()
           } catch (err) {
             console.warn('failed to query events for', pubkey, 'at', relays, '=>', err)
-            events = []
+            // TODO
+            return
           }
 
-          if (opts.signal?.aborted) {
+          if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
             this.finishSyncing(pubkey)
             sem.release()
             return
           }
 
           console.debug(
-            `${i + 1}/${authors.length} catching up with`,
+            `${i + 1}/${authors.length} events downloaded`,
             pubkey,
             relays,
-            newest,
+            'newest:',
+            newest ? new Date(newest * 1000).toLocaleString() : newest,
             `got ${events.length} events`,
             events,
           )
@@ -193,7 +211,7 @@ export class OutboxManager {
           let added = await Promise.all(events.map(event => this.store.saveEvent(event)))
           addedNewEventsOnSync = added.indexOf(true) !== -1
 
-          // update stored bound thresholds for this person since they're caught up to now
+          // update stored bound bounds for this person since they're caught up to now
           if (bound) {
             bound[1] = now
           } else if (events.length) {
@@ -203,10 +221,9 @@ export class OutboxManager {
             // no bound, no events
             bound = [now - 1, now]
           }
-          console.debug('new bound for', pubkey, bound)
-          this.thresholds[pubkey] = bound
-          await this.setThreshold(pubkey, bound)
-          opts.onpubkey?.(pubkey)
+          this.bounds[pubkey] = bound
+          await this.setBound(pubkey, bound)
+          this.onsyncupdate?.(pubkey)
           this.finishSyncing(pubkey)
 
           sem.release()
@@ -222,16 +239,30 @@ export class OutboxManager {
   async live(
     authors: string[],
     opts: {
-      onupdate: () => void
-      signal: AbortSignal
+      // this should only be undefined if you want the live() subscription to last forever
+      signal: AbortSignal | undefined
     },
   ) {
-    await this.ensureThresholdsLoaded()
+    await this.ensureBoundsLoaded()
+
+    // do not subscribe live for those that are already subscribed live
+    for (let i = 0; i < authors.length; i++) {
+      const author = authors[i]
+
+      if (this.permanentlyLive.has(author)) {
+        // swap-delete
+        authors[i] = authors[authors.length - 1]
+        authors.length = authors.length - 1
+        i--
+      } else if (opts.signal === undefined) {
+        // mark others as permanently syncing
+        this.permanentlyLive.add(author)
+      }
+    }
 
     // wait for these authors to finish syncing
-    console.log('waiting to listen live', this.currentlySyncing)
     await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
-    console.log('successfully waited')
+    console.debug('listening live', authors)
 
     const declaration = await outboxFilterRelayBatch(
       authors,
@@ -245,19 +276,24 @@ export class OutboxManager {
       label: `live-${this.label}`,
       onevent: async event => {
         await this.store.saveEvent(event)
-        this.thresholds[event.pubkey][1] = Math.round(Date.now() / 1000)
-        await this.setThreshold(event.pubkey, this.thresholds[event.pubkey])
-        opts.onupdate()
+        this.bounds[event.pubkey][1] = Math.round(Date.now() / 1000)
+        await this.setBound(event.pubkey, this.bounds[event.pubkey])
+        this.onliveupdate?.(event)
       },
     })
 
-    opts.signal.onabort = () => {
+    if (opts.signal) {
+      opts.signal.onabort = () => {
+        closer.close()
+      }
+    }
+    this.nuclearAbort.signal.onabort = () => {
       closer.close()
     }
   }
 
-  async before(authors: string[], ts: number, signal?: AbortSignal) {
-    await this.ensureThresholdsLoaded()
+  async before(authors: string[], ts: number, opts: { signal: AbortSignal }) {
+    await this.ensureBoundsLoaded()
 
     // wait for these authors to finish syncing
     await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
@@ -269,17 +305,17 @@ export class OutboxManager {
 
     // from all our authors check which ones need a new page fetch
     for (let i = 0; i < authors.length; i++) {
-      if (signal?.aborted) break
+      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) break
       let pubkey = authors[i]
 
       const sem = getSemaphore('outbox-sync', 15) // do it only 15 pubkeys at a time
       await sem.acquire().then(async () => {
-        if (signal?.aborted) {
+        if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
           sem.release()
           return
         }
 
-        let bound = this.thresholds[pubkey]
+        let bound = this.bounds[pubkey]
         if (!bound) {
           // this should never happen because we set the bounds for everybody
           // (on the first fetch if they don't have one)
@@ -301,38 +337,43 @@ export class OutboxManager {
           .slice(0, 4)
           .map(r => r.url)
 
-        if (signal?.aborted) {
+        if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
           sem.release()
           return
         }
 
-        const events = (
-          await Promise.race([
-            new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
-            Promise.all(
-              this.baseFilters.map(f =>
-                this.pool.querySync(
-                  relays,
-                  { ...f, authors: [pubkey], until: oldest, limit: 200 },
-                  { label: `page-${pubkey.substring(0, 6)}` },
+        let events: NostrEvent[]
+        try {
+          events = (
+            await Promise.race([
+              new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
+              Promise.all(
+                this.baseFilters.map(f =>
+                  this.pool.querySync(
+                    relays,
+                    { ...f, authors: [pubkey], until: oldest, limit: 200 },
+                    { label: `page-${pubkey.substring(0, 6)}` },
+                  ),
                 ),
               ),
-            ),
-          ])
-        ).flat()
+            ])
+          ).flat()
+        } catch (err) {
+          console.warn('failed to query before events for', pubkey, 'at', relays, '=>', err)
+          // TODO
+          return
+        }
 
         console.debug('paginating to the past', pubkey, relays, oldest, events)
-
         await Promise.all(events.map(event => this.store.saveEvent(event)))
 
-        // update oldest bound threshold
+        // update oldest bound
         if (events.length) {
           // didn't have anything before, but now we have all of these
           bound[0] = events[events.length - 1].created_at
         }
-        console.debug('updated bound for', pubkey, bound)
-        this.thresholds[pubkey] = bound
-        await this.setThreshold(pubkey, bound)
+        this.bounds[pubkey] = bound
+        await this.setBound(pubkey, bound)
         this.finishSyncing(pubkey)
 
         sem.release()
@@ -343,9 +384,9 @@ export class OutboxManager {
   }
 
   /**
-   * retrieves thresholds from the syncing store.
+   * retrieves bounds from the syncing store.
    */
-  async getThresholds(): Promise<{ [pubkey: string]: [number, number] }> {
+  async getBounds(): Promise<{ [pubkey: string]: [number, number] }> {
     if (!this.store._db) await this.store.init()
 
     return new Promise((resolve, reject) => {
@@ -362,23 +403,28 @@ export class OutboxManager {
       }
 
       request.onerror = () => {
-        reject(new Error(`failed to get thresholds: ${request.error?.message}`))
+        reject(new Error(`failed to get bounds: ${request.error?.message}`))
       }
     })
   }
 
   /**
-   * saves a single threshold to the syncing store.
+   * saves a single bound to the syncing store.
    */
-  async setThreshold(pubkey: string, value: [number, number]): Promise<void> {
+  async setBound(pubkey: string, bound: [number, number]): Promise<void> {
     if (!this.store._db) await this.store.init()
 
+    console.debug(
+      'new bound for',
+      pubkey,
+      bound.map(d => new Date(d * 1000).toLocaleString()),
+    )
     return new Promise((resolve, reject) => {
       const transaction = this.store._db!.transaction(['syncing'], 'readwrite')
       const store = transaction.objectStore('syncing')
-      const putRequest = store.put(value, pubkey)
+      const putRequest = store.put(bound, pubkey)
       putRequest.onsuccess = () => resolve()
-      putRequest.onerror = () => reject(new Error(`failed to set threshold: ${putRequest.error?.message}`))
+      putRequest.onerror = () => reject(new Error(`failed to set bound: ${putRequest.error?.message}`))
     })
   }
 }
