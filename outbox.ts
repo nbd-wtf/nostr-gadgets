@@ -6,6 +6,7 @@ import { loadRelayList } from './lists.ts'
 import { IDBEventStore } from './store.ts'
 import { pool } from './global.ts'
 import { shuffle } from './utils.ts'
+import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
 
 /**
  * OutboxManager handles the pool, store, and bounds for outbox feeds.
@@ -18,9 +19,11 @@ export class OutboxManager {
   private boundsPromise: null | Promise<{ [pubkey: string]: [number, number] }>
   private pool: SimplePool
   private label: string
+
   private currentlySyncing = new Map<string, () => void>()
   private permanentlyLive = new Set<string>()
   private nuclearAbort = new AbortController()
+  private defaultRelaysForConfusedPeople = BIG_RELAYS_DO_NOT_USE_EVER
 
   onliveupdate: (event: NostrEvent) => void
   onsyncupdate: (pubkey: string) => void
@@ -32,6 +35,7 @@ export class OutboxManager {
       store?: IDBEventStore
       pool?: SimplePool
       label?: string
+      defaultRelaysForConfusedPeople?: string[]
     },
   ) {
     this.baseFilters = baseFilters
@@ -40,6 +44,7 @@ export class OutboxManager {
     this.boundsPromise = this.getBounds()
     this.pool = opts?.pool || pool
     this.label = opts?.label || 'outbox'
+    this.defaultRelaysForConfusedPeople = opts?.defaultRelaysForConfusedPeople || this.defaultRelaysForConfusedPeople
   }
 
   close() {
@@ -166,6 +171,19 @@ export class OutboxManager {
             .filter(r => r.write)
             .slice(0, 4)
             .map(r => r.url)
+
+          if (
+            // either this person has a list with zero relays
+            relays.length === 0 ||
+            // or they don't have a list and we're getting the default relays for them
+            // (replace with the given default relays)
+            (this.defaultRelaysForConfusedPeople !== BIG_RELAYS_DO_NOT_USE_EVER &&
+              relays.length === BIG_RELAYS_DO_NOT_USE_EVER.length &&
+              relays.every((v, i) => v === BIG_RELAYS_DO_NOT_USE_EVER[i]))
+          ) {
+            // someone made a mistake, let's use big relays for them
+            relays = this.defaultRelaysForConfusedPeople
+          }
 
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
             this.finishSyncing(pubkey)

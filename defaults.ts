@@ -10,3 +10,5 @@ export const SEARCH_RELAYS = [
   'wss://relay.noswhere.com',
   'wss://relay.nos.today',
 ]
+
+export const BIG_RELAYS_DO_NOT_USE_EVER = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net']

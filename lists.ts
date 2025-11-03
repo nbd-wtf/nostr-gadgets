@@ -11,7 +11,7 @@ import { createStore, getMany, set, setMany } from 'idb-keyval'
 
 import { pool } from './global'
 
-import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
+import { BIG_RELAYS_DO_NOT_USE_EVER, METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { dataloaderCache, identity, isHex32 } from './utils'
 import { AddressPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
@@ -138,10 +138,7 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
       return { url: tag[1], read: false, write: true }
     }
   }),
-  _ => [
-    { url: 'wss://relay.damus.io', read: true, write: true },
-    { url: 'wss://nos.lol', read: true, write: true },
-  ],
+  _ => BIG_RELAYS_DO_NOT_USE_EVER.map(url => ({ url, read: true, write: true })),
 )
 
 /**
