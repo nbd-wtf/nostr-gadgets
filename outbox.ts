@@ -304,10 +304,12 @@ export class OutboxManager {
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
       onevent: async event => {
-        await this.store.saveEvent(event)
-        this.bounds[event.pubkey][1] = Math.round(Date.now() / 1000)
-        await this.setBound(event.pubkey, this.bounds[event.pubkey])
-        this.onliveupdate?.(event)
+        const isNew = await this.store.saveEvent(event)
+        if (isNew) {
+          this.bounds[event.pubkey][1] = Math.round(Date.now() / 1000)
+          await this.setBound(event.pubkey, this.bounds[event.pubkey])
+          this.onliveupdate?.(event)
+        }
       },
     })
 
