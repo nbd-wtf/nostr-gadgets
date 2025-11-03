@@ -41,7 +41,7 @@ const INDEX_TAG_ADDR_PREFIX = 7
  */
 export class IDBEventStore {
   private dbName: string
-  private db: IDBDatabase | undefined
+  _db: IDBDatabase | undefined
 
   /**
    * creates a new event store instance.
@@ -57,24 +57,31 @@ export class IDBEventStore {
    */
   async init(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(this.dbName, 1)
+      const request = indexedDB.open(this.dbName, 2)
 
       request.onerror = () => {
         reject(new DatabaseError(`failed to open database: ${request.error?.message}`))
       }
 
       request.onsuccess = () => {
-        this.db = request.result
+        this._db = request.result
         resolve()
       }
 
-      request.onupgradeneeded = () => {
+      request.onupgradeneeded = change => {
         const db = request.result
 
         // create object stores
-        db.createObjectStore('events', { autoIncrement: true })
-        db.createObjectStore('ids')
-        db.createObjectStore('indexes')
+        if (!change.oldVersion) {
+          db.createObjectStore('events', { autoIncrement: true })
+          db.createObjectStore('ids')
+          db.createObjectStore('indexes')
+        }
+
+        if (change.oldVersion <= 1) {
+          // this is used by OutboxManager, but it can be ignored otherwise
+          db.createObjectStore('syncing')
+        }
       }
     })
   }
@@ -83,9 +90,9 @@ export class IDBEventStore {
    * closes the database. you probably do not need this.
    */
   async close(): Promise<void> {
-    if (this.db) {
-      this.db.close()
-      this.db = undefined
+    if (this._db) {
+      this._db.close()
+      this._db = undefined
     }
   }
 
@@ -99,7 +106,7 @@ export class IDBEventStore {
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
   async saveEvent(event: NostrEvent): Promise<boolean> {
-    if (!this.db) await this.init()
+    if (!this._db) await this.init()
 
     // sanity checking
     if (event.created_at > 0xffffffff || event.kind > 0xffff) {
@@ -121,7 +128,7 @@ export class IDBEventStore {
         // to ensure that any new requests will be added to a new batch
         this.saveBatch = null
 
-        const transaction = this.db!.transaction(['events', 'ids', 'indexes'], 'readwrite', {
+        const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite', {
           durability: 'relaxed',
         })
 
@@ -243,9 +250,9 @@ export class IDBEventStore {
    * @throws {DatabaseError} if deletion fails
    */
   async deleteEvent(id: string): Promise<boolean> {
-    if (!this.db) await this.init()
+    if (!this._db) await this.init()
 
-    const transaction = this.db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
+    const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
 
     return new Promise((resolve, reject) => {
       this.deleteEventInternal(transaction, id).then(resolve).catch(reject)
@@ -330,14 +337,14 @@ export class IDBEventStore {
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
   async replaceEvent(event: NostrEvent): Promise<void> {
-    if (!this.db) await this.init()
+    if (!this._db) await this.init()
 
     // sanity checking
     if (event.created_at > 0xffffffff || event.kind > 0xffff) {
       throw new DatabaseError('event with values out of expected boundaries')
     }
 
-    const transaction = this.db!.transaction(['events', 'ids', 'indexes'], 'readwrite', { durability: 'relaxed' })
+    const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite', { durability: 'relaxed' })
 
     return new Promise((resolve, reject) => {
       const filter: Filter = {
@@ -389,9 +396,9 @@ export class IDBEventStore {
    * @returns array of found events (may be shorter than input if some IDs not found)
    */
   async getByIds(ids: string[]): Promise<NostrEvent[]> {
-    if (!this.db) await this.init()
+    if (!this._db) await this.init()
 
-    const transaction = this.db!.transaction(['events', 'ids'], 'readonly')
+    const transaction = this._db!.transaction(['events', 'ids'], 'readonly')
     return this.getByIdsInternal(transaction, ids)
   }
 
@@ -451,7 +458,7 @@ export class IDBEventStore {
    * @yields events matching the filter criteria
    */
   async *queryEvents(filter: Filter, maxLimit: number = 500): AsyncGenerator<NostrEvent> {
-    if (!this.db) await this.init()
+    if (!this._db) await this.init()
 
     if (filter.search) {
       return // search not supported
@@ -465,13 +472,13 @@ export class IDBEventStore {
 
     // if there are ids we do a special query
     if (filter.ids) {
-      const transaction = this.db!.transaction(['events', 'ids'], 'readonly')
+      const transaction = this._db!.transaction(['events', 'ids'], 'readonly')
       yield* await this.getByIdsInternal(transaction, filter.ids)
       return
     }
 
     // otherwise we do a normal query
-    const transaction = this.db!.transaction(['events', 'indexes'], 'readonly')
+    const transaction = this._db!.transaction(['events', 'indexes'], 'readonly')
     const results = await this.queryInternal(transaction, filter, limit)
     for (const result of results) {
       yield result.event

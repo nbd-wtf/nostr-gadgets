@@ -15,7 +15,7 @@ export class OutboxManager {
   readonly store: IDBEventStore
   readonly baseFilters: Filter[]
   private thresholds: { [pubkey: string]: [oldest: number, newest: number] }
-  private thresholdsLocalStorageKey: string
+  private thresholdsPromise: null | Promise<{ [pubkey: string]: [number, number] }>
   private pool: SimplePool
   private label: string
   private currentlySyncing = new Map<string, () => void>()
@@ -24,21 +24,23 @@ export class OutboxManager {
     baseFilters: Filter[],
     opts?: {
       store?: IDBEventStore
-      thresholdsLocalStorageKey?: string
       pool?: SimplePool
       label?: string
     },
   ) {
     this.baseFilters = baseFilters
     this.store = opts?.store || new IDBEventStore()
-    this.thresholdsLocalStorageKey = opts?.thresholdsLocalStorageKey || 'thresholds'
-    this.thresholds = JSON.parse(localStorage.getItem(this.thresholdsLocalStorageKey) || '{}')
+    this.thresholds = {}
+    this.thresholdsPromise = this.getThresholds()
     this.pool = opts?.pool || pool
     this.label = opts?.label || 'outbox'
   }
 
-  private saveThresholds() {
-    localStorage.setItem(this.thresholdsLocalStorageKey, JSON.stringify(this.thresholds))
+  private async ensureThresholdsLoaded() {
+    if (this.thresholdsPromise) {
+      this.thresholds = await this.thresholdsPromise
+      this.thresholdsPromise = null
+    }
   }
 
   private markSyncing(authors: string[]) {
@@ -83,7 +85,8 @@ export class OutboxManager {
    * Returns if a public key is synced up to at least 2 hours ago, which means it
    * can be dealt with by just calling .live().
    */
-  isSynced(pubkey: string): boolean {
+  async isSynced(pubkey: string): Promise<boolean> {
+    await this.ensureThresholdsLoaded()
     const bound = this.thresholds[pubkey]
     const newest = bound ? bound[1] : undefined
     const now = Math.round(Date.now() / 1000)
@@ -97,6 +100,8 @@ export class OutboxManager {
       onpubkey?: (pubkey: string) => void
     } = {},
   ): Promise<boolean> {
+    await this.ensureThresholdsLoaded()
+
     for (let i = authors.length - 1; i >= 0; i--) {
       if (this.currentlySyncing.has(authors[i])) {
         // swap-delete
@@ -200,7 +205,7 @@ export class OutboxManager {
           }
           console.debug('new bound for', pubkey, bound)
           this.thresholds[pubkey] = bound
-          this.saveThresholds()
+          await this.setThreshold(pubkey, bound)
           opts.onpubkey?.(pubkey)
           this.finishSyncing(pubkey)
 
@@ -221,6 +226,8 @@ export class OutboxManager {
       signal: AbortSignal
     },
   ) {
+    await this.ensureThresholdsLoaded()
+
     // wait for these authors to finish syncing
     console.log('waiting to listen live', this.currentlySyncing)
     await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
@@ -239,8 +246,8 @@ export class OutboxManager {
       onevent: async event => {
         await this.store.saveEvent(event)
         this.thresholds[event.pubkey][1] = Math.round(Date.now() / 1000)
+        await this.setThreshold(event.pubkey, this.thresholds[event.pubkey])
         opts.onupdate()
-        this.saveThresholds()
       },
     })
 
@@ -250,6 +257,8 @@ export class OutboxManager {
   }
 
   async before(authors: string[], ts: number, signal?: AbortSignal) {
+    await this.ensureThresholdsLoaded()
+
     // wait for these authors to finish syncing
     await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
 
@@ -323,7 +332,7 @@ export class OutboxManager {
         }
         console.debug('updated bound for', pubkey, bound)
         this.thresholds[pubkey] = bound
-        this.saveThresholds()
+        await this.setThreshold(pubkey, bound)
         this.finishSyncing(pubkey)
 
         sem.release()
@@ -331,6 +340,46 @@ export class OutboxManager {
     }
 
     console.debug('before done')
+  }
+
+  /**
+   * retrieves thresholds from the syncing store.
+   */
+  async getThresholds(): Promise<{ [pubkey: string]: [number, number] }> {
+    if (!this.store._db) await this.store.init()
+
+    return new Promise((resolve, reject) => {
+      const transaction = this.store._db!.transaction(['syncing'], 'readonly')
+      const store = transaction.objectStore('syncing')
+      const request = store.getAll()
+
+      request.onsuccess = () => {
+        const result: { [pubkey: string]: [number, number] } = {}
+        for (const item of request.result) {
+          result[item.key] = item.value
+        }
+        resolve(result)
+      }
+
+      request.onerror = () => {
+        reject(new Error(`failed to get thresholds: ${request.error?.message}`))
+      }
+    })
+  }
+
+  /**
+   * saves a single threshold to the syncing store.
+   */
+  async setThreshold(pubkey: string, value: [number, number]): Promise<void> {
+    if (!this.store._db) await this.store.init()
+
+    return new Promise((resolve, reject) => {
+      const transaction = this.store._db!.transaction(['syncing'], 'readwrite')
+      const store = transaction.objectStore('syncing')
+      const putRequest = store.put(value, pubkey)
+      putRequest.onsuccess = () => resolve()
+      putRequest.onerror = () => reject(new Error(`failed to set threshold: ${putRequest.error?.message}`))
+    })
   }
 }
 
