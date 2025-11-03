@@ -7,13 +7,6 @@ import { IDBEventStore } from './store.ts'
 import { pool } from './global.ts'
 import { shuffle } from './utils.ts'
 
-export class SyncRaceError extends Error {
-  constructor(pubkey: string) {
-    super(`this outbox manager is syncing the pubkey ${pubkey} already.`)
-    this.name = 'SyncRaceError'
-  }
-}
-
 /**
  * OutboxManager handles the pool, store, and thresholds for outbox feeds.
  * Use it to create OutboxFeed instances.
@@ -25,7 +18,7 @@ export class OutboxManager {
   private thresholdsLocalStorageKey: string
   private pool: SimplePool
   private label: string
-  private currentlySyncing = new Set<string>()
+  private currentlySyncing = new Map<string, () => void>()
 
   constructor(
     baseFilters: Filter[],
@@ -48,16 +41,41 @@ export class OutboxManager {
     localStorage.setItem(this.thresholdsLocalStorageKey, JSON.stringify(this.thresholds))
   }
 
-  private guardSyncing(authors: string[]) {
+  private markSyncing(authors: string[]) {
     for (let i = 0; i < authors.length; i++) {
-      let author = authors[i]
-      if (this.currentlySyncing.has(author)) throw new SyncRaceError(author)
+      this.currentlySyncing.set(authors[i], () => {})
     }
   }
 
-  private markSyncing(authors: string[]) {
-    for (let i = 0; i < authors.length; i++) {
-      this.currentlySyncing.add(authors[i])
+  /**
+   * Marks a specific public key as not syncing anymore and execute any callbacks that
+   * may have registered for that.
+   */
+  private finishSyncing(pubkey: string) {
+    console.log('finishing', pubkey)
+    const fn = this.currentlySyncing.get(pubkey)
+    this.currentlySyncing.delete(pubkey)
+    fn?.()
+  }
+
+  /**
+   * Returns a promise that is resolved when this pubkey has finished syncing entirely.
+   */
+  private async waitForSyncingToFinish(pubkey: string): Promise<void> {
+    const prev = this.currentlySyncing.get(pubkey)
+    if (prev) {
+      await new Promise<void>(resolve => {
+        // register a new callback here to resolve our promise
+        // (this will be called after the item is removed from currentlySyncing)
+        this.currentlySyncing.set(pubkey, () => {
+          prev()
+          resolve()
+        })
+      })
+
+      // now we check again because someone else may have been waiting too and they
+      // may have put this key in a syncing state again
+      return this.waitForSyncingToFinish(pubkey)
     }
   }
 
@@ -79,7 +97,14 @@ export class OutboxManager {
       onpubkey?: (pubkey: string) => void
     } = {},
   ): Promise<boolean> {
-    this.guardSyncing(authors)
+    for (let i = authors.length - 1; i >= 0; i--) {
+      if (this.currentlySyncing.has(authors[i])) {
+        // swap-delete
+        authors[i] = authors[authors.length - 1]
+        authors.length = authors.length - 1
+      }
+    }
+
     this.markSyncing(authors)
 
     // this prevents the sync process from always starting at the same point
@@ -87,7 +112,7 @@ export class OutboxManager {
     shuffle(authors)
 
     // sync up each of the pubkeys to present
-    console.log('starting catch up sync')
+    console.log('starting sync', authors)
     let addedNewEventsOnSync = false
     const now = Math.round(Date.now() / 1000)
     const promises: Promise<void>[] = []
@@ -102,7 +127,7 @@ export class OutboxManager {
         // if this person was caught up to 2 hours ago there is no need to repeat this
         // (we'll make up for these missing events in the ongoing live subscription)
         console.log(`${i + 1}/${authors.length} skip`, newest, '>', now - 60 * 60 * 2)
-        this.currentlySyncing.delete(pubkey)
+        this.finishSyncing(pubkey)
         continue
       }
 
@@ -111,7 +136,7 @@ export class OutboxManager {
       promises.push(
         sem.acquire().then(async () => {
           if (opts.signal?.aborted) {
-            this.currentlySyncing.delete(pubkey)
+            this.finishSyncing(pubkey)
             sem.release()
             return
           }
@@ -122,7 +147,7 @@ export class OutboxManager {
             .map(r => r.url)
 
           if (opts.signal?.aborted) {
-            this.currentlySyncing.delete(pubkey)
+            this.finishSyncing(pubkey)
             sem.release()
             return
           }
@@ -135,18 +160,18 @@ export class OutboxManager {
                 Promise.all(
                   this.baseFilters.map(
                     f => this.pool.querySync(relays, { ...f, authors: [pubkey], since: newest, limit: 200 }),
-                    { label: `catchup-${pubkey.substring(0, 6)}` },
+                    { label: `sync-${pubkey.substring(0, 6)}` },
                   ),
                 ),
               ])
             ).flat()
           } catch (err) {
-            console.warn('failed to query events for', pubkey, 'at', relays)
+            console.warn('failed to query events for', pubkey, 'at', relays, '=>', err)
             events = []
           }
 
           if (opts.signal?.aborted) {
-            this.currentlySyncing.delete(pubkey)
+            this.finishSyncing(pubkey)
             sem.release()
             return
           }
@@ -177,7 +202,7 @@ export class OutboxManager {
           this.thresholds[pubkey] = bound
           this.saveThresholds()
           opts.onpubkey?.(pubkey)
-          this.currentlySyncing.delete(pubkey)
+          this.finishSyncing(pubkey)
 
           sem.release()
         }),
@@ -196,7 +221,10 @@ export class OutboxManager {
       signal: AbortSignal
     },
   ) {
-    this.guardSyncing(authors)
+    // wait for these authors to finish syncing
+    console.log('waiting to listen live', this.currentlySyncing)
+    await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
+    console.log('successfully waited')
 
     const declaration = await outboxFilterRelayBatch(
       authors,
@@ -222,7 +250,9 @@ export class OutboxManager {
   }
 
   async before(authors: string[], ts: number, signal?: AbortSignal) {
-    this.guardSyncing(authors)
+    // wait for these authors to finish syncing
+    await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
+
     this.markSyncing(authors)
 
     // (same as sync(), but not as important)
@@ -294,7 +324,7 @@ export class OutboxManager {
         console.debug('updated bound for', pubkey, bound)
         this.thresholds[pubkey] = bound
         this.saveThresholds()
-        this.currentlySyncing.delete(pubkey)
+        this.finishSyncing(pubkey)
 
         sem.release()
       })
