@@ -428,39 +428,47 @@ export class OutboxManager {
       const values = store.getAll()
 
       const result: [string, [number, number]][] = []
-      let doneFirst = false
+      let doneFirst = [false, 0]
 
       keys.onsuccess = () => {
         let i = 0
-        if (doneFirst) {
+        if (doneFirst[0]) {
           for (const item of keys.result) {
             result[i][0] = item as string
             i++
           }
-          resolve(Object.fromEntries(result))
+          if (doneFirst[1] === i) {
+            resolve(Object.fromEntries(result))
+          } else {
+            reject(new Error('failed to read bounds'))
+          }
         } else {
           for (const item of keys.result) {
             result[i] = [item as string, [0, 0]]
             i++
           }
-          doneFirst = true
+          doneFirst = [true, i]
         }
       }
 
       values.onsuccess = () => {
         let i = 0
-        if (doneFirst) {
+        if (doneFirst[0]) {
           for (const item of values.result) {
             result[i][1] = item
             i++
           }
-          resolve(Object.fromEntries(result))
+          if (doneFirst[1] === i) {
+            resolve(Object.fromEntries(result))
+          } else {
+            reject(new Error('failed to read bounds'))
+          }
         } else {
           for (const item of values.result) {
             result[i] = ['', item]
             i++
           }
-          doneFirst = true
+          doneFirst = [true, i]
         }
       }
 
