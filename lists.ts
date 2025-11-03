@@ -14,6 +14,7 @@ import { pool } from './global'
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { dataloaderCache, identity, isHex32 } from './utils'
 import { AddressPointer } from '@nostr/tools/nip19'
+import { normalizeURL } from '@nostr/tools/utils'
 
 let serial = 0
 
@@ -106,7 +107,7 @@ export const loadFavoriteRelays: ListFetcher<string | AddressPointer> = makeList
     if (tag.length >= 2) {
       switch (tag[0]) {
         case 'relay':
-          return tag[1]
+          return normalizeURL(tag[1])
         case 'a':
           const spl = tag[1].split(':')
           if (!isHex32(spl[1]) || spl[0] !== '30002') return undefined
