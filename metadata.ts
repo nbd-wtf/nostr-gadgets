@@ -74,7 +74,7 @@ export function bareNostrUser(input: string): NostrUser {
 
 const metadataStore = createStore('@nostr/gadgets/metadata', 'cache')
 
-type NostrUserRequest = {
+export type NostrUserRequest = {
   pubkey: string
   relays?: string[]
   forceUpdate?: boolean | NostrEvent
