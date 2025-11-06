@@ -237,7 +237,14 @@ export class OutboxManager {
             events,
           )
 
-          let added = await Promise.all(events.map(event => this.store.saveEvent(event)))
+          let added = await Promise.all(
+            events.map(event =>
+              this.store.saveEvent({
+                ...event,
+                seen_on: Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url),
+              } as NostrEvent),
+            ),
+          )
           addedNewEventsOnSync = added.indexOf(true) !== -1
 
           // update stored bound bounds for this person since they're caught up to now
@@ -306,7 +313,11 @@ export class OutboxManager {
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
       onevent: async event => {
-        const isNew = await this.store.saveEvent(event)
+        const isNew = await this.store.saveEvent({
+          ...event,
+          seen_on: Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url),
+        } as NostrEvent)
+
         if (isNew) {
           this.bounds[event.pubkey][1] = Math.round(Date.now() / 1000)
           await this.setBound(event.pubkey, this.bounds[event.pubkey])
@@ -398,7 +409,14 @@ export class OutboxManager {
         }
 
         console.debug('paginating to the past', pubkey, relays, oldest, events)
-        await Promise.all(events.map(event => this.store.saveEvent(event)))
+        await Promise.all(
+          events.map(event =>
+            this.store.saveEvent({
+              ...event,
+              seen_on: Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url),
+            } as NostrEvent),
+          ),
+        )
 
         // update oldest bound
         if (events.length) {
