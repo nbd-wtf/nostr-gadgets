@@ -132,6 +132,8 @@ export class OutboxManager {
       }
     }
 
+    if (authors.length === 0) return false
+
     this.markSyncing(authors)
 
     // this prevents the sync process from always starting at the same point
@@ -521,7 +523,7 @@ export async function outboxFilterRelayBatch(
   const declaration: { url: string; filter: Filter }[] = []
 
   type Count = { count: number }
-  const relaysByCount: { [url: string]: Count } = {}
+  const relayCounts: { [url: string]: Count } = {}
   const relaysByPubKey: { [pubkey: string]: { [url: string]: Count } } = {}
   const numberOfRelaysPerUser = pubkeys.length < 100 ? 4 : pubkeys.length < 800 ? 3 : pubkeys.length < 1200 ? 2 : 1
 
@@ -536,8 +538,8 @@ export async function outboxFilterRelayBatch(
         if (rl.items[i].write) {
           try {
             const url = normalizeURL(rl.items[i].url)
-            const count = relaysByCount[url] || { count: 0 }
-            relaysByCount[url] = count
+            const count = relayCounts[url] || { count: 0 }
+            relayCounts[url] = count
             relaysByPubKey[pubkey][url] = count
             count.count++
             w++
