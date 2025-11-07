@@ -105,12 +105,17 @@ export class IDBEventStore {
    * @returns boolean - true if the event was new, false if it was already saved
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
-  async saveEvent(event: NostrEvent): Promise<boolean> {
+  async saveEvent(event: NostrEvent, seenOn?: string[]): Promise<boolean> {
     if (!this._db) await this.init()
 
     // sanity checking
     if (event.created_at > 0xffffffff || event.kind > 0xffff) {
       throw new DatabaseError('event with values out of expected boundaries')
+    }
+
+    // store relays on "seen_on" (so it's saved on database when calling JSON.stringify)
+    if (seenOn) {
+      ;(event as unknown as { seen_on: string[] }).seen_on = seenOn
     }
 
     // start batching logic
@@ -432,8 +437,18 @@ export class IDBEventStore {
                 resolve(null)
               }
 
-              const event: NostrEvent = JSON.parse(eventData)
-              resolve(event)
+              const event = JSON.parse(eventData)
+
+              // if we see a property "seen_on", convert that to something that can't be jsonified by accident later
+              if ('seen_on' in event) {
+                event[seenOnSymbol] = event.seen_on
+                delete event.seen_on
+              }
+
+              // add another special property to denote that this event was loaded from the store
+              event[isLocalSymbol] = true
+
+              resolve(event as NostrEvent)
             }
 
             getEventRequest.onerror = () => {
@@ -759,7 +774,18 @@ export class IDBEventStore {
                   return
                 }
 
-                resolve(JSON.parse(eventData) as NostrEvent)
+                const event = JSON.parse(eventData)
+
+                // if we see a property "seen_on", convert that to something that can't be jsonified by accident later
+                if ('seen_on' in event) {
+                  event[seenOnSymbol] = event.seen_on
+                  delete event.seen_on
+                }
+
+                // add another special property to denote that this event was loaded from the store
+                event[isLocalSymbol] = true
+
+                resolve(event as NostrEvent)
               }
 
               getEventRequest.onerror = () => {
@@ -1260,4 +1286,16 @@ function invertedTimestampBytes(created_at: number) {
   tsBytes[2] = (invertedTimestamp >> 8) & 0xff
   tsBytes[3] = invertedTimestamp & 0xff
   return tsBytes
+}
+
+// special properties we sneak into the event objects
+const isLocalSymbol = Symbol('this event is stored locally')
+const seenOnSymbol = Symbol('relays where this event was seen before stored')
+
+export function isLocal(event: NostrEvent): boolean {
+  return (event as any)[isLocalSymbol] || false
+}
+
+export function seenOn(event: NostrEvent): string[] {
+  return (event as any)[seenOnSymbol] || []
 }
