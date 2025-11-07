@@ -18,6 +18,8 @@ import { normalizeURL } from '@nostr/tools/utils'
 
 let serial = 0
 
+export const isFresh = Symbol('event was just downloaded or force-updated, not loaded from cache')
+
 /**
  * Representation of a relay entry as found in a kind:10002 list.
  */
@@ -54,7 +56,7 @@ export type ListFetcher<I> = (
   defaultItems?: I[],
 ) => Promise<ListResult<I>>
 
-export type ListResult<I> = { event: NostrEvent | null; items: I[] }
+export type ListResult<I> = { event: NostrEvent | null; items: I[]; [isFresh]: boolean }
 
 /**
  * A ListFetcher for kind:3 follow lists.
@@ -264,24 +266,24 @@ export function makeListFetcher<I>(
 
             if (typeof req.forceUpdate === 'object') {
               // we have the event right here, so just use it
-              const final = { event: req.forceUpdate, items: process(req.forceUpdate) }
+              const final = { event: req.forceUpdate, items: process(req.forceUpdate), [isFresh]: true }
               set(req.target, final, store)
               return final
             } else if (!res) {
               remainingRequests.push(req)
               // we don't have anything for this key, fill in with a placeholder
-              return { items: req.defaultItems || [], event: null }
+              return { items: req.defaultItems || [], event: null, [isFresh]: false }
             } else if (req.forceUpdate === true || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-              return res
+              return { ...res, [isFresh]: false }
             } else if (res.event === null && res.lastAttempt < Date.now() / 1000 - 60 * 60) {
               remainingRequests.push(req)
               // we have something and it's not so old (1 hour), but it's empty, so we will try again
-              return res
+              return { ...res, [isFresh]: false }
             } else {
               // this one is so good we won't try to fetch it again
-              return res
+              return { ...res, [isFresh]: false }
             }
           }),
         )
@@ -322,7 +324,7 @@ export function makeListFetcher<I>(
                   if (req.target === evt.pubkey) {
                     const previous = results[req.index]?.event
                     if ((previous?.created_at || 0) > evt.created_at) return
-                    results[req.index] = { event: evt, items: process(evt) }
+                    results[req.index] = { event: evt, items: process(evt), [isFresh]: true }
                     return
                   }
                 }
