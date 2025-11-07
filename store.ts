@@ -294,7 +294,7 @@ export class IDBEventStore {
           const deletePromises: Promise<void>[] = []
           for (const indexKey of getIndexKeysForEvent(event, serial)) {
             const promise = new Promise<void>((resolveDelete, rejectDelete) => {
-              const deleteRequest = indexStore.delete(indexKey)
+              const deleteRequest = indexStore.delete(indexKey as IDBValidKey)
               deleteRequest.onsuccess = () => resolveDelete()
               deleteRequest.onerror = () =>
                 rejectDelete(new DatabaseError(`Failed to delete index: ${deleteRequest.error?.message}`))
@@ -511,15 +511,17 @@ export class IDBEventStore {
     let k = Math.min(numberOfIteratorsToPullOnEachRound, remainingUnexhausted)
 
     // initial pull from all queries
-    for (let q = 0; q < queries.length; q++) {
-      const status = statuses[q]
-      const hasMore = await this.pull(indexStore, queries[q], batchSize, status.results)
-      if (!hasMore) {
-        // exhaust
-        statuses[q].exhausted = true
-        remainingUnexhausted--
-      }
-    }
+    await Promise.all(
+      queries.map(async (query, q) => {
+        const status = statuses[q]
+        const hasMore = await this.pull(indexStore, query, batchSize, status.results)
+        if (!hasMore) {
+          // exhaust
+          statuses[q].exhausted = true
+          remainingUnexhausted--
+        }
+      }),
+    )
 
     // main iteration loop
     while (true) {
@@ -557,10 +559,65 @@ export class IDBEventStore {
         }
       }
 
-      // sort temp results, load and emit them
+      // sort temp results (this ensures our results are emitted in the correct order)
       tempResults.sort((a, b) => b.ts - a.ts)
-      for await (let event of this.load(eventStore, tempResults, extraTagFilter)) {
-        yield event
+      const eventPromises: Promise<NostrEvent | null>[] = new Array(tempResults.length)
+
+      // load temp results from database in individual queries to the eventstore
+      for (let i = 0; i < tempResults.length; i++) {
+        const serial = tempResults[i].serial
+
+        eventPromises[i] = new Promise<NostrEvent | null>(resolve => {
+          const getEventRequest = eventStore.get(serial)
+
+          getEventRequest.onsuccess = () => {
+            const eventData = getEventRequest.result
+            if (!eventData) {
+              console.error(
+                'tried to get event with serial',
+                serial,
+                // 'from query',
+                // query,
+                // 'key',
+                // key,
+                'but it did not exist',
+              )
+              resolve(null)
+              return
+            }
+
+            const event = JSON.parse(eventData)
+
+            // if we see a property "seen_on", convert that to something that can't be jsonified by accident later
+            if ('seen_on' in event) {
+              event[seenOnSymbol] = event.seen_on
+              delete event.seen_on
+            }
+
+            // add another special property to denote that this event was loaded from the store
+            event[isLocalSymbol] = true
+
+            resolve(event as NostrEvent)
+          }
+
+          getEventRequest.onerror = () => {
+            console.error(`failed to get event: ${getEventRequest.error?.message}`)
+            resolve(null)
+          }
+        })
+      }
+
+      // when they're all loaded filter them by any extraTagFilters and emit them
+      let events = await Promise.all(eventPromises)
+      for (let i = 0; i < events.length; i++) {
+        const evt = events[i]
+
+        // apply extra filtering
+        if (!evt || !filterMatchesTags(extraTagFilter, evt)) {
+          continue
+        }
+
+        yield evt
         emittedTotal++
         if (emittedTotal >= limit) {
           return
@@ -573,18 +630,19 @@ export class IDBEventStore {
       // otherwise we must proceed by pulling more data then repeating the process
       k = Math.min(numberOfIteratorsToPullOnEachRound, remainingUnexhausted)
 
-      for (let q = 0; q < queries.length; q++) {
-        const status = statuses[q]
+      await Promise.all(
+        queries.map(async (query, q) => {
+          const status = statuses[q]
+          if (status.exhausted) return
 
-        if (status.exhausted) continue
-
-        const hasMore = await this.pull(indexStore, queries[q], batchSize, status.results)
-        if (!hasMore) {
-          // exhaust
-          statuses[q].exhausted = true
-          remainingUnexhausted--
-        }
-      }
+          const hasMore = await this.pull(indexStore, query, batchSize, status.results)
+          if (!hasMore) {
+            // exhaust
+            statuses[q].exhausted = true
+            remainingUnexhausted--
+          }
+        }),
+      )
     }
   }
 
@@ -644,69 +702,6 @@ export class IDBEventStore {
         )
       }
     })
-  }
-
-  async *load(
-    eventStore: IDBObjectStore,
-    results: QueryResult[],
-    extraTagFilter: [string, string[]][],
-  ): AsyncGenerator<NostrEvent> {
-    const eventPromises: Promise<NostrEvent | null>[] = new Array(results.length)
-
-    for (let i = 0; i < results.length; i++) {
-      const serial = results[i].serial
-
-      eventPromises[i] = new Promise<NostrEvent | null>(resolve => {
-        const getEventRequest = eventStore.get(serial)
-
-        getEventRequest.onsuccess = () => {
-          const eventData = getEventRequest.result
-          if (!eventData) {
-            console.error(
-              'tried to get event with serial',
-              serial,
-              // 'from query',
-              // query,
-              // 'key',
-              // key,
-              'but it did not exist',
-            )
-            resolve(null)
-            return
-          }
-
-          const event = JSON.parse(eventData)
-
-          // if we see a property "seen_on", convert that to something that can't be jsonified by accident later
-          if ('seen_on' in event) {
-            event[seenOnSymbol] = event.seen_on
-            delete event.seen_on
-          }
-
-          // add another special property to denote that this event was loaded from the store
-          event[isLocalSymbol] = true
-
-          resolve(event as NostrEvent)
-        }
-
-        getEventRequest.onerror = () => {
-          console.error(`failed to get event: ${getEventRequest.error?.message}`)
-          resolve(null)
-        }
-      })
-    }
-
-    let events = await Promise.all(eventPromises)
-    for (let i = 0; i < events.length; i++) {
-      const evt = events[i]
-
-      // apply extra filtering
-      if (!evt || !filterMatchesTags(extraTagFilter, evt)) {
-        continue
-      }
-
-      yield evt
-    }
   }
 }
 
