@@ -11,7 +11,7 @@ import { createStore, getMany, set, setMany } from 'idb-keyval'
 
 import { pool } from './global'
 
-import { BIG_RELAYS_DO_NOT_USE_EVER, METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
+import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { dataloaderCache, identity, isHex32 } from './utils'
 import { AddressPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
@@ -51,6 +51,7 @@ export type ListFetcher<I> = (
   pubkey: string,
   hints?: string[],
   forceUpdate?: boolean | NostrEvent,
+  defaultItems?: I[],
 ) => Promise<ListResult<I>>
 
 export type ListResult<I> = { event: NostrEvent | null; items: I[] }
@@ -66,7 +67,6 @@ export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
       return tag[1]
     }
   }),
-  _ => [],
 )
 
 /**
@@ -80,7 +80,6 @@ export const loadWikiAuthors: ListFetcher<string> = makeListFetcher<string>(
       return tag[1]
     }
   }),
-  _ => [],
 )
 
 /**
@@ -94,7 +93,6 @@ export const loadWikiRelays: ListFetcher<string> = makeListFetcher<string>(
       return tag[1]
     }
   }),
-  _ => [],
 )
 
 /**
@@ -120,7 +118,6 @@ export const loadFavoriteRelays: ListFetcher<string | AddressPointer> = makeList
       }
     }
   }),
-  _ => [],
 )
 
 /**
@@ -138,7 +135,6 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
       return { url: tag[1], read: false, write: true }
     }
   }),
-  _ => BIG_RELAYS_DO_NOT_USE_EVER.map(url => ({ url, read: true, write: true })),
 )
 
 /**
@@ -168,7 +164,6 @@ export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntit
       return undefined
     }
   }),
-  _ => [],
 )
 
 export function itemsFromTags<I>(
@@ -192,12 +187,11 @@ export function makeListFetcher<I>(
   kind: number,
   hardcodedRelays: string[],
   process: (event: NostrEvent | undefined) => I[],
-  defaultTo: (pubkey: string) => I[],
 ): ListFetcher<I> {
   const cache = dataloaderCache<ListResult<I>>()
   const store = createStore(`@nostr/gadgets/list:${kind}`, 'cache')
 
-  type Request = { target: string; relays: string[]; forceUpdate?: boolean | NostrEvent }
+  type Request = { target: string; relays: string[]; forceUpdate?: boolean | NostrEvent; defaultItems?: I[] }
 
   const dataloader = new DataLoader<Request, ListResult<I>, string>(
     requests =>
@@ -222,7 +216,7 @@ export function makeListFetcher<I>(
             } else if (!res) {
               remainingRequests.push(req)
               // we don't have anything for this key, fill in with a placeholder
-              return { items: defaultTo(req.target), event: null }
+              return { items: req.defaultItems || [], event: null }
             } else if (req.forceUpdate === true || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
               remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
@@ -308,11 +302,12 @@ export function makeListFetcher<I>(
     pubkey: string,
     hints: string[] = [],
     forceUpdate?: boolean | NostrEvent,
+    defaultItems?: I[],
   ): Promise<ListResult<I>> {
     let relays: string[] = hints
 
     if (kind === 10002) {
-      return await dataloader.load({ target: pubkey, relays, forceUpdate })
+      return await dataloader.load({ target: pubkey, relays, forceUpdate, defaultItems })
     } else {
       const rl = await loadRelayList(pubkey, hints)
       relays.push(
@@ -322,7 +317,7 @@ export function makeListFetcher<I>(
           .slice(0, 3),
       )
 
-      const req = { target: pubkey, relays, forceUpdate }
+      const req = { target: pubkey, relays, forceUpdate, defaultItems }
 
       if (forceUpdate) {
         dataloader.clear(req)

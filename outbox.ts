@@ -186,15 +186,7 @@ export class OutboxManager {
             .slice(0, 4)
             .map(r => r.url)
 
-          if (
-            // either this person has a list with zero relays
-            relays.length === 0 ||
-            // or they don't have a list and we're getting the default relays for them
-            // (replace with the given default relays)
-            (this.defaultRelaysForConfusedPeople !== BIG_RELAYS_DO_NOT_USE_EVER &&
-              relays.length === BIG_RELAYS_DO_NOT_USE_EVER.length &&
-              relays.every((v, i) => v === BIG_RELAYS_DO_NOT_USE_EVER[i]))
-          ) {
+          if (relays.length === 0) {
             // someone made a mistake, let's use big relays for them
             relays = this.defaultRelaysForConfusedPeople
           }
