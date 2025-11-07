@@ -166,6 +166,60 @@ export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntit
   }),
 )
 
+export const loadBookmarks = makeListFetcher<string>(
+  10003,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && (tag[0] === 'e' || tag[0] === 'a') && tag[1]) {
+      return tag[1]
+    }
+  }),
+)
+
+export const loadBlossomServers = makeListFetcher<string>(10063, [], event =>
+  event
+    ? event.tags
+        .filter(([k, v]) => k === 'server' && v)
+        .map(([, url]) => 'http' + normalizeURL(url).substring(2 /* 'ws' */))
+        .filter(Boolean)
+    : [],
+)
+
+export type Emoji = {
+  shortcode: string
+  url: string
+}
+
+export const loadEmojis = makeListFetcher<Emoji | AddressPointer>(
+  10030,
+  [],
+  itemsFromTags<Emoji | AddressPointer>((tag: string[]): Emoji | AddressPointer | undefined => {
+    if (tag.length < 2) return
+    if (tag[0] === 'a') {
+      const spl = tag[1].split(':')
+      if (!isHex32(spl[1]) || spl[0] !== '30030') return undefined
+      return {
+        identifier: spl.slice(2).join(':'),
+        pubkey: spl[1],
+        kind: parseInt(spl[0]),
+        relays: tag[2] ? [tag[2]] : [],
+      }
+    }
+    if (tag.length < 3 || tag[0] !== 'emoji') return undefined
+    return { shortcode: tag[1], url: tag[2] }
+  }),
+)
+
+export const loadPins = makeListFetcher<string>(
+  10001,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'e' && tag[1]) {
+      return tag[1]
+    }
+  }),
+)
+
 export function itemsFromTags<I>(
   tagProcessor: (tag: string[]) => I | undefined,
 ): (event: NostrEvent | undefined) => I[] {
