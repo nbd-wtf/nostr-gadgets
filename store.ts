@@ -105,7 +105,10 @@ export class IDBEventStore {
    * @returns boolean - true if the event was new, false if it was already saved
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
-  async saveEvent(event: NostrEvent, seenOn?: string[], followedBy?: string[]): Promise<boolean> {
+  async saveEvent(
+    event: NostrEvent,
+    { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] },
+  ): Promise<boolean> {
     if (!this._db) await this.init()
 
     // sanity checking
@@ -516,12 +519,12 @@ export class IDBEventStore {
     const indexStore = transaction.objectStore('indexes')
     const eventStore = transaction.objectStore('events')
 
-    const { queries, extraTagFilter } = prepareQueries(filter)
+    const { queries, extraTagFilter, extraAuthorFilter } = prepareQueries(filter)
     if (queries.length === 0) {
       return
     }
 
-    const batchSize = batchSizePerNumberOfQueries(limit, queries.length)
+    const batchSize = Math.min(10_000, batchSizePerNumberOfQueries(limit, queries.length))
 
     // iterator state management
     const statuses: QueryStatus[] = queries.map(_ => {
@@ -644,7 +647,11 @@ export class IDBEventStore {
         const evt = events[i]
 
         // apply extra filtering
-        if (!evt || !filterMatchesTags(extraTagFilter, evt)) {
+        if (
+          !evt ||
+          !filterMatchesTags(extraTagFilter, evt) ||
+          (extraAuthorFilter && !extraAuthorFilter.includes(evt.pubkey))
+        ) {
           continue
         }
 
@@ -1037,9 +1044,11 @@ function getDTag(tags: string[][]): string {
 function prepareQueries(filter: Filter & { followedBy?: string }): {
   queries: Query[]
   extraTagFilter: [tagLetter: string, tagValues: string[]][]
+  extraAuthorFilter: string[] | null
 } {
   const queries: Query[] = []
   const extraTagFilter: [tagLetter: string, tagValues: string[]][] = []
+  let extraAuthorFilter: string[] | null = null
   const timestampStartingPoint = invertedTimestampBytes(filter.until || 0xffffffff)
   const timestampEndingPoint = invertedTimestampBytes(filter.since || 0)
 
@@ -1082,8 +1091,11 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       extraTagFilter[bestIndex] = extraTagFilter[extraTagFilter.length - 1]
       extraTagFilter.pop()
 
+      // if authors were specified we have to filter for those afterwards
+      extraAuthorFilter = filter.authors || null
+
       // (this means we had tags in the query so we can exit now with the queries we just gathered)
-      return { queries, extraTagFilter }
+      return { queries, extraTagFilter, extraAuthorFilter }
     }
   }
 
@@ -1103,7 +1115,10 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       endingPoint,
     })
 
-    return { queries, extraTagFilter }
+    // if authors were specified we have to filter for those afterwards
+    extraAuthorFilter = filter.authors || null
+
+    return { queries, extraTagFilter, extraAuthorFilter }
   }
 
   if (filter.authors && filter.authors.length > 0) {
@@ -1131,7 +1146,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
         }
       }
 
-      return { queries, extraTagFilter }
+      return { queries, extraTagFilter, extraAuthorFilter }
     }
 
     // handle just author filter
@@ -1152,7 +1167,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       })
     }
 
-    return { queries, extraTagFilter }
+    return { queries, extraTagFilter, extraAuthorFilter }
   }
 
   // handle kind filter
@@ -1175,7 +1190,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       })
     }
 
-    return { queries, extraTagFilter }
+    return { queries, extraTagFilter, extraAuthorFilter }
   }
 
   // handle low-priority tag filters (these are worse than kind, authors etc)
@@ -1203,7 +1218,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       extraTagFilter.pop()
 
       // and we're done, we only needed one
-      return { queries, extraTagFilter }
+      return { queries, extraTagFilter, extraAuthorFilter }
     }
   }
 
@@ -1222,7 +1237,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
     endingPoint,
   })
 
-  return { queries, extraTagFilter }
+  return { queries, extraTagFilter, extraAuthorFilter }
 }
 
 function batchSizePerNumberOfQueries(totalFilterLimit: number, numberOfQueries: number): number {

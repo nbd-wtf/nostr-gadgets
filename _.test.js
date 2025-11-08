@@ -102,7 +102,7 @@ test('outbox filter batch', async () => {
   expect(counts[TEST_PUBKEYS.daniele]).toBeGreaterThan(2)
 })
 
-test('idb store', async () => {
+test('idb store basic', async () => {
   const store = new IDBEventStore()
   await store.init()
   const sk1 = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
@@ -450,5 +450,117 @@ test('idb store', async () => {
       }
       expect(count).toEqual(1)
     }
+  }
+})
+
+test('idb store following', async () => {
+  const store = new IDBEventStore()
+  await store.init()
+  const skA = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
+  const skB = hexToBytes('611b5b25b45854a36c3621c94f3508516c9b373c18e2eca59ffd15a6908c96be')
+  const skC = hexToBytes('a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5')
+  const skD = hexToBytes('d15fe5f99a1aca0cc209cb2554eedad181043edb498afcab51dd993ba40da37b')
+
+  const pkA = getPublicKey(skA)
+  const pkB = getPublicKey(skB)
+  const pkC = getPublicKey(skC)
+  const pkD = getPublicKey(skD)
+
+  const events = []
+
+  // create events: 10 from each pubkey
+  const sks = [skA, skB, skC, skD]
+  for (let sk of sks) {
+    for (let i = 0; i < 10; i++) {
+      const event = finalizeEvent(
+        {
+          kind: 1,
+          created_at: 2000 + i,
+          content: 'event ' + i,
+          tags: [],
+        },
+        sk,
+      )
+      events.push(event)
+
+      // save with follower relationships:
+      // A follows B and C
+      // B follows C and D
+      let followers = []
+      if (sk === skB || sk === skC) {
+        followers.push(pkA)
+      }
+      if (sk === skC || sk === skD) {
+        followers.push(pkB)
+      }
+      await store.saveEvent(event, { followedBy: followers })
+    }
+  }
+
+  // query by followed by A
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkA })) {
+      count++
+      expect(evt.pubkey === pkB || evt.pubkey === pkC).toBeTrue()
+    }
+    expect(count).toEqual(20)
+  }
+
+  // query by followed B
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkB })) {
+      count++
+      expect(evt.pubkey === pkC || evt.pubkey === pkD).toBeTrue()
+    }
+    expect(count).toEqual(20)
+  }
+
+  // call markFollow so A starts following D
+  await store.markFollow(pkA, pkD)
+
+  // query by followed by A (should return D events too)
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkA })) {
+      count++
+      expect(evt.pubkey === pkB || evt.pubkey === pkC || evt.pubkey === pkD).toBeTrue()
+    }
+    expect(count).toEqual(30)
+  }
+
+  // query by followed B (should stay the same)
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkB })) {
+      count++
+      expect(evt.pubkey === pkC || evt.pubkey === pkD).toBeTrue()
+    }
+    expect(count).toEqual(20)
+  }
+
+  // call markUnfollow so both A and B stop following C
+  await store.markUnfollow(pkA, pkC)
+  await store.markUnfollow(pkB, pkC)
+
+  // query by followed by A (should not return C events)
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkA })) {
+      count++
+      expect(evt.pubkey === pkB || evt.pubkey === pkD).toBeTrue()
+    }
+    expect(count).toEqual(20)
+  }
+
+  // query by followed B (should not return C events)
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkB })) {
+      count++
+      expect(evt.pubkey === pkD).toBeTrue()
+    }
+    expect(count).toEqual(10)
   }
 })

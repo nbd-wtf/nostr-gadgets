@@ -234,12 +234,11 @@ export class OutboxManager {
 
           let added = await Promise.all(
             events.map(event =>
-              this.store.saveEvent(
-                event,
-                this.storeRelaysSeenOn
+              this.store.saveEvent(event, {
+                seenOn: this.storeRelaysSeenOn
                   ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                   : undefined,
-              ),
+              }),
             ),
           )
           addedNewEventsOnSync = added.indexOf(true) !== -1
@@ -310,10 +309,11 @@ export class OutboxManager {
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
       onevent: async event => {
-        const isNew = await this.store.saveEvent(
-          event,
-          this.storeRelaysSeenOn ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url) : undefined,
-        )
+        const isNew = await this.store.saveEvent(event, {
+          seenOn: this.storeRelaysSeenOn
+            ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+            : undefined,
+        })
 
         if (isNew) {
           this.bounds[event.pubkey][1] = Math.round(Date.now() / 1000)
@@ -408,12 +408,11 @@ export class OutboxManager {
         console.debug('paginating to the past', pubkey, relays, oldest, events)
         await Promise.all(
           events.map(event =>
-            this.store.saveEvent(
-              event,
-              this.storeRelaysSeenOn
+            this.store.saveEvent(event, {
+              seenOn: this.storeRelaysSeenOn
                 ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                 : undefined,
-            ),
+            }),
           ),
         )
 
