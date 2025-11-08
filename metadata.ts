@@ -3,12 +3,11 @@
  * Contains types and a function for optimized loading of profile metadata for any pubkey.
  */
 
-import DataLoader from 'dataloader'
+import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 import { createStore, getMany, setMany, set } from 'idb-keyval'
 
-import { dataloaderCache } from './utils'
 import { pool } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
@@ -235,8 +234,6 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
     }),
   {
     cacheKeyFn: r => r.pubkey,
-    cache: true,
-    cacheMap: dataloaderCache<NostrUser>(),
   },
 )
 

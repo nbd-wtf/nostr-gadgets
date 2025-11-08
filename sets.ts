@@ -3,14 +3,14 @@
  * Contains functions for optimized fetching of addressable lists associated with a pubkey.
  */
 
-import DataLoader from 'dataloader'
+import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { createStore, getMany, setMany } from 'idb-keyval'
 
 import { pool } from './global'
-import { dataloaderCache, isHex32 } from './utils'
+import { isHex32 } from './utils'
 import { itemsFromTags, loadRelayList } from './lists'
 
 /**
@@ -67,7 +67,6 @@ export const loadRelaySets: SetFetcher<string> = makeSetFetcher<string>(
  * differentiated by their "d" tag values.
  */
 export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => I[]): SetFetcher<I> {
-  const cache = dataloaderCache<SetResult<I>>()
   const store = createStore(`@nostr/gadgets/set:${kind}`, 'cache')
 
   type Request = { target: string; relays: string[]; forceUpdate?: boolean }
@@ -169,9 +168,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         }
       }),
     {
-      cache: true,
       cacheKeyFn: req => req.target,
-      cacheMap: cache,
     },
   )
 

@@ -3,7 +3,7 @@
  * Contains functions for optimized fetching of replaceable lists associated with a pubkey.
  */
 
-import DataLoader from 'dataloader'
+import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
@@ -12,7 +12,7 @@ import { createStore, getMany, set, setMany } from 'idb-keyval'
 import { pool } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
-import { dataloaderCache, identity, isHex32 } from './utils'
+import { identity, isHex32 } from './utils'
 import { AddressPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 
@@ -244,7 +244,6 @@ export function makeListFetcher<I>(
   hardcodedRelays: string[],
   process: (event: NostrEvent | undefined) => I[],
 ): ListFetcher<I> {
-  const cache = dataloaderCache<ListResult<I>>()
   const store = createStore(`@nostr/gadgets/list:${kind}`, 'cache')
 
   type Request = { target: string; relays: string[]; forceUpdate?: boolean | NostrEvent; defaultItems?: I[] }
@@ -348,9 +347,11 @@ export function makeListFetcher<I>(
         }
       }),
     {
-      cache: true,
       cacheKeyFn: req => req.target,
-      cacheMap: cache,
+      transformCacheHit(v) {
+        v[isFresh] = false
+        return v
+      },
     },
   )
 
