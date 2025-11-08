@@ -490,7 +490,7 @@ export class IDBEventStore {
    * @param maxLimit - maximum number of events to return (default: 500)
    * @yields events matching the filter criteria
    */
-  async *queryEvents(filter: Filter, maxLimit: number = 500): AsyncGenerator<NostrEvent> {
+  async *queryEvents(filter: Filter & { followedBy?: string }, maxLimit: number = 500): AsyncGenerator<NostrEvent> {
     if (!this._db) await this.init()
 
     if (filter.search) {
@@ -515,16 +515,20 @@ export class IDBEventStore {
     yield* this.queryInternal(transaction, filter, limit)
   }
 
-  private async *queryInternal(transaction: IDBTransaction, filter: Filter, limit: number): AsyncGenerator<NostrEvent> {
+  private async *queryInternal(
+    transaction: IDBTransaction,
+    filter: Filter & { followedBy?: string },
+    limit: number,
+  ): AsyncGenerator<NostrEvent> {
     const indexStore = transaction.objectStore('indexes')
     const eventStore = transaction.objectStore('events')
 
-    const { queries, extraTagFilter, extraAuthorFilter } = prepareQueries(filter)
+    const { queries, extraTagFilter, extraAuthorFilter, extraKindFilter } = prepareQueries(filter)
     if (queries.length === 0) {
       return
     }
 
-    const batchSize = Math.min(10_000, batchSizePerNumberOfQueries(limit, queries.length))
+    const batchSize = Math.min(1_000, batchSizePerNumberOfQueries(limit, queries.length))
 
     // iterator state management
     const statuses: QueryStatus[] = queries.map(_ => {
@@ -540,7 +544,6 @@ export class IDBEventStore {
     let remainingUnexhausted = queries.length
     const numberOfIteratorsToPullOnEachRound = Math.max(1, Math.ceil(queries.length / 12))
     const tempResults: QueryResult[] = new Array(batchSize * 2) // [timestamp, serial][]
-    tempResults.length = 0
 
     let k = Math.min(numberOfIteratorsToPullOnEachRound, remainingUnexhausted)
 
@@ -564,7 +567,8 @@ export class IDBEventStore {
       // find threshold: k-th highest timestamp across ALL buffered events
       const threshold = statuses
         .map((status, q) => ({ q, ts: status.exhausted ? 0 : status.results[status.results.length - 1].ts }))
-        .sort((a, b) => b.ts - a.ts)[k - 1].q
+        .sort((a, b) => b.ts - a.ts)[k - 1].ts
+
 
       // collect all events >= threshold from ALL iterators
       for (let q = 0; q < queries.length; q++) {
@@ -607,15 +611,7 @@ export class IDBEventStore {
           getEventRequest.onsuccess = () => {
             const eventData = getEventRequest.result
             if (!eventData) {
-              console.error(
-                'tried to get event with serial',
-                serial,
-                // 'from query',
-                // query,
-                // 'key',
-                // key,
-                'but it did not exist',
-              )
+              console.error('tried to get event with serial', serial, 'but it did not exist')
               resolve(null)
               return
             }
@@ -650,7 +646,8 @@ export class IDBEventStore {
         if (
           !evt ||
           !filterMatchesTags(extraTagFilter, evt) ||
-          (extraAuthorFilter && !extraAuthorFilter.includes(evt.pubkey))
+          (extraAuthorFilter && !extraAuthorFilter.includes(evt.pubkey)) ||
+          (extraKindFilter && !extraKindFilter.includes(evt.kind))
         ) {
           continue
         }
@@ -1045,10 +1042,12 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
   queries: Query[]
   extraTagFilter: [tagLetter: string, tagValues: string[]][]
   extraAuthorFilter: string[] | null
+  extraKindFilter: number[] | null
 } {
   const queries: Query[] = []
   const extraTagFilter: [tagLetter: string, tagValues: string[]][] = []
   let extraAuthorFilter: string[] | null = null
+  let extraKindFilter: number[] | null = null
   const timestampStartingPoint = invertedTimestampBytes(filter.until || 0xffffffff)
   const timestampEndingPoint = invertedTimestampBytes(filter.since || 0)
 
@@ -1091,11 +1090,12 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       extraTagFilter[bestIndex] = extraTagFilter[extraTagFilter.length - 1]
       extraTagFilter.pop()
 
-      // if authors were specified we have to filter for those afterwards
+      // if authors and kinds were specified we have to filter for those afterwards
       extraAuthorFilter = filter.authors || null
+      extraKindFilter = filter.kinds || null
 
       // (this means we had tags in the query so we can exit now with the queries we just gathered)
-      return { queries, extraTagFilter, extraAuthorFilter }
+      return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
     }
   }
 
@@ -1115,10 +1115,11 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       endingPoint,
     })
 
-    // if authors were specified we have to filter for those afterwards
+    // if authors and kinds were specified we have to filter for those afterwards
     extraAuthorFilter = filter.authors || null
+    extraKindFilter = filter.kinds || null
 
-    return { queries, extraTagFilter, extraAuthorFilter }
+    return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
   }
 
   if (filter.authors && filter.authors.length > 0) {
@@ -1146,7 +1147,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
         }
       }
 
-      return { queries, extraTagFilter, extraAuthorFilter }
+      return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
     }
 
     // handle just author filter
@@ -1167,7 +1168,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       })
     }
 
-    return { queries, extraTagFilter, extraAuthorFilter }
+    return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
   }
 
   // handle kind filter
@@ -1190,7 +1191,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       })
     }
 
-    return { queries, extraTagFilter, extraAuthorFilter }
+    return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
   }
 
   // handle low-priority tag filters (these are worse than kind, authors etc)
@@ -1218,7 +1219,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       extraTagFilter.pop()
 
       // and we're done, we only needed one
-      return { queries, extraTagFilter, extraAuthorFilter }
+      return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
     }
   }
 
@@ -1237,7 +1238,7 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
     endingPoint,
   })
 
-  return { queries, extraTagFilter, extraAuthorFilter }
+  return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
 }
 
 function batchSizePerNumberOfQueries(totalFilterLimit: number, numberOfQueries: number): number {
