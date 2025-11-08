@@ -30,6 +30,7 @@ const INDEX_PUBKEY_KIND_PREFIX = 4
 const INDEX_TAG_PREFIX = 5
 const INDEX_TAG32_PREFIX = 6
 const INDEX_TAG_ADDR_PREFIX = 7
+const INDEX_FOLLOWED_PREFIX = 8
 
 /**
  * indexeddb store for events with optimized indexes that are small in size and fast in speed.
@@ -91,16 +92,20 @@ export class IDBEventStore {
     }
   }
 
-  private saveBatch: null | [ids: string[], events: NostrEvent[], tasks: SaveTask[]]
+  private saveBatch:
+    | null
+    | [ids: string[], events: NostrEvent[], followedBys: (string[] | undefined)[], tasks: SaveTask[]]
   /**
    * saves a nostr event to the store with automatic batching for performance.
    * (if you want the batching to work you can't `await` it immediately upon calling it)
    *
    * @param event - the nostr event to save
+   * @param seenOn - optional array of relay URLs where this event was seen
+   * @param followedBy - optional array of pubkeys that are following this event
    * @returns boolean - true if the event was new, false if it was already saved
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
-  async saveEvent(event: NostrEvent, seenOn?: string[]): Promise<boolean> {
+  async saveEvent(event: NostrEvent, seenOn?: string[], followedBy?: string[]): Promise<boolean> {
     if (!this._db) await this.init()
 
     // sanity checking
@@ -117,12 +122,13 @@ export class IDBEventStore {
     let batch = this.saveBatch
 
     if (!batch) {
-      batch = [[], [], []]
+      batch = [[], [], [], []]
       this.saveBatch = batch
 
       // once we know we have a fresh batch, we schedule this batch to run
       const events = batch[1]
-      const tasks = batch[2]
+      const followedBys = batch[2]
+      const tasks = batch[3]
       queueMicrotask(() => {
         // as soon as we start processing this batch, we need to null it
         // to ensure that any new requests will be added to a new batch
@@ -132,7 +138,7 @@ export class IDBEventStore {
           durability: 'relaxed',
         })
 
-        const promises = this.saveEventsBatch(transaction, events)
+        const promises = this.saveEventsBatch(transaction, events, followedBys)
         for (let i = 0; i < promises.length; i++) {
           promises[i].catch(tasks[i].reject).then(isSaved => {
             if (typeof isSaved !== 'undefined') tasks[i].resolve(isSaved)
@@ -145,12 +151,13 @@ export class IDBEventStore {
 
     // return existing task if it exists
     let idx = batch[0].indexOf(event.id)
-    if (idx !== -1) return batch[2][idx].p
+    if (idx !== -1) return batch[3][idx].p
 
     // add a new one
     idx = batch[0].push(event.id) - 1
-    let task = (batch[2][idx] = {} as SaveTask)
+    let task = (batch[3][idx] = {} as SaveTask)
     batch[1][idx] = event
+    batch[2][idx] = followedBy
 
     task.p = new Promise<boolean>(function (resolve, reject) {
       task.resolve = resolve
@@ -160,12 +167,17 @@ export class IDBEventStore {
     return task.p
   }
 
-  private saveEventsBatch(transaction: IDBTransaction, events: NostrEvent[]): Promise<boolean>[] {
+  private saveEventsBatch(
+    transaction: IDBTransaction,
+    events: NostrEvent[],
+    followedBys: (string[] | undefined)[],
+  ): Promise<boolean>[] {
     const idStore = transaction.objectStore('ids')
     const promises = new Array<Promise<boolean>>(events.length)
 
     for (let i = 0; i < events.length; i++) {
       const event = events[i]
+      const followedBy = followedBys[i]
 
       promises[i] = new Promise<boolean>((resolve, reject) => {
         // check for duplicates
@@ -180,7 +192,7 @@ export class IDBEventStore {
           }
 
           // save the event
-          this.saveEventInternal(transaction, event)
+          this.saveEventInternal(transaction, event, followedBy)
             .then(() => {
               resolve(true)
               transaction.commit()
@@ -197,7 +209,11 @@ export class IDBEventStore {
     return promises
   }
 
-  private async saveEventInternal(transaction: IDBTransaction, event: NostrEvent): Promise<void> {
+  private async saveEventInternal(
+    transaction: IDBTransaction,
+    event: NostrEvent,
+    followedBy?: string[],
+  ): Promise<void> {
     const eventStore = transaction.objectStore('events')
     const idStore = transaction.objectStore('ids')
     const indexStore = transaction.objectStore('indexes')
@@ -220,7 +236,7 @@ export class IDBEventStore {
         indexPromises.push(promise)
 
         // create all the other indexes
-        for (const indexKey of getIndexKeysForEvent(event, serial)) {
+        for (const indexKey of getIndexKeysForEvent(event, serial, followedBy)) {
           const p = new Promise<void>((resolve, reject) => {
             const indexRequest = indexStore.put(null, indexKey.buffer as ArrayBuffer)
             indexRequest.onsuccess = () => resolve()
@@ -292,7 +308,7 @@ export class IDBEventStore {
 
           // delete all indexes for this event
           const deletePromises: Promise<void>[] = []
-          for (const indexKey of getIndexKeysForEvent(event, serial)) {
+          for (const indexKey of getIndexKeysForEvent(event, serial, [])) {
             const promise = new Promise<void>((resolveDelete, rejectDelete) => {
               const deleteRequest = indexStore.delete(indexKey as IDBValidKey)
               deleteRequest.onsuccess = () => resolveDelete()
@@ -756,7 +772,11 @@ function getTagIndexPrefix(tagLetter: string, tagValue: string): [Uint8Array, nu
   }
 }
 
-function* getIndexKeysForEvent(event: NostrEvent, serialOrIdx: number | Uint8Array): Generator<Uint8Array> {
+function* getIndexKeysForEvent(
+  event: NostrEvent,
+  serialOrIdx: number | Uint8Array,
+  followedBy?: string[],
+): Generator<Uint8Array> {
   let idx: Uint8Array
   if (typeof serialOrIdx === 'object') {
     idx = serialOrIdx
@@ -830,6 +850,18 @@ function* getIndexKeysForEvent(event: NostrEvent, serialOrIdx: number | Uint8Arr
 
     yield key
   }
+
+  // by followed + date
+  if (followedBy) {
+    for (const follower of followedBy) {
+      const key = new Uint8Array(1 + 8 + 4 + 4)
+      key[0] = INDEX_FOLLOWED_PREFIX
+      putHexAsBytes(key, 1, follower, 8)
+      key.set(tsBytes, 1 + 8)
+      key.set(idx, 1 + 8 + 4)
+      yield key
+    }
+  }
 }
 
 function getAddrTagElements(tagValue: string): { kind: number; pk: string; d: string } {
@@ -892,7 +924,7 @@ function getDTag(tags: string[][]): string {
   return dTag?.[1] || ''
 }
 
-function prepareQueries(filter: Filter): {
+function prepareQueries(filter: Filter & { followedBy?: string }): {
   queries: Query[]
   extraTagFilter: [tagLetter: string, tagValues: string[]][]
 } {
@@ -943,6 +975,25 @@ function prepareQueries(filter: Filter): {
       // (this means we had tags in the query so we can exit now with the queries we just gathered)
       return { queries, extraTagFilter }
     }
+  }
+
+  if (filter.followedBy) {
+    const startingPoint = new Uint8Array(1 + 8 + 4 + 4)
+    startingPoint[0] = INDEX_FOLLOWED_PREFIX
+    putHexAsBytes(startingPoint, 1, filter.followedBy, 8)
+    startingPoint.set(timestampStartingPoint, 1 + 8)
+    startingPoint.fill(0x00, 1 + 8 + 4)
+
+    const endingPoint = startingPoint.slice()
+    endingPoint.set(timestampEndingPoint, 1 + 8)
+    endingPoint.fill(0xff, 1 + 8 + 4)
+
+    queries.push({
+      startingPoint,
+      endingPoint,
+    })
+
+    return { queries, extraTagFilter }
   }
 
   if (filter.authors && filter.authors.length > 0) {
