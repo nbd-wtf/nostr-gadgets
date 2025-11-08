@@ -30,6 +30,8 @@ export class OutboxManager {
   private onsyncupdate: undefined | ((pubkey: string) => void)
   private onbeforeupdate: undefined | ((pubkey: string) => void)
 
+  private authorIsFollowedBy: undefined | ((author: string) => string[] | undefined)
+
   constructor(
     baseFilters: Filter[],
     opts?: {
@@ -41,6 +43,7 @@ export class OutboxManager {
       onbeforeupdate?: (pubkey: string) => void
       defaultRelaysForConfusedPeople?: string[]
       storeRelaysSeenOn?: boolean
+      authorIsFollowedBy?(author: string): string[] | undefined
     },
   ) {
     this.baseFilters = baseFilters
@@ -54,6 +57,7 @@ export class OutboxManager {
     this.onbeforeupdate = opts?.onbeforeupdate
     this.defaultRelaysForConfusedPeople = opts?.defaultRelaysForConfusedPeople || this.defaultRelaysForConfusedPeople
     this.storeRelaysSeenOn = opts?.storeRelaysSeenOn || false
+    this.authorIsFollowedBy = opts?.authorIsFollowedBy
   }
 
   close() {
@@ -123,7 +127,6 @@ export class OutboxManager {
     authors: string[],
     opts: {
       signal: AbortSignal
-      followers?: string[]
     },
   ): Promise<boolean> {
     await this.ensureBoundsLoaded()
@@ -239,7 +242,7 @@ export class OutboxManager {
                 seenOn: this.storeRelaysSeenOn
                   ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                   : undefined,
-                followedBy: opts.followers,
+                followedBy: this.authorIsFollowedBy?.(event.pubkey),
               }),
             ),
           )
@@ -276,7 +279,7 @@ export class OutboxManager {
       // this should only be undefined if you want the live() subscription to last forever
       signal: AbortSignal | undefined
 
-      followers?: string[]
+      isFollowedBy?: (pubkey: string) => string[] | undefined
     },
   ) {
     await this.ensureBoundsLoaded()
@@ -317,7 +320,7 @@ export class OutboxManager {
           seenOn: this.storeRelaysSeenOn
             ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
             : undefined,
-          followedBy: opts.followers,
+          followedBy: this.authorIsFollowedBy?.(event.pubkey),
         })
 
         if (isNew) {
@@ -343,8 +346,6 @@ export class OutboxManager {
     ts: number,
     opts: {
       signal: AbortSignal
-
-      followers?: string[]
     },
   ) {
     await this.ensureBoundsLoaded()
@@ -425,7 +426,7 @@ export class OutboxManager {
               seenOn: this.storeRelaysSeenOn
                 ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                 : undefined,
-              followedBy: opts.followers,
+              followedBy: this.authorIsFollowedBy?.(event.pubkey),
             }),
           ),
         )
