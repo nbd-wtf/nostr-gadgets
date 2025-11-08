@@ -262,20 +262,21 @@ export class IDBEventStore {
    * removes the event and all associated indexes.
    *
    * @param id - hex-encoded event ID to delete
+   * @param followedBy - optional array of pubkeys that are following this event
    * @returns true if event was found and deleted, false if not found
    * @throws {DatabaseError} if deletion fails
    */
-  async deleteEvent(id: string): Promise<boolean> {
+  async deleteEvent(id: string, followedBy?: string[]): Promise<boolean> {
     if (!this._db) await this.init()
 
     const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
 
     return new Promise((resolve, reject) => {
-      this.deleteEventInternal(transaction, id).then(resolve).catch(reject)
+      this.deleteEventInternal(transaction, id, followedBy).then(resolve).catch(reject)
     })
   }
 
-  private async deleteEventInternal(transaction: IDBTransaction, id: string): Promise<boolean> {
+  private async deleteEventInternal(transaction: IDBTransaction, id: string, followedBy?: string[]): Promise<boolean> {
     const eventStore = transaction.objectStore('events')
     const idStore = transaction.objectStore('ids')
     const indexStore = transaction.objectStore('indexes')
@@ -308,7 +309,7 @@ export class IDBEventStore {
 
           // delete all indexes for this event
           const deletePromises: Promise<void>[] = []
-          for (const indexKey of getIndexKeysForEvent(event, serial, [])) {
+          for (const indexKey of getIndexKeysForEvent(event, serial, followedBy || [])) {
             const promise = new Promise<void>((resolveDelete, rejectDelete) => {
               const deleteRequest = indexStore.delete(indexKey as IDBValidKey)
               deleteRequest.onsuccess = () => resolveDelete()
@@ -344,15 +345,29 @@ export class IDBEventStore {
     })
   }
 
+  private async getSerial(transaction: IDBTransaction, id: string): Promise<number | undefined> {
+    const idKey = new Uint8Array(8)
+    putHexAsBytes(idKey, 0, id, 8)
+
+    const idStore = transaction.objectStore('ids')
+
+    return new Promise(resolve => {
+      const req = idStore.get(idKey.buffer)
+      req.onsuccess = () => resolve(req.result)
+      req.onerror = () => resolve(undefined)
+    })
+  }
+
   /**
    * replaces an existing event with a new one, handling replaceable/addressable event logic.
    * i.e., matching same kind/author(/d-tag).
    * only stores the new event if it's newer than existing one.
    *
    * @param event - the replacement event
+   * @param followedBy - optional array of pubkeys that are following this event
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
-  async replaceEvent(event: NostrEvent): Promise<void> {
+  async replaceEvent(event: NostrEvent, followedBy?: string[]): Promise<void> {
     if (!this._db) await this.init()
 
     // sanity checking
@@ -378,7 +393,7 @@ export class IDBEventStore {
     // query for existing events
     for await (let previous of this.queryInternal(transaction, filter, 10)) {
       if (isOlder(previous, event)) {
-        deletePromises.push(this.deleteEventInternal(transaction, previous.id))
+        deletePromises.push(this.deleteEventInternal(transaction, previous.id, followedBy))
       } else {
         shouldStore = false
       }
@@ -718,6 +733,101 @@ export class IDBEventStore {
         )
       }
     })
+  }
+
+  /**
+   * marks all events of a pubkey as followed by another pubkey.
+   * adds followedBy indexes for existing events if not already present.
+   *
+   * @param follower - the pubkey that is following
+   * @param followed - the pubkey being followed
+   */
+  async markFollow(follower: string, followed: string): Promise<void> {
+    if (!this._db) await this.init()
+
+    const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
+    const filter = { authors: [followed] }
+
+    const ops: Promise<void>[] = []
+    for await (const event of this.queryInternal(transaction, filter, Number.MAX_SAFE_INTEGER)) {
+      const serial = await this.getSerial(transaction, event.id)
+      if (serial === undefined) continue
+
+      const idx = new Uint8Array(4)
+      idx[0] = (serial >> 24) & 0xff
+      idx[1] = (serial >> 16) & 0xff
+      idx[2] = (serial >> 8) & 0xff
+      idx[3] = serial & 0xff
+
+      const tsBytes = invertedTimestampBytes(event.created_at)
+
+      const key = new Uint8Array(1 + 8 + 4 + 4)
+      key[0] = INDEX_FOLLOWED_PREFIX
+      putHexAsBytes(key, 1, follower, 8)
+      key.set(tsBytes, 1 + 8)
+      key.set(idx, 1 + 8 + 4)
+
+      const indexStore = transaction.objectStore('indexes')
+      const req = indexStore.put(null, key.buffer)
+
+      ops.push(
+        new Promise(resolve => {
+          req.onsuccess = () => resolve()
+          req.onerror = () => resolve()
+        }),
+      )
+    }
+
+    await Promise.all(ops)
+
+    transaction.commit()
+  }
+
+  /**
+   * removes followedBy indexes for all events of a pubkey followed by another pubkey.
+   *
+   * @param follower - the pubkey that is unfollowing
+   * @param followed - the pubkey being unfollowed
+   */
+  async markUnfollow(follower: string, followed: string): Promise<void> {
+    if (!this._db) await this.init()
+
+    const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
+    const filter = { authors: [followed], followedBy: follower }
+
+    const ops: Promise<void>[] = []
+    for await (const event of this.queryInternal(transaction, filter, Number.MAX_SAFE_INTEGER)) {
+      const serial = await this.getSerial(transaction, event.id)
+      if (serial === undefined) continue
+
+      const idx = new Uint8Array(4)
+      idx[0] = (serial >> 24) & 0xff
+      idx[1] = (serial >> 16) & 0xff
+      idx[2] = (serial >> 8) & 0xff
+      idx[3] = serial & 0xff
+
+      const tsBytes = invertedTimestampBytes(event.created_at)
+
+      const key = new Uint8Array(1 + 8 + 4 + 4)
+      key[0] = INDEX_FOLLOWED_PREFIX
+      putHexAsBytes(key, 1, follower, 8)
+      key.set(tsBytes, 1 + 8)
+      key.set(idx, 1 + 8 + 4)
+
+      const indexStore = transaction.objectStore('indexes')
+      const req = indexStore.delete(key.buffer)
+
+      ops.push(
+        new Promise(resolve => {
+          req.onsuccess = () => resolve()
+          req.onerror = () => resolve()
+        }),
+      )
+    }
+
+    await Promise.all(ops)
+
+    transaction.commit()
   }
 }
 
