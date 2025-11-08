@@ -76,7 +76,7 @@ const metadataStore = createStore('@nostr/gadgets/metadata', 'cache')
 export type NostrUserRequest = {
   pubkey: string
   relays?: string[]
-  forceUpdate?: boolean | NostrEvent
+  refreshStyle?: boolean | NostrEvent
 }
 
 /**
@@ -88,7 +88,7 @@ export function loadNostrUser(request: NostrUserRequest | string): Promise<Nostr
     return metadataLoader.load({ pubkey: request })
   }
 
-  if (request.forceUpdate) {
+  if (request.refreshStyle) {
     metadataLoader.clear(request)
   }
 
@@ -109,20 +109,20 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
         results.map((res, i): NostrUser => {
           const req = requests[i]
 
-          if (typeof req.forceUpdate === 'object') {
+          if (typeof req.refreshStyle === 'object') {
             // we have the event right here, so just use it
             let nu = bareNostrUser(req.pubkey)
-            enhanceNostrUserWithEvent(nu, req.forceUpdate)
+            enhanceNostrUserWithEvent(nu, req.refreshStyle)
             set(req.pubkey, nu, metadataStore)
             return nu
           } else if (!res) {
-            toFetch.push(req)
+            if (req.refreshStyle !== false) toFetch.push(req)
             // we don't have anything for this key, fill in with a placeholder
             let nu = bareNostrUser(req.pubkey)
             ;(nu as any).lastAttempt = now
             return nu
-          } else if (req.forceUpdate === true || res.lastAttempt < now - 60 * 60 * 24 * 2) {
-            toFetch.push(req)
+          } else if (req.refreshStyle === true || res.lastAttempt < now - 60 * 60 * 24 * 2) {
+            if (req.refreshStyle !== false) toFetch.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
             res.lastAttempt = now
             return res
@@ -132,7 +132,7 @@ const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
             !res.metadata.picture &&
             !res.metadata.about
           ) {
-            toFetch.push(req)
+            if (req.refreshStyle !== false) toFetch.push(req)
             // we have something but and it's not so old (1 hour), but it's empty, so we will try again
             res.lastAttempt = Math.round(Date.now() / 1000)
             return res

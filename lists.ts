@@ -52,7 +52,7 @@ export type MutedEntity = {
 export type ListFetcher<I> = (
   pubkey: string,
   hints?: string[],
-  forceUpdate?: boolean | NostrEvent,
+  refreshStyle?: boolean | NostrEvent,
   defaultItems?: I[],
 ) => Promise<ListResult<I>>
 
@@ -246,7 +246,7 @@ export function makeListFetcher<I>(
 ): ListFetcher<I> {
   const store = createStore(`@nostr/gadgets/list:${kind}`, 'cache')
 
-  type Request = { target: string; relays: string[]; forceUpdate?: boolean | NostrEvent; defaultItems?: I[] }
+  type Request = { target: string; relays: string[]; refreshStyle?: boolean | NostrEvent; defaultItems?: I[] }
 
   const dataloader = new DataLoader<Request, ListResult<I>, string>(
     requests =>
@@ -263,21 +263,21 @@ export function makeListFetcher<I>(
             const req = requests[i] as Request & { index: number }
             req.index = i
 
-            if (typeof req.forceUpdate === 'object') {
+            if (typeof req.refreshStyle === 'object') {
               // we have the event right here, so just use it
-              const final = { event: req.forceUpdate, items: process(req.forceUpdate), [isFresh]: true }
+              const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
               set(req.target, final, store)
               return final
             } else if (!res) {
-              remainingRequests.push(req)
+              if (req.refreshStyle !== false) remainingRequests.push(req)
               // we don't have anything for this key, fill in with a placeholder
               return { items: req.defaultItems || [], event: null, [isFresh]: false }
-            } else if (req.forceUpdate === true || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
-              remainingRequests.push(req)
+            } else if (req.refreshStyle === true || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
+              if (req.refreshStyle !== false) remainingRequests.push(req)
               // we have something but it's old (2 days), so we will use it but still try to fetch a new version
               return { ...res, [isFresh]: false }
             } else if (res.event === null && res.lastAttempt < Date.now() / 1000 - 60 * 60) {
-              remainingRequests.push(req)
+              if (req.refreshStyle !== false) remainingRequests.push(req)
               // we have something and it's not so old (1 hour), but it's empty, so we will try again
               return { ...res, [isFresh]: false }
             } else {
@@ -358,15 +358,15 @@ export function makeListFetcher<I>(
   return async function (
     pubkey: string,
     hints: string[] = [],
-    forceUpdate?: boolean | NostrEvent,
+    refreshStyle?: boolean | NostrEvent,
     defaultItems?: I[],
   ): Promise<ListResult<I>> {
     let relays: string[] = hints
 
     if (kind === 10002) {
-      return await dataloader.load({ target: pubkey, relays, forceUpdate, defaultItems })
+      return await dataloader.load({ target: pubkey, relays, refreshStyle, defaultItems })
     } else {
-      const rl = await loadRelayList(pubkey, hints)
+      const rl = await loadRelayList(pubkey, hints, refreshStyle)
       relays.push(
         ...rl.items
           .filter(({ write }) => write)
@@ -374,9 +374,9 @@ export function makeListFetcher<I>(
           .slice(0, 3),
       )
 
-      const req = { target: pubkey, relays, forceUpdate, defaultItems }
+      const req = { target: pubkey, relays, refreshStyle, defaultItems }
 
-      if (forceUpdate) {
+      if (refreshStyle) {
         dataloader.clear(req)
       }
 

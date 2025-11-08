@@ -5,11 +5,12 @@ import { hexToBytes } from '@nostr/tools/utils'
 import 'fake-indexeddb/auto'
 
 import { loadNostrUser } from './metadata'
-import { loadRelayList } from './lists'
+import { loadRelayList, loadFollowsList, makeListFetcher, itemsFromTags, isFresh } from './lists'
 import { loadWoT, globalism } from './wot'
 import { loadRelaySets } from './sets'
 import { outboxFilterRelayBatch } from './outbox'
 import { IDBEventStore } from './store'
+import { isHex32 } from './utils'
 
 const TEST_PUBKEYS = {
   fiatjaf: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
@@ -46,6 +47,59 @@ test('loadRelayList', async () => {
     expect(result.items).toBeTruthy()
     expect(Array.isArray(result.items)).toEqual(true)
   })
+})
+
+test('loadFollowsList refreshStyle', async () => {
+  const pubkey = 'invalidtestpubkey123456789012345678901234567890123456789012345678901234567890'
+
+  // 1. call with false, should return empty
+  let result = await loadFollowsList(pubkey, [], false)
+  expect(result.items).toEqual([])
+  expect(result.event).toBe(null)
+  expect(result[isFresh]).toBeFalsy()
+
+  // 2. call with an event
+  const fakeEvent = {
+    id: 'fakeid',
+    pubkey,
+    created_at: Math.floor(Date.now() / 1000),
+    kind: 3,
+    tags: [['p', TEST_PUBKEYS.fiatjaf]],
+    content: '',
+    sig: 'fakesig',
+  }
+  result = await loadFollowsList(pubkey, [], fakeEvent)
+  expect(result.items).toEqual([TEST_PUBKEYS.fiatjaf])
+  expect(result.event).toEqual(fakeEvent)
+  expect(result[isFresh]).toBeTruthy()
+
+  // 3. call with false again, should return the same
+  result = await loadFollowsList(pubkey, [], false)
+  expect(result.items).toEqual([TEST_PUBKEYS.fiatjaf])
+  expect(result.event).toEqual(fakeEvent)
+  expect(result[isFresh]).toBeFalsy()
+
+  // 3. call with false again, should return the same
+  result = await loadFollowsList(pubkey, [], false)
+  expect(result.items).toEqual([TEST_PUBKEYS.fiatjaf])
+  expect(result.event).toEqual(fakeEvent)
+  expect(result[isFresh]).toBeFalsy()
+
+  // 4. make a new Fetcher so the memory cache is not reused
+  const newFetcher = makeListFetcher(
+    3,
+    [],
+    itemsFromTags(tag => {
+      if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
+        return tag[1]
+      }
+    }),
+  )
+  // Call with false, should still return that fake event
+  result = await newFetcher(pubkey, [], false)
+  expect(result.items).toEqual([TEST_PUBKEYS.fiatjaf])
+  expect(result.event).toEqual(fakeEvent)
+  expect(result[isFresh]).toBeFalsy()
 })
 
 test('loadRelaySets', async () => {
