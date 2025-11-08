@@ -123,6 +123,7 @@ export class OutboxManager {
     authors: string[],
     opts: {
       signal: AbortSignal
+      followers?: string[]
     },
   ): Promise<boolean> {
     await this.ensureBoundsLoaded()
@@ -238,6 +239,7 @@ export class OutboxManager {
                 seenOn: this.storeRelaysSeenOn
                   ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                   : undefined,
+                followedBy: opts.followers,
               }),
             ),
           )
@@ -273,6 +275,8 @@ export class OutboxManager {
     opts: {
       // this should only be undefined if you want the live() subscription to last forever
       signal: AbortSignal | undefined
+
+      followers?: string[]
     },
   ) {
     await this.ensureBoundsLoaded()
@@ -313,6 +317,7 @@ export class OutboxManager {
           seenOn: this.storeRelaysSeenOn
             ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
             : undefined,
+          followedBy: opts.followers,
         })
 
         if (isNew) {
@@ -333,7 +338,15 @@ export class OutboxManager {
     }
   }
 
-  async before(authors: string[], ts: number, opts: { signal: AbortSignal }) {
+  async before(
+    authors: string[],
+    ts: number,
+    opts: {
+      signal: AbortSignal
+
+      followers?: string[]
+    },
+  ) {
     await this.ensureBoundsLoaded()
 
     // wait for these authors to finish syncing
@@ -412,6 +425,7 @@ export class OutboxManager {
               seenOn: this.storeRelaysSeenOn
                 ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                 : undefined,
+              followedBy: opts.followers,
             }),
           ),
         )
