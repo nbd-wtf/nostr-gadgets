@@ -6,7 +6,7 @@
 import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
-import { createStore, getMany, setMany, set } from 'idb-keyval'
+import { createStore, getMany, setMany, set, del } from 'idb-keyval'
 
 import { pool } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
@@ -76,26 +76,37 @@ const metadataStore = createStore('@nostr/gadgets/metadata', 'cache')
 export type NostrUserRequest = {
   pubkey: string
   relays?: string[]
-  refreshStyle?: boolean | NostrEvent
+  refreshStyle?: boolean | NostrEvent | null
 }
 
 /**
  * loadNostrUser uses the same approach as ListFetcher -- caching, baching requests etc -- but for profiles
  * based on kind:0.
  */
-export function loadNostrUser(request: NostrUserRequest | string): Promise<NostrUser> {
+export async function loadNostrUser(request: NostrUserRequest | string): Promise<NostrUser> {
   if (typeof request === 'string') {
     return metadataLoader.load({ pubkey: request })
+  } else {
+    if (request.refreshStyle === null) {
+      // refreshStyle === null: reset cache and return empty
+      await del(request.pubkey, metadataStore)
+      metadataLoader._cacheMap.delete(request.pubkey)
+      return bareNostrUser(request.pubkey)
+    } else if (request.refreshStyle) {
+      metadataLoader.clear(
+        // tell ts that refreshStyle can't be null here
+        request as Parameters<typeof metadataLoader.clear>[0],
+      )
+    }
   }
 
-  if (request.refreshStyle) {
-    metadataLoader.clear(request)
-  }
-
-  return metadataLoader.load(request)
+  return metadataLoader.load(
+    // tell ts that refreshStyle can't be null here
+    request as Parameters<typeof metadataLoader.load>[0],
+  )
 }
 
-const metadataLoader = new DataLoader<NostrUserRequest, NostrUser, string>(
+const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrEvent | boolean }, NostrUser, string>(
   async requests =>
     new Promise(async resolve => {
       const toFetch: NostrUserRequest[] = []

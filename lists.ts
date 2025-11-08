@@ -7,7 +7,7 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
-import { createStore, getMany, set, setMany } from 'idb-keyval'
+import { createStore, del, getMany, set, setMany } from 'idb-keyval'
 
 import { pool } from './global'
 
@@ -52,7 +52,7 @@ export type MutedEntity = {
 export type ListFetcher<I> = (
   pubkey: string,
   hints?: string[],
-  refreshStyle?: boolean | NostrEvent,
+  refreshStyle?: boolean | NostrEvent | null,
   defaultItems?: I[],
 ) => Promise<ListResult<I>>
 
@@ -358,12 +358,19 @@ export function makeListFetcher<I>(
   return async function (
     pubkey: string,
     hints: string[] = [],
-    refreshStyle?: boolean | NostrEvent,
+    refreshStyle?: boolean | NostrEvent | null,
     defaultItems?: I[],
   ): Promise<ListResult<I>> {
+    if (refreshStyle === null) {
+      // refreshStyle === null: reset cache and return empty
+      await del(pubkey, store)
+      dataloader._cacheMap.delete(pubkey)
+      return { items: defaultItems || [], event: null, [isFresh]: true }
+    }
+
     let relays: string[] = hints
 
-    if (kind === 10002) {
+    if (kind === 10002 || refreshStyle === null) {
       return await dataloader.load({ target: pubkey, relays, refreshStyle, defaultItems })
     } else {
       const rl = await loadRelayList(pubkey, hints, refreshStyle)
