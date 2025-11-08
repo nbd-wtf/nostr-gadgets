@@ -11,7 +11,7 @@ import { createStore, getMany, setMany } from 'idb-keyval'
 
 import { pool } from './global'
 import { isHex32 } from './utils'
-import { itemsFromTags, loadRelayList } from './lists'
+import { Emoji, itemsFromTags, loadRelayList } from './lists'
 
 /**
  * A SetFetcher is a function that can be called to return a map of items indexed by d-tag,
@@ -59,6 +59,14 @@ export const loadRelaySets: SetFetcher<string> = makeSetFetcher<string>(
     if (tag.length >= 2 && tag[0] === 'relay') {
       return tag[1]
     }
+  }),
+)
+
+export const loadEmojiSets: SetFetcher<Emoji> = makeSetFetcher<Emoji>(
+  30002,
+  itemsFromTags<Emoji>((tag: string[]): Emoji | undefined => {
+    if (tag.length < 3 || tag[0] !== 'emoji') return undefined
+    return { shortcode: tag[1], url: tag[2] }
   }),
 )
 
