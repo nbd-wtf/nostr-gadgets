@@ -370,7 +370,7 @@ export function makeListFetcher<I>(
 
     let relays: string[] = hints
 
-    if (kind === 10002 || refreshStyle === null) {
+    if (kind === 10002) {
       return await dataloader.load({ target: pubkey, relays, refreshStyle, defaultItems })
     } else {
       const rl = await loadRelayList(pubkey, hints, refreshStyle)

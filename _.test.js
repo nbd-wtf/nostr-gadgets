@@ -617,4 +617,27 @@ test('idb store following', async () => {
     }
     expect(count).toEqual(10)
   }
+
+  // clean followed indexes
+  await store.cleanFollowed(pkA, event => event.pubkey === pkB)
+  await store.cleanFollowed(pkB, _ => false)
+
+  // query by followed by A (now it should also not return D events)
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkA })) {
+      count++
+      expect(evt.pubkey === pkB).toBeTrue()
+    }
+    expect(count).toEqual(10)
+  }
+
+  // query by followed B (should not return any events)
+  {
+    let count = 0
+    for await (const _ of store.queryEvents({ followedBy: pkB })) {
+      count++
+    }
+    expect(count).toEqual(0)
+  }
 })

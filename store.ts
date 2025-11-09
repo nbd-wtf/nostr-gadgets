@@ -833,6 +833,91 @@ export class IDBEventStore {
 
     transaction.commit()
   }
+
+  /**
+   * cleans followedBy indexes for events followed by a specific pubkey.
+   * fetches all events followed by the given pubkey, calls the predicate function on each,
+   * and deletes the followedBy index if the predicate returns false or if the pointed event doesn't exist.
+   *
+   * @param followedBy - the pubkey whose followed events to clean
+   * @param shouldKeep - function that takes an event and returns false if the followed index should be deleted
+   */
+  async cleanFollowed(followedBy: string, shouldKeep: (event: NostrEvent) => boolean): Promise<void> {
+    if (!this._db) await this.init()
+
+    const transaction = this._db!.transaction(['events', 'indexes'], 'readwrite')
+    const indexStore = transaction.objectStore('indexes')
+    const eventStore = transaction.objectStore('events')
+
+    const startingPoint = new Uint8Array(1 + 8 + 4 + 4)
+    startingPoint[0] = INDEX_FOLLOWED_PREFIX
+    putHexAsBytes(startingPoint, 1, followedBy, 8)
+    startingPoint.fill(0x00, 1 + 8)
+
+    const endingPoint = startingPoint.slice()
+    endingPoint.fill(0xff, 1 + 8)
+
+    const range = IDBKeyRange.bound(startingPoint.buffer, endingPoint.buffer)
+    const keysReq = indexStore.getAllKeys(range)
+
+    const ops: Promise<void>[] = []
+
+    await new Promise<void>((topResolve, topReject) => {
+      keysReq.onsuccess = async () => {
+        const eventPromises: Promise<NostrEvent | null>[] = []
+        const keyBuffers: ArrayBuffer[] = []
+
+        for (const keyBuffer of keysReq.result) {
+          keyBuffers.push(keyBuffer as ArrayBuffer)
+          const key = new Uint8Array(keyBuffer as ArrayBuffer)
+          const idx = key.slice(key.byteLength - 4)
+          const serial = idx[3] | (idx[2] << 8) | (idx[1] << 16) | (idx[0] << 24)
+
+          eventPromises.push(
+            new Promise(resolve => {
+              const getEventRequest = eventStore.get(serial)
+              getEventRequest.onsuccess = () => {
+                const eventData = getEventRequest.result
+                if (!eventData) {
+                  resolve(null)
+                  return
+                }
+                const event = JSON.parse(eventData) as NostrEvent
+                resolve(event)
+              }
+              getEventRequest.onerror = () => resolve(null)
+            }),
+          )
+        }
+
+        const events = await Promise.all(eventPromises)
+        for (let i = 0; i < events.length; i++) {
+          const event = events[i]
+          if (event && shouldKeep(event)) continue
+
+          const req = indexStore.delete(keyBuffers[i])
+          ops.push(
+            new Promise((resolve, reject) => {
+              req.onsuccess = () => resolve()
+              req.onerror = () => reject(new Error(`failed to delete followedBy entry ${keyBuffers[i]} for ${event}`))
+            }),
+          )
+        }
+
+        try {
+          await Promise.all(ops)
+          transaction.commit()
+          topResolve()
+        } catch (err) {
+          topReject(err)
+          transaction.abort()
+          return
+        }
+      }
+
+      keysReq.onerror = () => topReject(new Error('failed to fetch keys'))
+    })
+  }
 }
 
 function getTagIndexPrefix(tagLetter: string, tagValue: string): [Uint8Array, number] {
