@@ -168,7 +168,7 @@ export const loadMuteList: ListFetcher<MutedEntity> = makeListFetcher<MutedEntit
   }),
 )
 
-export const loadBookmarks = makeListFetcher<string>(
+export const loadBookmarks: ListFetcher<string> = makeListFetcher<string>(
   10003,
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
@@ -178,7 +178,7 @@ export const loadBookmarks = makeListFetcher<string>(
   }),
 )
 
-export const loadBlossomServers = makeListFetcher<string>(10063, [], event =>
+export const loadBlossomServers: ListFetcher<string> = makeListFetcher<string>(10063, [], event =>
   event
     ? event.tags
         .filter(([k, v]) => k === 'server' && v)
@@ -192,7 +192,7 @@ export type Emoji = {
   url: string
 }
 
-export const loadEmojis = makeListFetcher<Emoji | AddressPointer>(
+export const loadEmojis: ListFetcher<Emoji | AddressPointer> = makeListFetcher<Emoji | AddressPointer>(
   10030,
   [],
   itemsFromTags<Emoji | AddressPointer>((tag: string[]): Emoji | AddressPointer | undefined => {
@@ -212,7 +212,7 @@ export const loadEmojis = makeListFetcher<Emoji | AddressPointer>(
   }),
 )
 
-export const loadPins = makeListFetcher<string>(
+export const loadPins: ListFetcher<string> = makeListFetcher<string>(
   10001,
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
