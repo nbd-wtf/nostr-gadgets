@@ -161,6 +161,9 @@ test('idb store basic', async () => {
   await store.init()
   const sk1 = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
   const sk2 = hexToBytes('611b5b25b45854a36c3621c94f3508516c9b373c18e2eca59ffd15a6908c96be')
+  const sk3 = hexToBytes('c7c3d4629c5d53e05373b4a8eb0add486129e5829ebe47cf32aa890d89b04a10')
+  const sk4 = hexToBytes('2ab02d4c78e7dbe59c36bbd12f93241a072aebc34b9f888108952034e733d8fb')
+  const sk5 = hexToBytes('4e91489c0cc70387fa217ec7b40e47af6e52abe7ba2d5e784d11dadd6377d263')
 
   // try just these two events to start things up
   for (let sk of [sk1, sk2]) {
@@ -207,6 +210,36 @@ test('idb store basic', async () => {
       count++
     }
     expect(count).toEqual(1)
+  }
+
+  // a slightly tricker case
+  const fiveKeys = [sk1, sk2, sk3, sk4, sk5]
+  await Promise.all(
+    fiveKeys.map(async (sk, f) => {
+      for (let i = 0; i < 10; i++) {
+        await store.saveEvent(
+          finalizeEvent(
+            {
+              kind: 1111,
+              created_at: 1000 + f * 10 + i,
+              content: `zpzp ${i}`,
+              tags: [],
+            },
+            sk,
+          ),
+        )
+      }
+    }),
+  )
+
+  {
+    let count = 0
+    for await (let evt of store.queryEvents({ limit: 40, authors: fiveKeys.map(getPublicKey), kinds: [1111] })) {
+      count++
+      expect(evt.content.startsWith('zpzp')).toBeTrue()
+      expect(evt.pubkey === getPublicKey(sk1)).toBeFalse()
+    }
+    expect(count).toEqual(40)
   }
 
   // add a ton of more events and query them in weird ways

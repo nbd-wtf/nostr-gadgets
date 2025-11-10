@@ -7,6 +7,14 @@ type Query = {
   startingPoint: Uint8Array
   endingPoint: Uint8Array
   lastFetched?: number // idx serial
+
+  exhausted: boolean
+  results: QueryResult[]
+}
+
+type QueryResult = {
+  ts: number
+  serial: number
 }
 
 type SaveTask = {
@@ -107,7 +115,7 @@ export class IDBEventStore {
    */
   async saveEvent(
     event: NostrEvent,
-    { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] },
+    { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] } = {},
   ): Promise<boolean> {
     if (!this._db) await this.init()
 
@@ -524,67 +532,55 @@ export class IDBEventStore {
     const eventStore = transaction.objectStore('events')
 
     const { queries, extraTagFilter, extraAuthorFilter, extraKindFilter } = prepareQueries(filter)
-    if (queries.length === 0) {
-      return
-    }
 
     const batchSize = Math.min(1_000, batchSizePerNumberOfQueries(limit, queries.length))
 
-    // iterator state management
-    const statuses: QueryStatus[] = queries.map(_ => {
-      const status = {
-        exhausted: false,
-        results: new Array(batchSize),
-      }
-      status.results.length = 0
-      return status
-    })
-
-    let emittedTotal = 0
-    let remainingUnexhausted = queries.length
-    const numberOfIteratorsToPullOnEachRound = Math.max(1, Math.ceil(queries.length / 12))
-    const tempResults: QueryResult[] = new Array(batchSize * 2) // [timestamp, serial][]
-
-    let k = Math.min(numberOfIteratorsToPullOnEachRound, remainingUnexhausted)
-
     // initial pull from all queries
     await Promise.all(
-      queries.map(async (query, q) => {
-        const status = statuses[q]
-        const hasMore = await this.pull(indexStore, query, batchSize, status.results)
+      queries.map(async query => {
+        const hasMore = await this.pull(indexStore, query, batchSize, query.results)
         if (!hasMore) {
           // exhaust
-          statuses[q].exhausted = true
-          remainingUnexhausted--
+          query.exhausted = true
         }
       }),
     )
 
     // main iteration loop
-    while (true) {
-      tempResults.length = 0 // clear temp results
+    let emittedTotal = 0
+    const numberOfIteratorsToPullOnEachRound = Math.max(1, Math.ceil(queries.length / 2))
+    const tempResults: QueryResult[] = new Array(batchSize * 2) // [timestamp, serial][]
+    const eventPromises = new Array(batchSize * 2)
+    const pulls = new Array(numberOfIteratorsToPullOnEachRound)
+    const toDelete = new Array(numberOfIteratorsToPullOnEachRound)
 
-      // find threshold: k-th highest timestamp across ALL buffered events
-      const threshold = statuses
-        .map((status, q) => ({ q, ts: status.exhausted ? 0 : status.results[status.results.length - 1].ts }))
-        .sort((a, b) => b.ts - a.ts)[k - 1].ts
+    while (queries.length > 0) {
+      tempResults.length = 0
+      eventPromises.length = 0
+      pulls.length = 0
+      toDelete.length = 0
 
+      // find threshold: highest timestamp among the oldest of each query
+      queries.sort((a, b) => (b.results[b.results.length - 1]?.ts || 0) - (a.results[a.results.length - 1]?.ts || 0))
+      if (queries[0].results.length === 0) return
+
+      const threshold: number = queries[0].results[queries[0].results.length - 1].ts
 
       // collect all events >= threshold from ALL iterators
       for (let q = 0; q < queries.length; q++) {
-        const status = statuses[q]
+        const query = queries[q]
         let hasSpliced = false
         let cc = 0
 
-        for (let i = status.results.length - 1; i >= 0; i--) {
-          const result = status.results[i]
+        for (let i = 0; i < query.results.length; i++) {
+          const result = query.results[i]
 
           if (result.ts >= threshold) {
             tempResults.push(result)
             cc++
           } else {
             // reached an item that isn't >= threshold, so stop here and remove the previous elements from the array
-            status.results.splice(0, i + 1)
+            query.results.splice(0, i)
             hasSpliced = true
             break
           }
@@ -593,15 +589,22 @@ export class IDBEventStore {
         // if we collected everything we never reached the splice call above,
         if (!hasSpliced) {
           //  so clear all the results array here
-          status.results.length = 0
+          query.results.length = 0
+
+          if (query.exhausted) {
+            // swap-delete
+            queries[q] = queries[queries.length - 1]
+            queries.length = queries.length - 1
+            q--
+          }
         }
       }
 
       // sort temp results (this ensures our results are emitted in the correct order)
       tempResults.sort((a, b) => b.ts - a.ts)
-      const eventPromises: Promise<NostrEvent | null>[] = new Array(tempResults.length)
 
       // load temp results from database in individual queries to the eventstore
+      eventPromises.length = tempResults.length
       for (let i = 0; i < tempResults.length; i++) {
         const serial = tempResults[i].serial
 
@@ -659,25 +662,44 @@ export class IDBEventStore {
         }
       }
 
-      // end here if we don't have anything more to query
-      if (remainingUnexhausted === 0) return
+      // proceed by pulling more data from the query that had the threshold timestamp then repeating the process
+      pulls.length = numberOfIteratorsToPullOnEachRound
+      for (let q = 0; q < numberOfIteratorsToPullOnEachRound && q < queries.length; q++) {
+        const query = queries[q]
 
-      // otherwise we must proceed by pulling more data then repeating the process
-      k = Math.min(numberOfIteratorsToPullOnEachRound, remainingUnexhausted)
+        if (query.exhausted) {
+          // skip this, do not pull
+          if (query.results.length === 0) {
+            // also if it's empty remove it (swap-remove)
+            queries[q] = queries[queries.length - 1]
+            if (queries.length - 1 < numberOfIteratorsToPullOnEachRound) {
+              // in this case we can just pull from this query that we just swapped
+              q--
+            }
+            queries.length = queries.length - 1
+          }
+          continue
+        }
 
-      await Promise.all(
-        queries.map(async (query, q) => {
-          const status = statuses[q]
-          if (status.exhausted) return
-
-          const hasMore = await this.pull(indexStore, query, batchSize, status.results)
+        pulls[q] = this.pull(indexStore, query, batchSize, query.results).then(hasMore => {
           if (!hasMore) {
             // exhaust
-            statuses[q].exhausted = true
-            remainingUnexhausted--
+            query.exhausted = true
+
+            if (query.results.length === 0) {
+              // also if it's empty remove it
+              toDelete.push(q)
+            }
           }
-        }),
-      )
+        })
+      }
+      await Promise.all(pulls)
+
+      // before ending this loop iteration clean up queries we just fetched from and got no results
+      for (let t = toDelete.length - 1; t >= 0; t--) {
+        queries[toDelete[t]] = queries[queries.length - 1]
+        queries.length--
+      }
     }
   }
 
@@ -687,7 +709,7 @@ export class IDBEventStore {
     batchSize: number,
     resultsInto: QueryResult[],
   ): Promise<boolean> {
-    let last: Uint8Array | null = null
+    let last: ArrayBuffer | null = null
 
     return new Promise(resolve => {
       const range = IDBKeyRange.bound(query.startingPoint.buffer, query.endingPoint.buffer, true, true)
@@ -697,17 +719,15 @@ export class IDBEventStore {
       const keysReq = indexStore.getAllKeys(range, batchSize)
       keysReq.onsuccess = async () => {
         for (let i = 0; i < keysReq.result.length; i++) {
-          let key = keysReq.result[i]
-          let indexKey = key as ArrayBuffer
+          const indexKey = keysReq.result[i] as ArrayBuffer
 
           // extract timestamp from index key
-          const tsBytes = new Uint8Array(indexKey.slice(indexKey.byteLength - 8, indexKey.byteLength - 4))
+          const tsBytes = indexKey.slice(indexKey.byteLength - 8, indexKey.byteLength - 4)
           const ts = timestampFromInvertedBytes(tsBytes)
           last = tsBytes
 
           // extract idx/serial from index key
-          const idx = new Uint8Array(indexKey.slice(indexKey.byteLength - 4))
-          const serial = idx[3] | (idx[2] << 8) | (idx[1] << 16) | (idx[0] << 24)
+          const serial = new DataView(indexKey).getUint32(indexKey.byteLength - 4)
 
           // if we have previously fetched anything we can't emit the same events again
           // so skip until we get our last fetched event idx
@@ -728,7 +748,7 @@ export class IDBEventStore {
 
         // update startingPoint if we are going to do this query again
         if (last) {
-          query.startingPoint.set(last, query.startingPoint.length - 4 - 4)
+          query.startingPoint.set(new Uint8Array(last), query.startingPoint.length - 4 - 4)
         }
 
         resolve(
@@ -799,7 +819,8 @@ export class IDBEventStore {
     const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
     const filter = { authors: [followed], followedBy: follower }
 
-    const ops: Promise<void>[] = []
+    const keysToDelete: Uint8Array[] = []
+
     for await (const event of this.queryInternal(transaction, filter, Number.MAX_SAFE_INTEGER)) {
       const serial = await this.getSerial(transaction, event.id)
       if (serial === undefined) continue
@@ -818,18 +839,22 @@ export class IDBEventStore {
       key.set(tsBytes, 1 + 8)
       key.set(idx, 1 + 8 + 4)
 
-      const indexStore = transaction.objectStore('indexes')
-      const req = indexStore.delete(key.buffer)
-
-      ops.push(
-        new Promise(resolve => {
-          req.onsuccess = () => resolve()
-          req.onerror = () => resolve()
-        }),
-      )
+      keysToDelete.push(key)
     }
 
-    await Promise.all(ops)
+    const indexStore = transaction.objectStore('indexes')
+
+    await Promise.all(
+      keysToDelete.map(key => {
+        const req = indexStore.delete(key.buffer as IDBValidKey)
+
+        return new Promise<void>((resolve, reject) => {
+          req.onsuccess = () => resolve()
+          req.onerror = () =>
+            reject(new Error(`failed to delete followedBy index ${key} for ${follower} => ${followed}`))
+        })
+      }),
+    )
 
     transaction.commit()
   }
@@ -867,11 +892,9 @@ export class IDBEventStore {
         const eventPromises: Promise<NostrEvent | null>[] = []
         const keyBuffers: ArrayBuffer[] = []
 
-        for (const keyBuffer of keysReq.result) {
-          keyBuffers.push(keyBuffer as ArrayBuffer)
-          const key = new Uint8Array(keyBuffer as ArrayBuffer)
-          const idx = key.slice(key.byteLength - 4)
-          const serial = idx[3] | (idx[2] << 8) | (idx[1] << 16) | (idx[0] << 24)
+        for (const keyBuffer of keysReq.result as ArrayBuffer[]) {
+          keyBuffers.push(keyBuffer)
+          const serial = new DataView(keyBuffer).getUint32(keyBuffer.byteLength - 4)
 
           eventPromises.push(
             new Promise(resolve => {
@@ -1168,6 +1191,8 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
         queries.push({
           startingPoint,
           endingPoint,
+          exhausted: false,
+          results: [],
         })
       }
 
@@ -1198,6 +1223,8 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
     queries.push({
       startingPoint,
       endingPoint,
+      exhausted: false,
+      results: [],
     })
 
     // if authors and kinds were specified we have to filter for those afterwards
@@ -1228,6 +1255,8 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
           queries.push({
             startingPoint,
             endingPoint,
+            exhausted: false,
+            results: [],
           })
         }
       }
@@ -1250,6 +1279,8 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       queries.push({
         startingPoint,
         endingPoint,
+        exhausted: false,
+        results: [],
       })
     }
 
@@ -1273,6 +1304,8 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
       queries.push({
         startingPoint,
         endingPoint,
+        exhausted: false,
+        results: [],
       })
     }
 
@@ -1296,6 +1329,8 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
         queries.push({
           startingPoint,
           endingPoint,
+          exhausted: false,
+          results: [],
         })
       }
 
@@ -1321,6 +1356,8 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
   queries.push({
     startingPoint,
     endingPoint,
+    exhausted: false,
+    results: [],
   })
 
   return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
@@ -1351,22 +1388,10 @@ function invertedTimestampBytes(created_at: number) {
   return tsBytes
 }
 
-function timestampFromInvertedBytes(tsBytes: Uint8Array): number {
-  // reconstruct the inverted timestamp from bytes
-  const invertedTimestamp = (tsBytes[0] << 24) | (tsBytes[1] << 16) | (tsBytes[2] << 8) | tsBytes[3]
-  // reverse the inversion to get original timestamp
+function timestampFromInvertedBytes(tsBytes: ArrayBuffer): number {
+  const invertedTimestamp = new DataView(tsBytes).getUint32(0)
   const created_at = 0xffffffff - invertedTimestamp
   return created_at
-}
-
-type QueryStatus = {
-  exhausted: boolean
-  results: QueryResult[]
-}
-
-type QueryResult = {
-  ts: number
-  serial: number
 }
 
 // special properties we sneak into the event objects
