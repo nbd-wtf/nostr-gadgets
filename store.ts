@@ -1237,34 +1237,41 @@ function prepareQueries(filter: Filter & { followedBy?: string }): {
   if (filter.authors && filter.authors.length > 0) {
     // handle combined author + kind filter
     if (filter.kinds && filter.kinds.length > 0) {
-      for (let author of filter.authors) {
-        const authorBytes = hexToBytes(author.substring(0, 16))
-        for (const kind of filter.kinds) {
-          const startingPoint = new Uint8Array(1 + 8 + 2 + 4 + 4)
-          startingPoint[0] = INDEX_PUBKEY_KIND_PREFIX
-          startingPoint.set(authorBytes, 1)
-          startingPoint[9] = (kind >> 8) & 0xff
-          startingPoint[10] = kind & 0xff
-          startingPoint.set(timestampStartingPoint, 1 + 8 + 2)
-          startingPoint.fill(0x00, 1 + 8 + 2 + 4)
+      // only use the pubkey-kind index if we're requesting few kinds
+      if (filter.kinds.length < 8) {
+        for (let author of filter.authors) {
+          const authorBytes = hexToBytes(author.substring(0, 16))
+          for (const kind of filter.kinds) {
+            const startingPoint = new Uint8Array(1 + 8 + 2 + 4 + 4)
+            startingPoint[0] = INDEX_PUBKEY_KIND_PREFIX
+            startingPoint.set(authorBytes, 1)
+            startingPoint[9] = (kind >> 8) & 0xff
+            startingPoint[10] = kind & 0xff
+            startingPoint.set(timestampStartingPoint, 1 + 8 + 2)
+            startingPoint.fill(0x00, 1 + 8 + 2 + 4)
 
-          const endingPoint = startingPoint.slice()
-          endingPoint.set(timestampEndingPoint, 1 + 8 + 2)
-          endingPoint.fill(0xff, 1 + 8 + 2 + 4)
+            const endingPoint = startingPoint.slice()
+            endingPoint.set(timestampEndingPoint, 1 + 8 + 2)
+            endingPoint.fill(0xff, 1 + 8 + 2 + 4)
 
-          queries.push({
-            startingPoint,
-            endingPoint,
-            exhausted: false,
-            results: [],
-          })
+            queries.push({
+              startingPoint,
+              endingPoint,
+              exhausted: false,
+              results: [],
+            })
+          }
         }
-      }
 
-      return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
+        return { queries, extraTagFilter, extraAuthorFilter, extraKindFilter }
+      } else {
+        // when requesting too many kinds it's better to just get everything from the pubkey
+        // then filter later
+        extraKindFilter = filter.kinds
+      }
     }
 
-    // handle just author filter
+    // use just the author kind
     for (const author of filter.authors) {
       const startingPoint = new Uint8Array(1 + 8 + 4 + 4)
       startingPoint[0] = INDEX_PUBKEY_PREFIX
