@@ -246,7 +246,10 @@ export class OutboxManager {
               }),
             ),
           )
-          addedNewEventsOnSync = added.indexOf(true) !== -1
+
+          if (!addedNewEventsOnSync) {
+            addedNewEventsOnSync = added.indexOf(true) !== -1
+          }
 
           // update stored bound bounds for this person since they're caught up to now
           if (bound) {
