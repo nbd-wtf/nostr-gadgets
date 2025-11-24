@@ -1,6 +1,7 @@
 import { getSemaphore } from '@henrygd/semaphore'
 import { Filter, NostrEvent, SimplePool } from '@nostr/tools'
 import { normalizeURL } from '@nostr/tools/utils'
+import { isRegularKind } from '@nostr/tools/kinds'
 
 import { loadRelayList } from './lists.ts'
 import { IDBEventStore } from './store.ts'
@@ -238,7 +239,7 @@ export class OutboxManager {
 
           let added = await Promise.all(
             events.map(event =>
-              this.store.saveEvent(event, {
+              (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
                 seenOn: this.storeRelaysSeenOn
                   ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                   : undefined,
@@ -319,7 +320,7 @@ export class OutboxManager {
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
       onevent: async event => {
-        const isNew = await this.store.saveEvent(event, {
+        const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
           seenOn: this.storeRelaysSeenOn
             ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
             : undefined,
@@ -425,7 +426,7 @@ export class OutboxManager {
         console.debug('paginating to the past', pubkey, relays, oldest, events)
         await Promise.all(
           events.map(event =>
-            this.store.saveEvent(event, {
+            (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
               seenOn: this.storeRelaysSeenOn
                 ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                 : undefined,

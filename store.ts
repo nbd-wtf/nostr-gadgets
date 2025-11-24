@@ -378,12 +378,20 @@ export class IDBEventStore {
    * @param followedBy - optional array of pubkeys that are following this event
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
-  async replaceEvent(event: NostrEvent, followedBy?: string[]): Promise<void> {
+  async replaceEvent(
+    event: NostrEvent,
+    { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] } = {},
+  ): Promise<void> {
     if (!this._db) await this.init()
 
     // sanity checking
     if (event.created_at > 0xffffffff || event.kind > 0xffff) {
       throw new DatabaseError('event with values out of expected boundaries')
+    }
+
+    // store relays on "seen_on" (so it's saved on database when calling JSON.stringify)
+    if (seenOn) {
+      ;(event as unknown as { seen_on: string[] }).seen_on = seenOn
     }
 
     const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite', { durability: 'relaxed' })
@@ -413,7 +421,7 @@ export class IDBEventStore {
     return Promise.all(deletePromises)
       .then(() => {
         if (shouldStore) {
-          return this.saveEventInternal(transaction, event)
+          return this.saveEventInternal(transaction, event, followedBy)
         }
       })
       .then(() => transaction.commit())
