@@ -3,8 +3,9 @@
   "dependencies": {
     "@fiatjaf/lru-cache": "npm:@jsr/fiatjaf__lru-cache@^0.0.1",
     "@henrygd/semaphore": "npm:@jsr/henrygd__semaphore@^0.0.2",
-    "@nostr/tools": "npm:@jsr/nostr__tools@^2.18.1",
-    "idb-keyval": "^6.2.1"
+    "@nostr/tools": "npm:@jsr/nostr__tools@^2.19.3",
+    "idb-keyval": "^6.2.1",
+    "opfsdb": "^1.0.8"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0",

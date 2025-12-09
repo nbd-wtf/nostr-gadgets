@@ -674,3 +674,67 @@ test('idb store following', async () => {
     expect(count).toEqual(0)
   }
 })
+
+test('idb store deletion with followedBy index', async () => {
+  const store = new IDBEventStore()
+  await store.init()
+  const skA = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
+  const skB = hexToBytes('611b5b25b45854a36c3621c94f3508516c9b373c18e2eca59ffd15a6908c96be')
+
+  const pkA = getPublicKey(skA)
+  const pkB = getPublicKey(skB)
+
+  // create events from pkB and mark them as followed by pkA
+  const events = []
+  for (let i = 0; i < 5; i++) {
+    const event = finalizeEvent(
+      {
+        kind: 1,
+        created_at: 3000 + i,
+        content: 'test event ' + i,
+        tags: [],
+      },
+      skB,
+    )
+    events.push(event)
+    await store.saveEvent(event, { followedBy: [pkA] })
+  }
+
+  // verify events are queryable by followedBy
+  {
+    let count = 0
+    for await (const evt of store.queryEvents({ followedBy: pkA })) {
+      count++
+      expect(evt.pubkey).toEqual(pkB)
+    }
+    expect(count).toEqual(5)
+  }
+
+  // delete the first 3 events
+  const idsToDelete = events.slice(0, 3).map(e => e.id)
+  const deletedCount = await store.deleteEvents(idsToDelete)
+  expect(deletedCount).toEqual(3)
+
+  // verify only 2 events remain and are still queryable by followedBy
+  {
+    let count = 0
+    const remainingIds = new Set()
+    for await (const evt of store.queryEvents({ followedBy: pkA })) {
+      count++
+      expect(evt.pubkey).toEqual(pkB)
+      remainingIds.add(evt.id)
+    }
+    expect(count).toEqual(2)
+    expect(remainingIds.has(events[3].id)).toBeTrue()
+    expect(remainingIds.has(events[4].id)).toBeTrue()
+  }
+
+  // verify deleted events are no longer queryable by ID
+  const deletedEvents = await store.getByIds(idsToDelete)
+  expect(deletedEvents.length).toEqual(0)
+
+  // verify remaining events are still queryable by ID
+  const remainingIds = events.slice(3).map(e => e.id)
+  const remainingEvents = await store.getByIds(remainingIds)
+  expect(remainingEvents.length).toEqual(2)
+})

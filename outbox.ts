@@ -1,7 +1,7 @@
 import { getSemaphore } from '@henrygd/semaphore'
 import { Filter, NostrEvent, SimplePool } from '@nostr/tools'
 import { normalizeURL } from '@nostr/tools/utils'
-import { isRegularKind } from '@nostr/tools/kinds'
+import { EventDeletion, isRegularKind } from '@nostr/tools/kinds'
 
 import { loadRelayList } from './lists.ts'
 import { IDBEventStore } from './store.ts'
@@ -30,6 +30,7 @@ export class OutboxManager {
   private onliveupdate: undefined | ((event: NostrEvent) => void)
   private onsyncupdate: undefined | ((pubkey: string) => void)
   private onbeforeupdate: undefined | ((pubkey: string) => void)
+  private ondeletions: undefined | ((ids: string[]) => void)
 
   private authorIsFollowedBy: undefined | ((author: string) => string[] | undefined)
 
@@ -42,6 +43,7 @@ export class OutboxManager {
       onliveupdate?: (event: NostrEvent) => void
       onsyncupdate?: (pubkey: string) => void
       onbeforeupdate?: (pubkey: string) => void
+      ondeletions?: (ids: string[]) => void
       defaultRelaysForConfusedPeople?: string[]
       storeRelaysSeenOn?: boolean
       authorIsFollowedBy?(author: string): string[] | undefined
@@ -56,6 +58,7 @@ export class OutboxManager {
     this.onliveupdate = opts?.onliveupdate
     this.onsyncupdate = opts?.onsyncupdate
     this.onbeforeupdate = opts?.onbeforeupdate
+    this.ondeletions = opts?.ondeletions
     this.defaultRelaysForConfusedPeople = opts?.defaultRelaysForConfusedPeople || this.defaultRelaysForConfusedPeople
     this.storeRelaysSeenOn = opts?.storeRelaysSeenOn || false
     this.authorIsFollowedBy = opts?.authorIsFollowedBy
@@ -238,14 +241,22 @@ export class OutboxManager {
           )
 
           let added = await Promise.all(
-            events.map(event =>
-              (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
+            events.map(async event => {
+              const deletion = event.kind === EventDeletion
+
+              const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
                 seenOn: this.storeRelaysSeenOn
                   ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                   : undefined,
-                followedBy: this.authorIsFollowedBy?.(event.pubkey),
-              }),
-            ),
+                followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+              })
+
+              if (isNew && deletion) {
+                this.performDeletions(event)
+              }
+
+              return isNew
+            }),
           )
 
           if (!addedNewEventsOnSync) {
@@ -320,12 +331,18 @@ export class OutboxManager {
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
       onevent: async event => {
+        const deletion = event.kind === EventDeletion
+
         const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
           seenOn: this.storeRelaysSeenOn
             ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
             : undefined,
-          followedBy: this.authorIsFollowedBy?.(event.pubkey),
+          followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
         })
+
+        if (isNew && deletion) {
+          this.performDeletions(event)
+        }
 
         if (isNew) {
           this.bounds[event.pubkey][1] = Math.round(Date.now() / 1000)
@@ -425,14 +442,22 @@ export class OutboxManager {
 
         console.debug('paginating to the past', pubkey, relays, oldest, events)
         await Promise.all(
-          events.map(event =>
-            (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
+          events.map(async event => {
+            const deletion = event.kind === EventDeletion
+
+            const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
               seenOn: this.storeRelaysSeenOn
                 ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                 : undefined,
-              followedBy: this.authorIsFollowedBy?.(event.pubkey),
-            }),
-          ),
+              followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+            })
+
+            if (isNew && deletion) {
+              this.performDeletions(event)
+            }
+
+            return isNew
+          }),
         )
 
         // update oldest bound
@@ -537,6 +562,38 @@ export class OutboxManager {
       putRequest.onsuccess = () => resolve()
       putRequest.onerror = () => reject(new Error(`failed to set bound: ${putRequest.error?.message}`))
     })
+  }
+
+  private async performDeletions(event: NostrEvent) {
+    // event is assumed to be a kind:5
+    const ids: string[] = []
+    for (let t = 0; t < event.tags.length; t++) {
+      const tag = event.tags[t]
+      switch (tag[0]) {
+        case 'e':
+          ids.push(tag[1])
+          break
+        case 'a':
+          const spl = tag[1].split(':')
+          if (spl.length < 3) continue
+          for await (const target of this.store.queryEvents(
+            {
+              kinds: [parseInt(spl[0])],
+              authors: [spl[1]],
+              '#d': [spl.slice(2).join(':')],
+            },
+            100,
+          )) {
+            if (target.created_at < event.created_at) {
+              ids.push(target.id)
+            }
+          }
+          break
+      }
+    }
+
+    await this.store.deleteEvents(ids)
+    this.ondeletions?.(ids)
   }
 }
 

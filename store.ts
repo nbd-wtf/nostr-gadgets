@@ -272,88 +272,83 @@ export class IDBEventStore {
    * deletes an event from the store by its ID.
    * removes the event and all associated indexes.
    *
-   * @param id - hex-encoded event ID to delete
+   * @param ids - hex-encoded event IDs to delete
    * @param followedBy - optional array of pubkeys that are following this event
-   * @returns true if event was found and deleted, false if not found
+   * @returns the number of events actually deleted, ignoring those that we couldn't find
    * @throws {DatabaseError} if deletion fails
    */
-  async deleteEvent(id: string, followedBy?: string[]): Promise<boolean> {
+
+  async deleteEvents(ids: string[]): Promise<number> {
     if (!this._db) await this.init()
 
     const transaction = this._db!.transaction(['events', 'ids', 'indexes'], 'readwrite')
 
-    return new Promise((resolve, reject) => {
-      this.deleteEventInternal(transaction, id, followedBy).then(resolve).catch(reject)
-    })
+    return this.deleteEventInternal(transaction, ids)
   }
 
-  private async deleteEventInternal(transaction: IDBTransaction, id: string, followedBy?: string[]): Promise<boolean> {
+  private async deleteEventInternal(transaction: IDBTransaction, ids: string[]): Promise<number> {
     const eventStore = transaction.objectStore('events')
-    const idStore = transaction.objectStore('ids')
     const indexStore = transaction.objectStore('indexes')
 
-    // find the event by ID index
-    const idKey = new Uint8Array(8)
-    putHexAsBytes(idKey, 0, id, 8)
+    const serials = (await Promise.all(ids.map(id => this.getSerial(transaction, id)))).filter(s => s) as number[]
+    const ops: Promise<boolean>[] = [] // will be true if an event was deleted, false otherwise
 
-    return new Promise((resolve, reject) => {
-      const idReq = idStore.get(idKey.buffer)
+    for (let s = 0; s < serials.length; s++) {
+      const serial = serials[s]
 
-      idReq.onsuccess = () => {
-        const serial = idReq.result as number | undefined
-        if (serial === undefined) {
-          resolve(false) // event not found
-          return
-        }
+      const deletePromises: Promise<void>[] = []
 
-        // get the event to calculate its indexes
-        const getEventRequest = eventStore.get(serial)
+      ops.push(
+        new Promise((resolve, reject) => {
+          // get the events to calculate their indexes
+          const getEventRequest = eventStore.get(serial)
+          getEventRequest.onsuccess = () => {
+            const eventData = getEventRequest.result
+            if (!eventData) {
+              resolve(false)
+              return
+            }
 
-        getEventRequest.onsuccess = () => {
-          const eventData = getEventRequest.result
-          if (!eventData) {
-            resolve(false)
-            return
+            const event: NostrEvent = JSON.parse(eventData)
+
+            // delete all indexes for this event
+            for (const indexKey of getIndexKeysForEvent(event, serial, [])) {
+              deletePromises.push(
+                new Promise<void>((resolveDelete, rejectDelete) => {
+                  const deleteRequest = indexStore.delete(indexKey as IDBValidKey)
+                  deleteRequest.onsuccess = () => resolveDelete()
+                  deleteRequest.onerror = () =>
+                    rejectDelete(new DatabaseError(`Failed to delete index: ${deleteRequest.error?.message}`))
+                }),
+              )
+            }
+
+            // delete the raw event
+            deletePromises.push(
+              new Promise<void>((resolveDelete, rejectDelete) => {
+                const deleteRequest = eventStore.delete(serial)
+                deleteRequest.onsuccess = () => resolveDelete()
+                deleteRequest.onerror = () =>
+                  rejectDelete(new DatabaseError(`Failed to delete event: ${deleteRequest.error?.message}`))
+              }),
+            )
           }
 
-          const event: NostrEvent = JSON.parse(eventData)
-
-          // delete all indexes for this event
-          const deletePromises: Promise<void>[] = []
-          for (const indexKey of getIndexKeysForEvent(event, serial, followedBy || [])) {
-            const promise = new Promise<void>((resolveDelete, rejectDelete) => {
-              const deleteRequest = indexStore.delete(indexKey as IDBValidKey)
-              deleteRequest.onsuccess = () => resolveDelete()
-              deleteRequest.onerror = () =>
-                rejectDelete(new DatabaseError(`Failed to delete index: ${deleteRequest.error?.message}`))
-            })
-            deletePromises.push(promise)
+          getEventRequest.onerror = () => {
+            reject(new DatabaseError(`failed to get event for deletion: ${getEventRequest.error?.message}`))
           }
-
-          // delete the raw event
-          const deleteEventPromise = new Promise<void>((resolveDelete, rejectDelete) => {
-            const deleteRequest = eventStore.delete(serial)
-            deleteRequest.onsuccess = () => resolveDelete()
-            deleteRequest.onerror = () =>
-              rejectDelete(new DatabaseError(`Failed to delete event: ${deleteRequest.error?.message}`))
-          })
-
-          deletePromises.push(deleteEventPromise)
 
           Promise.all(deletePromises)
             .then(() => resolve(true))
             .catch(reject)
-        }
+        }),
+      )
+    }
 
-        getEventRequest.onerror = () => {
-          reject(new DatabaseError(`failed to get event for deletion: ${getEventRequest.error?.message}`))
-        }
-      }
+    // clean the followedBy index for these
+    ops.push(this.removeAllFollowers(transaction, serials).then(() => false))
 
-      idReq.onerror = () => {
-        reject(new DatabaseError(`failed to find event for deletion: ${idReq.error?.message}`))
-      }
-    })
+    return Promise.all(ops).then(dels => dels.filter(d => d).length)
   }
 
   private async getSerial(transaction: IDBTransaction, id: string): Promise<number | undefined> {
@@ -408,24 +403,24 @@ export class IDBEventStore {
     }
 
     let shouldStore = true
-    const deletePromises: Promise<boolean>[] = []
+    const promises: Promise<void | number>[] = []
 
     // query for existing events
     for await (let previous of this.queryInternal(transaction, filter, 10)) {
       if (isOlder(previous, event)) {
-        deletePromises.push(this.deleteEventInternal(transaction, previous.id, followedBy))
+        promises.push(this.deleteEventInternal(transaction, [previous.id]))
       } else {
         shouldStore = false
       }
     }
 
-    await Promise.all(deletePromises)
-      .then(() => {
-        if (shouldStore) {
-          return this.saveEventInternal(transaction, event, followedBy)
-        }
-      })
-      .then(() => transaction.commit())
+    if (shouldStore) {
+      promises.push(this.saveEventInternal(transaction, event, followedBy))
+    }
+
+    await Promise.all(promises)
+
+    transaction.commit()
 
     return shouldStore
   }
@@ -472,6 +467,7 @@ export class IDBEventStore {
               const eventData = getEventRequest.result
               if (!eventData) {
                 resolve(null)
+                return
               }
 
               const event = JSON.parse(eventData)
@@ -868,6 +864,51 @@ export class IDBEventStore {
     )
 
     transaction.commit()
+  }
+
+  private async removeAllFollowers(transaction: IDBTransaction, serials: number[]): Promise<void> {
+    if (!this._db) await this.init()
+
+    const indexStore = transaction.objectStore('indexes')
+
+    // scan the entire INDEX_FOLLOWED_PREFIX index
+    const startingPoint = new Uint8Array(1)
+    startingPoint[0] = INDEX_FOLLOWED_PREFIX
+
+    const endingPoint = new Uint8Array(1)
+    endingPoint[0] = INDEX_FOLLOWED_PREFIX + 1
+
+    const range = IDBKeyRange.bound(startingPoint.buffer, endingPoint.buffer)
+    const keysReq = indexStore.getAllKeys(range)
+
+    const ops: Promise<void>[] = []
+    await new Promise<void>((resolve, reject) => {
+      keysReq.onsuccess = async () => {
+        for (const keyBuffer of keysReq.result as ArrayBuffer[]) {
+          const serial = new DataView(keyBuffer).getUint32(keyBuffer.byteLength - 4)
+          if (serials.includes(serial)) {
+            const req = indexStore.delete(keyBuffer as IDBValidKey)
+            ops.push(
+              new Promise<void>((resolveDelete, rejectDelete) => {
+                req.onsuccess = () => resolveDelete()
+                req.onerror = () => rejectDelete(new Error(`failed to delete followedBy index ${keyBuffer}`))
+              }),
+            )
+          }
+        }
+
+        try {
+          await Promise.all(ops)
+          transaction.commit()
+          resolve()
+        } catch (err) {
+          reject(err)
+          transaction.abort()
+        }
+      }
+
+      keysReq.onerror = () => reject(new Error('failed to fetch followedBy keys'))
+    })
   }
 
   /**
