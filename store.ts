@@ -376,12 +376,13 @@ export class IDBEventStore {
    *
    * @param event - the replacement event
    * @param followedBy - optional array of pubkeys that are following this event
+   * @returns boolean - true if the event was new, false if it was already saved
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
   async replaceEvent(
     event: NostrEvent,
     { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!this._db) await this.init()
 
     // sanity checking
@@ -418,13 +419,15 @@ export class IDBEventStore {
       }
     }
 
-    return Promise.all(deletePromises)
+    await Promise.all(deletePromises)
       .then(() => {
         if (shouldStore) {
           return this.saveEventInternal(transaction, event, followedBy)
         }
       })
       .then(() => transaction.commit())
+
+    return shouldStore
   }
 
   /**
