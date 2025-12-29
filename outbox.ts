@@ -245,7 +245,7 @@ export class OutboxManager {
               const deletion = event.kind === EventDeletion
 
               const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
-                this,
+                this.store,
                 event,
                 {
                   seenOn: this.storeRelaysSeenOn
@@ -338,7 +338,7 @@ export class OutboxManager {
         const deletion = event.kind === EventDeletion
 
         const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
-          this,
+          this.store,
           event,
           {
             seenOn: this.storeRelaysSeenOn
@@ -454,7 +454,7 @@ export class OutboxManager {
             const deletion = event.kind === EventDeletion
 
             const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
-              this,
+              this.store,
               event,
               {
                 seenOn: this.storeRelaysSeenOn
