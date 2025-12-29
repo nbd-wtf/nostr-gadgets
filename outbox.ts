@@ -244,12 +244,16 @@ export class OutboxManager {
             events.map(async event => {
               const deletion = event.kind === EventDeletion
 
-              const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
-                seenOn: this.storeRelaysSeenOn
-                  ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-                  : undefined,
-                followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
-              })
+              const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
+                this,
+                event,
+                {
+                  seenOn: this.storeRelaysSeenOn
+                    ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+                    : undefined,
+                  followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+                },
+              )
 
               if (isNew && deletion) {
                 this.performDeletions(event)
@@ -333,12 +337,16 @@ export class OutboxManager {
       onevent: async event => {
         const deletion = event.kind === EventDeletion
 
-        const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
-          seenOn: this.storeRelaysSeenOn
-            ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-            : undefined,
-          followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
-        })
+        const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
+          this,
+          event,
+          {
+            seenOn: this.storeRelaysSeenOn
+              ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+              : undefined,
+            followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+          },
+        )
 
         if (isNew && deletion) {
           this.performDeletions(event)
@@ -445,12 +453,16 @@ export class OutboxManager {
           events.map(async event => {
             const deletion = event.kind === EventDeletion
 
-            const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent)(event, {
-              seenOn: this.storeRelaysSeenOn
-                ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-                : undefined,
-              followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
-            })
+            const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
+              this,
+              event,
+              {
+                seenOn: this.storeRelaysSeenOn
+                  ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+                  : undefined,
+                followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+              },
+            )
 
             if (isNew && deletion) {
               this.performDeletions(event)
