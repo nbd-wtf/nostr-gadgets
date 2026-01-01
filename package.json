@@ -7,6 +7,7 @@
     "idb-keyval": "^6.2.1"
   },
   "devDependencies": {
+    "esbuild": "^0.27.2",
     "fake-indexeddb": "^6.0.0",
     "prettier": "^3.3.3",
     "wasm-pack": "^0.13.1"

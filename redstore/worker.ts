@@ -22,13 +22,13 @@ self.addEventListener('message', async event => {
       if (!db) throw new Error('Database not initialized')
       switch (method) {
         case 'saveEvents':
-          result = db.saveEvents(data)
+          result = db.save_events(data)
           break
         case 'deleteEvents':
-          result = db.deleteEvents(data)
+          result = db.delete_events(data)
           break
         case 'queryEvents':
-          result = db.queryEvents(data)
+          result = db.query_events(data)
           break
         default:
           throw new Error(`unknown method: ${method}`)
