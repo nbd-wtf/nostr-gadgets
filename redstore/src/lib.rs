@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
@@ -14,14 +13,16 @@ use web_sys::FileSystemSyncAccessHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostrEvent {
-    pub id: String,
     pub pubkey: String,
-    pub created_at: u32,
     pub kind: u32,
+    pub id: String,
+    pub created_at: u32,
     pub tags: Vec<Vec<String>>,
     pub content: String,
     pub sig: String,
 }
+
+type EventJSON = String;
 
 #[derive(Debug)]
 struct IndexEntry {
@@ -30,7 +31,6 @@ struct IndexEntry {
 }
 
 type Result<T> = std::result::Result<T, JsValue>;
-use wasm_bindgen::prelude::*;
 
 const EVENTS: TableDefinition<u32, &[u8]> = TableDefinition::new("events");
 const INDEX_NOTHING: TableDefinition<&[u8], u32> = TableDefinition::new("index_nothing");
@@ -157,45 +157,38 @@ impl Redstore {
         }
     }
 
-    fn query_internal(&self, txn: &ReadTransaction, filter: JsValue) -> Result<Vec<NostrEvent>> {
+    fn query_internal(&self, txn: &ReadTransaction, filter: JsValue) -> Result<Vec<EventJSON>> {
         let filter_obj = Object::from(filter);
 
-        // Extract filter parameters
+        // extract filter parameters
         let ids = self.get_string_array(&filter_obj, "ids")?;
         let authors = self.get_string_array(&filter_obj, "authors")?;
         let kinds = self.get_u32_array(&filter_obj, "kinds")?;
         let since = self.get_optional_u32(&filter_obj, "since")?;
         let until = self
             .get_optional_u32(&filter_obj, "until")?
-            .unwrap_or(u32::MAX);
+            .unwrap_or(u32::MAX); // tODO: instead of u32::MAX use the current timestamp here
         let limit = self.get_optional_u32(&filter_obj, "limit")?.unwrap_or(500) as usize;
         let tags = self.extract_tag_filters(&filter_obj)?;
 
-        // Determine which index queries to run
+        // determine which index queries to run
         let mut query_plans = Vec::new();
 
         if !ids.is_empty() {
-            // Use index_id for ID queries
+            // use index_id for ID queries
             for id in ids {
                 let mut prefix = Vec::new();
-                let id_bytes = id.as_bytes();
-                if id_bytes.len() >= 8 {
-                    prefix.extend_from_slice(&id_bytes[id_bytes.len() - 8..]);
-                } else {
-                    let padding = 8 - id_bytes.len();
-                    prefix.extend_from_slice(&vec![0u8; padding]);
-                    prefix.extend_from_slice(id_bytes);
-                }
+
                 query_plans.push(QueryPlan {
                     table_name: "index_id",
                     prefix,
                     since,
-                    until: until.unwrap_or(u32::MAX),
-                    limit: limit as u32,
+                    until,
+                    limit,
                 });
             }
         } else if !authors.is_empty() && !kinds.is_empty() {
-            // Use index_pubkey_kind for combined author+kind queries
+            // use index_pubkey_kind for combined author+kind queries
             for author in authors {
                 let author_bytes = author.as_bytes();
                 let mut author_suffix = Vec::new();
@@ -215,13 +208,13 @@ impl Redstore {
                         table_name: "index_pubkey_kind",
                         prefix,
                         since,
-                        until: until.unwrap_or(u32::MAX),
-                        limit: limit as u32,
+                        until,
+                        limit,
                     });
                 }
             }
         } else if !authors.is_empty() {
-            // Use index_pubkey for author-only queries
+            // use index_pubkey for author-only queries
             for author in authors {
                 let mut prefix = Vec::new();
                 let author_bytes = author.as_bytes();
@@ -236,12 +229,12 @@ impl Redstore {
                     table_name: "index_pubkey",
                     prefix,
                     since,
-                    until: until.unwrap_or(u32::MAX),
-                    limit: limit as u32,
+                    until,
+                    limit,
                 });
             }
         } else if !kinds.is_empty() {
-            // Use index_kind for kind-only queries
+            // use index_kind for kind-only queries
             for kind in kinds {
                 let mut prefix = Vec::new();
                 prefix.extend_from_slice(&(kind as u16).to_be_bytes());
@@ -249,12 +242,12 @@ impl Redstore {
                     table_name: "index_kind",
                     prefix,
                     since,
-                    until: until.unwrap_or(u32::MAX),
-                    limit: limit as u32,
+                    until,
+                    limit,
                 });
             }
         } else if !tags.is_empty() {
-            // Use index_tag for tag queries
+            // use index_tag for tag queries
             for (tag_name, tag_value) in tags {
                 let mut prefix = Vec::new();
                 prefix.extend_from_slice(tag_name.as_bytes());
@@ -263,41 +256,51 @@ impl Redstore {
                     table_name: "index_tag",
                     prefix,
                     since,
-                    until: until.unwrap_or(u32::MAX),
-                    limit: limit as u32,
+                    until,
+                    limit,
                 });
             }
         } else {
-            // Use index_nothing for general queries
+            // use index_nothing for general queries
             query_plans.push(QueryPlan {
                 table_name: "index_nothing",
                 prefix: Vec::new(),
                 since,
-                until: until.unwrap_or(u32::MAX),
-                limit: limit as u32,
+                until,
+                limit,
             });
         }
 
-        // Execute queries and merge results
+        // execute queries and merge results
         let mut all_events = Vec::new();
         let mut query_states: Vec<QueryState> = Vec::new();
 
         for plan in query_plans {
-            let state = self.execute_query_plan(txn, plan)?;
+            let mut state = QueryState {
+                table_name: plan.table_name.to_string(),
+                prefix: plan.prefix.clone(),
+                since: plan.since,
+                until: plan.until,
+                limit: plan.limit,
+                results: Vec::new(),
+                exhausted: false,
+            };
             query_states.push(state);
+
+            self.pull_results(&mut state, &mut limit)
         }
 
-        // Merge results from all queries
+        // merge results from all queries
         let mut merged_results = Vec::new();
         let mut emitted_count = 0;
 
         while emitted_count < limit {
-            // Find the query with the highest timestamp
+            // find the query with the highest timestamp
             let mut best_query_idx = None;
             let mut best_timestamp = 0;
 
             for (idx, state) in query_states.iter().enumerate() {
-                if let Some((timestamp, _)) = state.current_batch.first() {
+                if let Some((timestamp, _)) = state.results.iter().last() {
                     if *timestamp > best_timestamp {
                         best_timestamp = *timestamp;
                         best_query_idx = Some(idx);
@@ -306,44 +309,44 @@ impl Redstore {
             }
 
             if best_query_idx.is_none() {
-                break; // No more results
+                break; // no more results
             }
 
             let best_idx = best_query_idx.unwrap();
-            let best_timestamp = query_states[best_idx].current_batch[0].0;
+            let best_timestamp = query_states[best_idx].results[0].0;
 
-            // Collect all events with this timestamp from all queries
-            let mut events_with_timestamp = Vec::new();
+            // collect all events with this timestamp from all queries
+            let mut batch = Vec::new();
 
             for state in &mut query_states {
-                while let Some((timestamp, event)) = state.current_batch.first() {
-                    if *timestamp == best_timestamp {
-                        if let Some((_, event)) = state.current_batch.get(0) {
-                            state.current_batch.remove(0);
-                            events_with_timestamp.push(event);
-                        }
-                    } else if *timestamp < best_timestamp {
-                        break;
-                    } else {
-                        // Should not happen as we sort by timestamp descending
-                        break;
-                    }
-                }
+                batch.extend(state.results);
             }
 
-            // Sort by timestamp (should already be sorted) and emit
-            events_with_timestamp.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            // sort by timestamp (newest last)
+            batch.sort_by(|(a, _), (b, _)| a.cmp(&b));
 
-            for event in events_with_timestamp {
+            loop {
                 if emitted_count >= limit {
                     break;
                 }
-                merged_results.push(event);
-                emitted_count += 1;
+                if let Some((_, serial)) = batch.pop() {
+                    // TODO:
+                    // go on the EVENTS table and fetch the event JSON using the serial
+                    let eventj = // TODO
+
+                    merged_results.push(eventj);
+                    emitted_count += 1;
+                }
             }
 
-            // Pull more data from the best query
-            self.pull_more_results(txn, &mut query_states[best_idx])?;
+            // pull more data from the best query
+            let has_more = self.pull_results(best_idx, limit)?;
+            if !has_more {
+                break;
+            }
+            if !has_more {
+                break;
+            }
         }
 
         Ok(merged_results)
@@ -404,7 +407,7 @@ impl Redstore {
 
     fn extract_tag_filters(&self, obj: &Object) -> Result<Vec<(String, String)>> {
         let mut tags = Vec::new();
-        // Look for properties like "#e", "#p", etc.
+        // look for properties like "#e", "#p", etc.
         for i in 1..=9 {
             let key = format!("#{}", i);
             if let Ok(value) = js_sys::Reflect::get(obj, &JsValue::from_str(&key)) {
@@ -419,25 +422,13 @@ impl Redstore {
         Ok(tags)
     }
 
-    fn execute_query_plan(&self, txn: &ReadTransaction, plan: QueryPlan) -> Result<QueryState> {
-        // This would implement the actual table querying logic
-        // For now, return empty state
-        Ok(QueryState {
-            table_name: plan.table_name.to_string(),
-            prefix: plan.prefix,
-            since: plan.since,
-            until: plan.until,
-            limit: plan.limit,
-            current_batch: Vec::new(),
-            exhausted: false,
-        })
-    }
+    fn pull_results(&self, state: &mut QueryState, limit: &mut usize) -> Result<bool> {
+        if state.exhausted {
+            return Ok(false);
+        }
 
-    fn pull_more_results(&self, txn: &ReadTransaction, state: &mut QueryState) -> Result<()> {
-        // This would implement pulling more results from the table
-        // For now, mark as exhausted
-        state.exhausted = true;
-        Ok(())
+        // TODO:
+        // query the index table from state and push up to 20 new results to state.results
     }
 }
 
@@ -451,20 +442,22 @@ impl Redstore {
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
-        // Get last serial
+        // get last serial
         let last_serial = {
-            let mut events_table = write_txn
+            let events_table = write_txn
                 .open_table(EVENTS)
                 .map_err(|e| JsValue::from_str(&format!("table error: {:?}", e)))?;
 
-            events_table
+            let s = events_table
                 .last()
                 .map_err(|e| JsValue::from_str(&format!("get serial err: {:?}", e)))?
                 .map(|l| l.0.value())
-                .unwrap_or(0)
+                .unwrap_or(0);
+
+            s
         };
 
-        // Get events array from data
+        // get events array from data
         let data_obj = Object::from(data);
         let events_array = js_sys::Reflect::get(&data_obj, &JsValue::from_str("events"))
             .map_err(|e| JsValue::from_str(&format!("get events error: {:?}", e)))?;
@@ -478,22 +471,25 @@ impl Redstore {
                 .into_serde()
                 .map_err(|e| JsValue::from_str(&format!("deserialize event error: {:?}", e)))?;
 
-            // Serialize event to bytes
+            // serialize event to bytes
             let event_bytes = serde_json::to_vec(&event)
                 .map_err(|e| JsValue::from_str(&format!("serialize event error: {:?}", e)))?;
 
-            // Insert event and indexes
+            // insert event and indexes
             {
                 let mut events_table = write_txn
                     .open_table(EVENTS)
                     .map_err(|e| JsValue::from_str(&format!("table error: {:?}", e)))?;
 
+                let event_data = Vec::with_capacity(8 + 2 + 1000);
+                event_data.ex
+
                 events_table
                     .insert(current_serial, &event_bytes[..])
                     .map_err(|e| JsValue::from_str(&format!("insert error: {:?}", e)))?;
-
-                self.insert_indexes(&mut write_txn, &event, current_serial)?;
             }
+
+            self.insert_indexes(&mut write_txn, &event, current_serial)?;
 
             current_serial += 1;
         }
@@ -519,7 +515,7 @@ impl Redstore {
                 .find(|tag| tag.len() >= 2 && tag[0] == "d")
                 .and_then(|tag| tag.get(1).cloned())
         } else {
-            Some(String::new()) // For other replaceable events, use empty string
+            Some(String::new()) // for other replaceable events, use empty string
         }
     }
 
@@ -605,28 +601,28 @@ impl Redstore {
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
-        // Create filter for the IDs
+        // create filter for the IDs
         let filter_js = js_sys::Object::new();
         js_sys::Reflect::set(&filter_js, &JsValue::from_str("ids"), &ids)
             .map_err(|e| JsValue::from_str(&format!("set ids error: {:?}", e)))?;
 
-        // Get the read transaction for querying
+        // get the read transaction for querying
         let read_txn = db
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
 
-        // Query for the events to delete
+        // query for the events to delete
         let events_to_delete = self.query_internal(&read_txn, filter_js.into())?;
         let mut deleted_serials = Vec::new();
         let mut deleted_events = Vec::new();
 
         for event in &events_to_delete {
-            // Get the serial for this event
+            // get the serial for this event
             if let Ok(serial) = self.get_event_serial(&read_txn, &event.id) {
                 deleted_serials.push(serial);
                 deleted_events.push(event.clone());
 
-                // Delete the event and its indexes
+                // delete the event and its indexes
                 self.delete_internal(&mut write_txn, &event, serial)?;
             }
         }
@@ -648,20 +644,14 @@ impl Redstore {
 
     fn get_event_serial(&self, txn: &ReadTransaction, id: &str) -> Result<u32> {
         let mut id_key = Vec::new();
-        let id_bytes = id.as_bytes();
-        if id_bytes.len() >= 8 {
-            id_key.extend_from_slice(&id_bytes[id_bytes.len() - 8..]);
-        } else {
-            let padding = 8 - id_bytes.len();
-            id_key.extend_from_slice(&vec![0u8; padding]);
-            id_key.extend_from_slice(id_bytes);
-        }
+        let id_bytes = id.as_bytes(); // parse from hex here, chars id[48..64]
+        id_key.extend_from_slice(&id_bytes[id_bytes.len() - 8..]);
 
         let table = txn
             .open_table(INDEX_ID)
             .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))?;
 
-        // Search for the entry with this ID prefix
+        // search for the entry with this ID prefix
         let mut serial = 0;
         let mut found = false;
 
@@ -691,7 +681,7 @@ impl Redstore {
         event: &NostrEvent,
         serial: u32,
     ) -> Result<()> {
-        // Delete from EVENTS table
+        // delete from EVENTS table
         {
             let mut events_table = write_txn
                 .open_table(EVENTS)
@@ -701,7 +691,7 @@ impl Redstore {
                 .map_err(|e| JsValue::from_str(&format!("remove event error: {:?}", e)))?;
         }
 
-        // Delete from index tables
+        // delete from index tables
         let indexes = self.compute_indexes(event, serial);
 
         for index in indexes {
@@ -784,14 +774,8 @@ impl Redstore {
 
         // index_id: [8-bytes-at-the-end-of-id][4-bytes-of-the-timestamp][4-bytes-serial]
         let mut id_key = Vec::with_capacity(16);
-        let id_bytes = event.id.as_bytes();
-        if id_bytes.len() >= 8 {
-            id_key.extend_from_slice(&id_bytes[id_bytes.len() - 8..]);
-        } else {
-            let padding = 8 - id_bytes.len();
-            id_key.extend_from_slice(&vec![0u8; padding]);
-            id_key.extend_from_slice(id_bytes);
-        }
+        let id_bytes = event.id.as_bytes(); // TODO: parse from hex here instead, only the last 8 bytes/16 chars
+        id_key.extend_from_slice(&id_bytes);
         id_key.extend_from_slice(&timestamp.to_be_bytes());
         id_key.extend_from_slice(&serial.to_be_bytes());
         indexes.push(IndexEntry {
@@ -811,14 +795,9 @@ impl Redstore {
 
         // index_pubkey: [8-bytes-at-the-end-of-pubkey][4-bytes-of-the-timestamp][4-bytes-serial]
         let mut pubkey_key = Vec::with_capacity(16);
-        let pubkey_bytes = event.pubkey.as_bytes();
-        if pubkey_bytes.len() >= 8 {
-            pubkey_key.extend_from_slice(&pubkey_bytes[pubkey_bytes.len() - 8..]);
-        } else {
-            let padding = 8 - pubkey_bytes.len();
-            pubkey_key.extend_from_slice(&vec![0u8; padding]);
-            pubkey_key.extend_from_slice(pubkey_bytes);
-        }
+        let pubkey_bytes = event.pubkey.as_bytes(); // TODO: parse from hex here instead, only the last 8 bytes/16 chars
+
+        pubkey_key.extend_from_slice(&pubkey_bytes);
         pubkey_key.extend_from_slice(&timestamp.to_be_bytes());
         pubkey_key.extend_from_slice(&serial.to_be_bytes());
         indexes.push(IndexEntry {
@@ -828,7 +807,7 @@ impl Redstore {
 
         // index_pubkey_kind: [8-bytes-at-the-end-of-pubkey][2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
         let mut pubkey_kind_key = Vec::with_capacity(18);
-        pubkey_kind_key.extend_from_slice(&pubkey_key[0..8]);
+        pubkey_kind_key.extend_from_slice(&pubkey_bytes);
         pubkey_kind_key.extend_from_slice(&(event.kind as u16).to_be_bytes());
         pubkey_kind_key.extend_from_slice(&timestamp.to_be_bytes());
         pubkey_kind_key.extend_from_slice(&serial.to_be_bytes());
@@ -845,15 +824,15 @@ impl Redstore {
                 .find(|tag| tag.len() >= 2 && tag[0] == "d")
             {
                 if let Some(d_value) = d_tag.get(1) {
+                    // TODO: use sha256() hashing here instead of the DefaultHasher
                     use std::collections::hash_map::DefaultHasher;
                     use std::hash::{Hash, Hasher};
-
                     let mut hasher = DefaultHasher::new();
                     d_value.hash(&mut hasher);
                     let hash = hasher.finish();
 
                     let mut pubkey_dtag_key = Vec::with_capacity(24);
-                    pubkey_dtag_key.extend_from_slice(&pubkey_key[0..8]);
+                    pubkey_dtag_key.extend_from_slice(&pubkey_key[24..32]);
                     pubkey_dtag_key.extend_from_slice(&hash.to_be_bytes()[0..8]);
                     pubkey_dtag_key.extend_from_slice(&timestamp.to_be_bytes());
                     pubkey_dtag_key.extend_from_slice(&serial.to_be_bytes());
@@ -871,15 +850,17 @@ impl Redstore {
                 let tag_name = &tag[0];
                 let tag_value = &tag[1];
 
-                let mut tag_key = Vec::with_capacity(16);
-                tag_key.extend_from_slice(tag_name.as_bytes());
-                tag_key.extend_from_slice(tag_value.as_bytes());
-                tag_key.extend_from_slice(&timestamp.to_be_bytes());
-                tag_key.extend_from_slice(&serial.to_be_bytes());
-                indexes.push(IndexEntry {
-                    table_name: "index_tag",
-                    key: tag_key,
-                });
+                if let Some(k) = tag_name.bytes().next() {
+                    let mut tag_key = vec![0u8, 17];
+                    tag_key[0] = k;
+                    // TODO: sha256(tag_value.as_bytes()), take the first 8 bytes, copy to tag_key[1..9]
+                    tag_key[9..13].copy_from_slice(&timestamp.to_be_bytes());
+                    tag_key[13..17].copy_from_slice(&serial.to_be_bytes());
+                    indexes.push(IndexEntry {
+                        table_name: "index_tag",
+                        key: tag_key,
+                    });
+                }
             }
         }
 
@@ -893,7 +874,7 @@ struct QueryPlan {
     prefix: Vec<u8>,
     since: Option<u32>,
     until: u32,
-    limit: u32,
+    limit: usize,
 }
 
 #[derive(Debug)]
@@ -902,7 +883,7 @@ struct QueryState {
     prefix: Vec<u8>,
     since: Option<u32>,
     until: u32,
-    limit: u32,
-    current_batch: Vec<(u32, NostrEvent)>, // (timestamp, event)
+    limit: usize,
+    results: Vec<(u32, u32)>, // (timestamp, serial)
     exhausted: bool,
 }
