@@ -269,15 +269,14 @@ export class IDBEventStore {
   }
 
   /**
-   * deletes an event from the store by its ID.
-   * removes the event and all associated indexes.
+   * deletes events from the store by their ID.
+   * removes the events and all associated indexes.
    *
    * @param ids - hex-encoded event IDs to delete
    * @param followedBy - optional array of pubkeys that are following this event
    * @returns the number of events actually deleted, ignoring those that we couldn't find
    * @throws {DatabaseError} if deletion fails
    */
-
   async deleteEvents(ids: string[]): Promise<number> {
     if (!this._db) await this.init()
 
