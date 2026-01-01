@@ -562,9 +562,7 @@ impl Redstore {
             Ok(true)
         }
     }
-}
 
-impl Redstore {
     pub fn save_events(&self, data: JsValue) -> Result<()> {
         let db = self
             .db
