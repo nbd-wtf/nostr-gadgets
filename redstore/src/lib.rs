@@ -1,15 +1,17 @@
-use std::io;
+use std::io::{self};
 use std::sync::{Arc, Mutex};
 
 use gloo_utils::format::JsValueSerdeExt;
-use js_sys::{Array, Object, Uint8Array};
 use redb::{
     Database, ReadTransaction, ReadableTable, StorageBackend, TableDefinition, WriteTransaction,
 };
 use serde::{Deserialize, Serialize};
 use serde_json;
+use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
+
+const MAX_U32_BYTES: [u8; 4] = [0xff; 4];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostrEvent {
@@ -22,7 +24,10 @@ pub struct NostrEvent {
     pub sig: String,
 }
 
-type EventJSON = String;
+struct QueryResultEvent {
+    json: Vec<u8>,
+    serial: u32,
+}
 
 #[derive(Debug)]
 struct IndexEntry {
@@ -33,13 +38,15 @@ struct IndexEntry {
 type Result<T> = std::result::Result<T, JsValue>;
 
 const EVENTS: TableDefinition<u32, &[u8]> = TableDefinition::new("events");
-const INDEX_NOTHING: TableDefinition<&[u8], u32> = TableDefinition::new("index_nothing");
 const INDEX_ID: TableDefinition<&[u8], u32> = TableDefinition::new("index_id");
-const INDEX_KIND: TableDefinition<&[u8], u32> = TableDefinition::new("index_kind");
-const INDEX_PUBKEY: TableDefinition<&[u8], u32> = TableDefinition::new("index_pubkey");
-const INDEX_PUBKEY_KIND: TableDefinition<&[u8], u32> = TableDefinition::new("index_pubkey_kind");
-const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], u32> = TableDefinition::new("index_pubkey_dtag");
-const INDEX_TAG: TableDefinition<&[u8], u32> = TableDefinition::new("index_tag");
+
+const INDEX_NOTHING: TableDefinition<&[u8], ()> = TableDefinition::new("index_nothing");
+const INDEX_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("index_kind");
+const INDEX_PUBKEY: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey");
+const INDEX_PUBKEY_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_kind");
+const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_dtag");
+
+const INDEX_TAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_tag");
 // const INDEX_FOLLOWED: TableDefinition<&[u8], u32> = TableDefinition::new("index_followed");
 
 #[derive(Debug)]
@@ -136,7 +143,7 @@ impl Redstore {
         })
     }
 
-    pub fn query_events(&self, filter: JsValue) -> Result<Option<js_sys::Uint8Array>> {
+    pub fn query_events(&self, filter: JsValue) -> Result<JsValue> {
         let db = self
             .db
             .lock()
@@ -145,153 +152,253 @@ impl Redstore {
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
-        let events = self.query_internal(&read_txn, filter)?;
-
-        if events.is_empty() {
-            Ok(None)
-        } else {
-            let events_json = serde_json::to_vec(&events)
-                .map_err(|e| JsValue::from_str(&format!("serialize events error: {:?}", e)))?;
-            let array = Uint8Array::from(&events_json[..]);
-            Ok(Some(array))
+        let events = self.query_internal(&read_txn, &js_sys::Object::from(filter))?;
+        let array = js_sys::Array::new_with_length(events.len() as u32);
+        for QueryResultEvent { json, serial: _ } in events {
+            array.push(&js_sys::Uint8Array::from(json.as_slice()));
         }
+        Ok(array.into())
     }
 
-    fn query_internal(&self, txn: &ReadTransaction, filter: JsValue) -> Result<Vec<EventJSON>> {
-        let filter_obj = Object::from(filter);
-
+    fn query_internal(
+        &self,
+        txn: &ReadTransaction,
+        filter: &js_sys::Object,
+    ) -> Result<Vec<QueryResultEvent>> {
         // extract filter parameters
-        let ids = self.get_string_array(&filter_obj, "ids")?;
-        let authors = self.get_string_array(&filter_obj, "authors")?;
-        let kinds = self.get_u32_array(&filter_obj, "kinds")?;
-        let since = self.get_optional_u32(&filter_obj, "since")?;
-        let until = self
-            .get_optional_u32(&filter_obj, "until")?
-            .unwrap_or(u32::MAX); // tODO: instead of u32::MAX use the current timestamp here
-        let limit = self.get_optional_u32(&filter_obj, "limit")?.unwrap_or(500) as usize;
-        let tags = self.extract_tag_filters(&filter_obj)?;
+        let mut ids: Option<Vec<String>> = None;
+        let mut authors: Option<Vec<String>> = None;
+        let mut kinds: Option<Vec<u16>> = None;
+        let mut dtags: Option<Vec<String>> = None;
+        let mut chosen_tagname: Option<String> = None;
+        let mut chosen_tagvalues: Option<Vec<String>> = None;
+        let mut since: Option<u32> = None;
+        let mut until: u32 = (js_sys::Date::now() / 1000.0) as u32;
+        let mut limit: usize = 100;
+
+        let keys = js_sys::Object::keys(filter);
+        for i in 0..keys.length() {
+            let key = keys.get(i);
+            if let Ok(value) = js_sys::Reflect::get(&filter, &key) {
+                let key_string = key.as_string().expect("object key is not a string?");
+                let key_str = key_string.as_str();
+                match key_str {
+                    "ids" => {
+                        let array = js_sys::Array::from(&value);
+                        let ids = ids.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            ids.push(array.get(i).as_string().expect("ids must be strings"));
+                        }
+                        break; // break here because if we have ids we don't care about anything else
+                    }
+                    "authors" => {
+                        let array = js_sys::Array::from(&value);
+                        let authors = authors.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            authors
+                                .push(array.get(i).as_string().expect("authors must be strings"));
+                        }
+                    }
+                    "kinds" => {
+                        let array = js_sys::Array::from(&value);
+                        let kinds = kinds.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            kinds
+                                .push(array.get(i).as_f64().expect("kinds must be numbers") as u16);
+                        }
+                    }
+                    "since" => {
+                        since = Some(value.as_f64().expect("since must be a number") as u32);
+                    }
+                    "until" => {
+                        until = value.as_f64().expect("until must be a number") as u32;
+                    }
+                    "limit" => {
+                        limit = value.as_f64().expect("limit must be a number") as usize;
+                    }
+                    "#d" => {
+                        let array = js_sys::Array::from(&value);
+                        let dtags = dtags.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            dtags.push(array.get(i).as_string().expect("d-tags must be strings"));
+                        }
+                    }
+                    _ => {
+                        if chosen_tagvalues.is_none() && key_str.starts_with("#") {
+                            chosen_tagname = Some(key_str[1..].to_string());
+                            let array = js_sys::Array::from(&value);
+                            let chosen_tagvalues = chosen_tagvalues
+                                .insert(Vec::with_capacity(array.length() as usize));
+                            for i in 0..array.length() {
+                                chosen_tagvalues.push(array.get(i).as_string().unwrap());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let events_table = txn
+            .open_table(EVENTS)
+            .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
+
+        if let Some(ids) = ids {
+            let mut results: Vec<QueryResultEvent> = Vec::with_capacity(ids.len());
+
+            for id in ids {
+                let mut id_key = [0u8; 8];
+                parse_hex_into(&id[48..64], &mut id_key[0..8])
+                    .map_err(|e| JsValue::from_str(&format!("id is not valid hex: {:?}", e)))?;
+
+                let ids_index = txn
+                    .open_table(INDEX_ID)
+                    .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))?;
+
+                // get directly
+                if let Some(s) = ids_index
+                    .get(&id_key[..])
+                    .map_err(|e| JsValue::from_str(&format!("get from index_id error: {:?}", e)))?
+                {
+                    let serial = s.value();
+                    if let Some(event_json) = events_table.get(serial).map_err(|e| {
+                        JsValue::from_str(&format!("get from events error: {:?}", e))
+                    })? {
+                        results.push(QueryResultEvent {
+                            json: event_json.value().to_owned(),
+                            serial: serial,
+                        });
+                    }
+                }
+            }
+
+            return Ok(results);
+        }
 
         // determine which index queries to run
         let mut query_plans = Vec::new();
 
-        if !ids.is_empty() {
-            // use index_id for ID queries
-            for id in ids {
-                let mut prefix = Vec::new();
-
-                query_plans.push(QueryPlan {
-                    table_name: "index_id",
-                    prefix,
-                    since,
-                    until,
-                    limit,
-                });
-            }
-        } else if !authors.is_empty() && !kinds.is_empty() {
+        if let (Some(authors), Some(kinds)) = (&authors, &kinds) {
             // use index_pubkey_kind for combined author+kind queries
             for author in authors {
-                let author_bytes = author.as_bytes();
-                let mut author_suffix = Vec::new();
-                if author_bytes.len() >= 8 {
-                    author_suffix.extend_from_slice(&author_bytes[author_bytes.len() - 8..]);
-                } else {
-                    let padding = 8 - author_bytes.len();
-                    author_suffix.extend_from_slice(&vec![0u8; padding]);
-                    author_suffix.extend_from_slice(author_bytes);
-                }
+                let mut author_bytes = vec![0u8; 8];
+                parse_hex_into(&author[48..64], &mut author_bytes)
+                    .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
 
                 for kind in kinds {
-                    let mut prefix = Vec::new();
-                    prefix.extend_from_slice(&author_suffix);
-                    prefix.extend_from_slice(&(kind as u16).to_be_bytes());
+                    let mut start_key = vec![0u8; 18];
+                    start_key[0..8].copy_from_slice(&author_bytes);
+                    start_key[8..10].copy_from_slice(&kind.to_be_bytes());
+                    start_key[10..14].copy_from_slice(&until.to_be_bytes());
+                    start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
                     query_plans.push(QueryPlan {
                         table_name: "index_pubkey_kind",
-                        prefix,
+                        start_key,
                         since,
-                        until,
-                        limit,
                     });
                 }
             }
-        } else if !authors.is_empty() {
+        } else if let (Some(authors), Some(dtags)) = (&authors, &dtags) {
+            // use index_pubkey_kind for combined author+kind queries
+            for author in authors {
+                let mut author_bytes = vec![0u8; 8];
+                parse_hex_into(&author[48..64], &mut author_bytes)
+                    .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
+
+                for dtag in dtags {
+                    let mut start_key = vec![0u8; 24];
+
+                    let mut hasher = Sha256::new();
+                    hasher.update(dtag.as_bytes());
+                    let hash = hasher.finalize();
+
+                    start_key[0..8].copy_from_slice(&author_bytes);
+                    start_key[8..16].copy_from_slice(&hash[0..8]);
+                    start_key[16..20].copy_from_slice(&until.to_be_bytes());
+                    start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+                    query_plans.push(QueryPlan {
+                        table_name: "index_pubkey_kind",
+                        start_key,
+                        since,
+                    });
+                }
+            }
+        } else if let Some(authors) = &authors {
             // use index_pubkey for author-only queries
             for author in authors {
-                let mut prefix = Vec::new();
-                let author_bytes = author.as_bytes();
-                if author_bytes.len() >= 8 {
-                    prefix.extend_from_slice(&author_bytes[author_bytes.len() - 8..]);
-                } else {
-                    let padding = 8 - author_bytes.len();
-                    prefix.extend_from_slice(&vec![0u8; padding]);
-                    prefix.extend_from_slice(author_bytes);
-                }
+                let mut start_key = vec![0u8; 16];
+                parse_hex_into(&author[48..64], &mut start_key[0..8])
+                    .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
+                start_key[8..12].copy_from_slice(&until.to_be_bytes());
+                start_key[12..16].copy_from_slice(&MAX_U32_BYTES);
+
                 query_plans.push(QueryPlan {
                     table_name: "index_pubkey",
-                    prefix,
+                    start_key,
                     since,
-                    until,
-                    limit,
                 });
             }
-        } else if !kinds.is_empty() {
+        } else if let Some(kinds) = &kinds {
             // use index_kind for kind-only queries
             for kind in kinds {
-                let mut prefix = Vec::new();
-                prefix.extend_from_slice(&(kind as u16).to_be_bytes());
+                let mut start_key = vec![0u8; 10];
+                start_key[0..2].copy_from_slice(&kind.to_be_bytes());
+                start_key[2..6].copy_from_slice(&until.to_be_bytes());
+                start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
                 query_plans.push(QueryPlan {
                     table_name: "index_kind",
-                    prefix,
+                    start_key,
                     since,
-                    until,
-                    limit,
                 });
             }
-        } else if !tags.is_empty() {
+        } else if let (Some(Some(letter)), Some(values)) =
+            (&chosen_tagname.map(|n| n.bytes().next()), &chosen_tagvalues)
+        {
             // use index_tag for tag queries
-            for (tag_name, tag_value) in tags {
-                let mut prefix = Vec::new();
-                prefix.extend_from_slice(tag_name.as_bytes());
-                prefix.extend_from_slice(tag_value.as_bytes());
+            for value in values {
+                let mut start_key = vec![0u8; 17];
+                start_key[0] = *letter;
+
+                let mut hasher = Sha256::new();
+                hasher.update(value.as_bytes());
+                let hash = hasher.finalize();
+
+                start_key[1..9].copy_from_slice(&hash[0..8]);
+                start_key[2..6].copy_from_slice(&until.to_be_bytes());
+                start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
                 query_plans.push(QueryPlan {
                     table_name: "index_tag",
-                    prefix,
+                    start_key,
                     since,
-                    until,
-                    limit,
                 });
             }
         } else {
             // use index_nothing for general queries
+            let mut start_key = vec![0u8; 8];
+            start_key[0..4].copy_from_slice(&until.to_be_bytes());
+            start_key[4..8].copy_from_slice(&MAX_U32_BYTES);
             query_plans.push(QueryPlan {
                 table_name: "index_nothing",
-                prefix: Vec::new(),
+                start_key,
                 since,
-                until,
-                limit,
             });
         }
 
         // execute queries and merge results
-        let mut all_events = Vec::new();
         let mut query_states: Vec<QueryState> = Vec::new();
 
         for plan in query_plans {
-            let mut state = QueryState {
-                table_name: plan.table_name.to_string(),
-                prefix: plan.prefix.clone(),
-                since: plan.since,
-                until: plan.until,
-                limit: plan.limit,
+            let state = QueryState {
+                plan,
                 results: Vec::new(),
                 exhausted: false,
             };
             query_states.push(state);
 
-            self.pull_results(&mut state, &mut limit)
+            self.pull_results(&mut query_states.last_mut().unwrap(), &mut limit)?;
         }
 
-        // merge results from all queries
-        let mut merged_results = Vec::new();
+        // will merge results from all queries
+        let mut merged_results: Vec<QueryResultEvent> = Vec::new();
         let mut emitted_count = 0;
 
         while emitted_count < limit {
@@ -319,7 +426,7 @@ impl Redstore {
             let mut batch = Vec::new();
 
             for state in &mut query_states {
-                batch.extend(state.results);
+                batch.append(&mut state.results);
             }
 
             // sort by timestamp (newest last)
@@ -329,21 +436,37 @@ impl Redstore {
                 if emitted_count >= limit {
                     break;
                 }
-                if let Some((_, serial)) = batch.pop() {
-                    // TODO:
+                if let Some((ts, serial)) = batch.pop() {
                     // go on the EVENTS table and fetch the event JSON using the serial
-                    let eventj = // TODO
+                    if let Some(event_json) = events_table
+                        .get(serial)
+                        .map_err(|e| JsValue::from_str(&format!("get event error: {:?}", e)))?
+                    {
+                        // TODO: extra checks for kind and pubkey if necessary
 
-                    merged_results.push(eventj);
-                    emitted_count += 1;
+                        merged_results.push(QueryResultEvent {
+                            json: event_json.value().to_owned(),
+                            serial,
+                        });
+
+                        emitted_count += 1;
+                        if emitted_count == limit {
+                            break;
+                        }
+
+                        if ts == best_timestamp {
+                            break;
+                        }
+                    }
                 }
             }
 
-            // pull more data from the best query
-            let has_more = self.pull_results(best_idx, limit)?;
-            if !has_more {
+            if emitted_count >= limit {
                 break;
             }
+
+            // pull more data from the best query
+            let has_more = self.pull_results(&mut query_states[best_idx], &mut limit)?;
             if !has_more {
                 break;
             }
@@ -352,83 +475,92 @@ impl Redstore {
         Ok(merged_results)
     }
 
-    fn get_string_array(&self, obj: &Object, key: &str) -> Result<Vec<String>> {
-        if let Ok(value) = js_sys::Reflect::get(obj, &JsValue::from_str(key)) {
-            if value.is_undefined() || value.is_null() {
-                return Ok(Vec::new());
-            }
-            let array = Array::from(&value);
-            let mut result = Vec::new();
-            for i in 0..array.length() {
-                let item = array.get(i);
-                if item.is_string() {
-                    result.push(item.as_string().unwrap());
-                }
-            }
-            Ok(result)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    fn get_u32_array(&self, obj: &Object, key: &str) -> Result<Vec<u32>> {
-        if let Ok(value) = js_sys::Reflect::get(obj, &JsValue::from_str(key)) {
-            if value.is_undefined() || value.is_null() {
-                return Ok(Vec::new());
-            }
-            let array = Array::from(&value);
-            let mut result = Vec::new();
-            for i in 0..array.length() {
-                let item = array.get(i);
-                if let Some(num) = item.as_f64() {
-                    result.push(num as u32);
-                }
-            }
-            Ok(result)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    fn get_optional_u32(&self, obj: &Object, key: &str) -> Result<Option<u32>> {
-        if let Ok(value) = js_sys::Reflect::get(obj, &JsValue::from_str(key)) {
-            if value.is_undefined() || value.is_null() {
-                return Ok(None);
-            }
-            if let Some(num) = value.as_f64() {
-                Ok(Some(num as u32))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn extract_tag_filters(&self, obj: &Object) -> Result<Vec<(String, String)>> {
-        let mut tags = Vec::new();
-        // look for properties like "#e", "#p", etc.
-        for i in 1..=9 {
-            let key = format!("#{}", i);
-            if let Ok(value) = js_sys::Reflect::get(obj, &JsValue::from_str(&key)) {
-                if !value.is_undefined() && !value.is_null() {
-                    let tag_values = self.get_string_array(obj, &key)?;
-                    for tag_value in tag_values {
-                        tags.push((key.clone(), tag_value));
-                    }
-                }
-            }
-        }
-        Ok(tags)
-    }
-
     fn pull_results(&self, state: &mut QueryState, limit: &mut usize) -> Result<bool> {
         if state.exhausted {
             return Ok(false);
         }
 
-        // TODO:
         // query the index table from state and push up to 20 new results to state.results
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let read_txn = db
+            .begin_read()
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
+        let table = match state.plan.table_name {
+            "index_nothing" => read_txn.open_table(INDEX_NOTHING),
+            "index_kind" => read_txn.open_table(INDEX_KIND),
+            "index_pubkey" => read_txn.open_table(INDEX_PUBKEY),
+            "index_pubkey_kind" => read_txn.open_table(INDEX_PUBKEY_KIND),
+            "index_pubkey_dtag" => read_txn.open_table(INDEX_PUBKEY_DTAG),
+            "index_tag" => read_txn.open_table(INDEX_TAG),
+            _ => {
+                return Err(JsValue::from_str(&format!(
+                    "unknown table: {}",
+                    state.plan.table_name
+                )))
+            }
+        }
+        .map_err(|e| JsValue::from_str(&format!("open table error: {:?}", e)))?;
+
+        let mut count = 0;
+        let batch_size = 20.min(*limit);
+
+        for item in table
+            .range(..&state.plan.start_key[..])
+            .map_err(|e| JsValue::from_str(&format!("iter error: {:?}", e)))?
+            .rev()
+        {
+            if count >= batch_size {
+                break;
+            }
+
+            let (key, _) = item.map_err(|e| JsValue::from_str(&format!("item error: {:?}", e)))?;
+            let key_bytes = key.value();
+            let key_len = key_bytes.len();
+
+            // check if key matches our prefix
+            if key_len != state.plan.start_key.len()
+                || key_bytes[0..key_len - 8] == state.plan.start_key[0..key_len - 8]
+            {
+                break;
+            }
+
+            // extract timestamp from key
+            let timestamp = u32::from_be_bytes([
+                key_bytes[key_len - 8],
+                key_bytes[key_len - 7],
+                key_bytes[key_len - 6],
+                key_bytes[key_len - 5],
+            ]);
+
+            // check if timestamp is in range
+            if let Some(since) = state.plan.since {
+                if timestamp < since {
+                    continue;
+                }
+            }
+
+            // extract serial
+            let serial = u32::from_be_bytes([
+                key_bytes[key_len - 4],
+                key_bytes[key_len - 3],
+                key_bytes[key_len - 2],
+                key_bytes[key_len - 2],
+            ]);
+
+            state.results.push((timestamp, serial));
+            count += 1;
+        }
+
+        if count == 0 {
+            state.exhausted = true;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 }
 
@@ -458,11 +590,11 @@ impl Redstore {
         };
 
         // get events array from data
-        let data_obj = Object::from(data);
+        let data_obj = js_sys::Object::from(data);
         let events_array = js_sys::Reflect::get(&data_obj, &JsValue::from_str("events"))
             .map_err(|e| JsValue::from_str(&format!("get events error: {:?}", e)))?;
 
-        let events = Array::from(&events_array);
+        let events = js_sys::Array::from(&events_array);
         let mut current_serial = last_serial + 1;
 
         for i in 0..events.length() {
@@ -481,9 +613,6 @@ impl Redstore {
                     .open_table(EVENTS)
                     .map_err(|e| JsValue::from_str(&format!("table error: {:?}", e)))?;
 
-                let event_data = Vec::with_capacity(8 + 2 + 1000);
-                event_data.ex
-
                 events_table
                     .insert(current_serial, &event_bytes[..])
                     .map_err(|e| JsValue::from_str(&format!("insert error: {:?}", e)))?;
@@ -500,25 +629,6 @@ impl Redstore {
         Ok(())
     }
 
-    fn is_replaceable_event(&self, event: &NostrEvent) -> bool {
-        event.kind == 0
-            || event.kind == 3
-            || (10000..=19999).contains(&event.kind)
-            || (30000..=39999).contains(&event.kind)
-    }
-
-    fn get_d_tag_for_replaceable(&self, event: &NostrEvent) -> Option<String> {
-        if (30000..=39999).contains(&event.kind) {
-            event
-                .tags
-                .iter()
-                .find(|tag| tag.len() >= 2 && tag[0] == "d")
-                .and_then(|tag| tag.get(1).cloned())
-        } else {
-            Some(String::new()) // for other replaceable events, use empty string
-        }
-    }
-
     fn insert_indexes(
         &self,
         write_txn: &mut WriteTransaction,
@@ -529,14 +639,6 @@ impl Redstore {
 
         for index in indexes {
             match index.table_name {
-                "index_nothing" => {
-                    let mut table = write_txn.open_table(INDEX_NOTHING).map_err(|e| {
-                        JsValue::from_str(&format!("open index_nothing error: {:?}", e))
-                    })?;
-                    table.insert(&index.key[..], serial).map_err(|e| {
-                        JsValue::from_str(&format!("insert index_nothing error: {:?}", e))
-                    })?;
-                }
                 "index_id" => {
                     let mut table = write_txn
                         .open_table(INDEX_ID)
@@ -545,11 +647,19 @@ impl Redstore {
                         JsValue::from_str(&format!("insert index_id error: {:?}", e))
                     })?;
                 }
+                "index_nothing" => {
+                    let mut table = write_txn.open_table(INDEX_NOTHING).map_err(|e| {
+                        JsValue::from_str(&format!("open index_nothing error: {:?}", e))
+                    })?;
+                    table.insert(&index.key[..], ()).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_nothing error: {:?}", e))
+                    })?;
+                }
                 "index_kind" => {
                     let mut table = write_txn.open_table(INDEX_KIND).map_err(|e| {
                         JsValue::from_str(&format!("open index_kind error: {:?}", e))
                     })?;
-                    table.insert(&index.key[..], serial).map_err(|e| {
+                    table.insert(&index.key[..], ()).map_err(|e| {
                         JsValue::from_str(&format!("insert index_kind error: {:?}", e))
                     })?;
                 }
@@ -557,7 +667,7 @@ impl Redstore {
                     let mut table = write_txn.open_table(INDEX_PUBKEY).map_err(|e| {
                         JsValue::from_str(&format!("open index_pubkey error: {:?}", e))
                     })?;
-                    table.insert(&index.key[..], serial).map_err(|e| {
+                    table.insert(&index.key[..], ()).map_err(|e| {
                         JsValue::from_str(&format!("insert index_pubkey error: {:?}", e))
                     })?;
                 }
@@ -565,7 +675,7 @@ impl Redstore {
                     let mut table = write_txn.open_table(INDEX_PUBKEY_KIND).map_err(|e| {
                         JsValue::from_str(&format!("open index_pubkey_kind error: {:?}", e))
                     })?;
-                    table.insert(&index.key[..], serial).map_err(|e| {
+                    table.insert(&index.key[..], ()).map_err(|e| {
                         JsValue::from_str(&format!("insert index_pubkey_kind error: {:?}", e))
                     })?;
                 }
@@ -573,7 +683,7 @@ impl Redstore {
                     let mut table = write_txn.open_table(INDEX_PUBKEY_DTAG).map_err(|e| {
                         JsValue::from_str(&format!("open index_pubkey_dtag error: {:?}", e))
                     })?;
-                    table.insert(&index.key[..], serial).map_err(|e| {
+                    table.insert(&index.key[..], ()).map_err(|e| {
                         JsValue::from_str(&format!("insert index_pubkey_dtag error: {:?}", e))
                     })?;
                 }
@@ -581,7 +691,7 @@ impl Redstore {
                     let mut table = write_txn.open_table(INDEX_TAG).map_err(|e| {
                         JsValue::from_str(&format!("open index_tag error: {:?}", e))
                     })?;
-                    table.insert(&index.key[..], serial).map_err(|e| {
+                    table.insert(&index.key[..], ()).map_err(|e| {
                         JsValue::from_str(&format!("insert index_tag error: {:?}", e))
                     })?;
                 }
@@ -592,7 +702,7 @@ impl Redstore {
         Ok(())
     }
 
-    pub fn delete_events(&self, ids: JsValue) -> Result<Option<js_sys::Uint8Array>> {
+    pub fn delete_events(&self, ids: JsValue) -> Result<()> {
         let db = self
             .db
             .lock()
@@ -612,67 +722,20 @@ impl Redstore {
             .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
 
         // query for the events to delete
-        let events_to_delete = self.query_internal(&read_txn, filter_js.into())?;
-        let mut deleted_serials = Vec::new();
-        let mut deleted_events = Vec::new();
+        for QueryResultEvent { json, serial } in &self.query_internal(&read_txn, &filter_js)? {
+            // parse the event JSON to get the event structure
+            let event: NostrEvent = serde_json::from_slice(&json)
+                .map_err(|e| JsValue::from_str(&format!("parse event error: {:?}", e)))?;
 
-        for event in &events_to_delete {
-            // get the serial for this event
-            if let Ok(serial) = self.get_event_serial(&read_txn, &event.id) {
-                deleted_serials.push(serial);
-                deleted_events.push(event.clone());
-
-                // delete the event and its indexes
-                self.delete_internal(&mut write_txn, &event, serial)?;
-            }
+            // delete the event and its indexes
+            self.delete_internal(&mut write_txn, &event, *serial)?;
         }
 
         write_txn
             .commit()
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
-        if deleted_events.is_empty() {
-            Ok(None)
-        } else {
-            let events_json = serde_json::to_vec(&deleted_events).map_err(|e| {
-                JsValue::from_str(&format!("serialize deleted events error: {:?}", e))
-            })?;
-            let array = Uint8Array::from(&events_json[..]);
-            Ok(Some(array))
-        }
-    }
-
-    fn get_event_serial(&self, txn: &ReadTransaction, id: &str) -> Result<u32> {
-        let mut id_key = Vec::new();
-        let id_bytes = id.as_bytes(); // parse from hex here, chars id[48..64]
-        id_key.extend_from_slice(&id_bytes[id_bytes.len() - 8..]);
-
-        let table = txn
-            .open_table(INDEX_ID)
-            .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))?;
-
-        // search for the entry with this ID prefix
-        let mut serial = 0;
-        let mut found = false;
-
-        for item in table
-            .iter()
-            .map_err(|e| JsValue::from_str(&format!("iter error: {:?}", e)))?
-        {
-            let (key, value) =
-                item.map_err(|e| JsValue::from_str(&format!("item error: {:?}", e)))?;
-            if key.value().starts_with(&id_key) {
-                serial = value.value();
-                found = true;
-                break;
-            }
-        }
-
-        if found {
-            Ok(serial)
-        } else {
-            Err(JsValue::from_str("Event not found"))
-        }
+        Ok(())
     }
 
     fn delete_internal(
@@ -763,6 +826,16 @@ impl Redstore {
         let mut indexes = Vec::new();
         let timestamp = event.created_at;
 
+        // index_id: [8-bytes-at-the-end-of-id] => [u32 serial]
+        // (this is different from the rest)
+        let mut id_key = vec![0u8; 12];
+        parse_hex_into(&event.id[48..64], &mut id_key[0..8]).expect("invalid hex id");
+        id_key[8..12].copy_from_slice(&serial.to_be_bytes());
+        indexes.push(IndexEntry {
+            table_name: "index_id",
+            key: id_key,
+        });
+
         // index_nothing: [4-bytes-of-the-timestamp][4-bytes-serial]
         let mut nothing_key = Vec::with_capacity(8);
         nothing_key.extend_from_slice(&timestamp.to_be_bytes());
@@ -770,17 +843,6 @@ impl Redstore {
         indexes.push(IndexEntry {
             table_name: "index_nothing",
             key: nothing_key,
-        });
-
-        // index_id: [8-bytes-at-the-end-of-id][4-bytes-of-the-timestamp][4-bytes-serial]
-        let mut id_key = Vec::with_capacity(16);
-        let id_bytes = event.id.as_bytes(); // TODO: parse from hex here instead, only the last 8 bytes/16 chars
-        id_key.extend_from_slice(&id_bytes);
-        id_key.extend_from_slice(&timestamp.to_be_bytes());
-        id_key.extend_from_slice(&serial.to_be_bytes());
-        indexes.push(IndexEntry {
-            table_name: "index_id",
-            key: id_key,
         });
 
         // index_kind: [2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
@@ -794,12 +856,10 @@ impl Redstore {
         });
 
         // index_pubkey: [8-bytes-at-the-end-of-pubkey][4-bytes-of-the-timestamp][4-bytes-serial]
-        let mut pubkey_key = Vec::with_capacity(16);
-        let pubkey_bytes = event.pubkey.as_bytes(); // TODO: parse from hex here instead, only the last 8 bytes/16 chars
-
-        pubkey_key.extend_from_slice(&pubkey_bytes);
-        pubkey_key.extend_from_slice(&timestamp.to_be_bytes());
-        pubkey_key.extend_from_slice(&serial.to_be_bytes());
+        let mut pubkey_key = vec![0u8; 16];
+        parse_hex_into(&event.pubkey[48..64], &mut pubkey_key[0..8]).expect("invalid hex pubkey");
+        pubkey_key[8..12].copy_from_slice(&timestamp.to_be_bytes());
+        pubkey_key[12..16].copy_from_slice(&serial.to_be_bytes());
         indexes.push(IndexEntry {
             table_name: "index_pubkey",
             key: pubkey_key.clone(),
@@ -807,8 +867,8 @@ impl Redstore {
 
         // index_pubkey_kind: [8-bytes-at-the-end-of-pubkey][2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
         let mut pubkey_kind_key = Vec::with_capacity(18);
-        pubkey_kind_key.extend_from_slice(&pubkey_bytes);
-        pubkey_kind_key.extend_from_slice(&(event.kind as u16).to_be_bytes());
+        pubkey_kind_key.extend_from_slice(&pubkey_key[0..8]);
+        pubkey_kind_key.extend_from_slice(&event.kind.to_be_bytes());
         pubkey_kind_key.extend_from_slice(&timestamp.to_be_bytes());
         pubkey_kind_key.extend_from_slice(&serial.to_be_bytes());
         indexes.push(IndexEntry {
@@ -817,25 +877,22 @@ impl Redstore {
         });
 
         // index_pubkey_dtag: [8-bytes-at-the-end-of-pubkey][8-initial-bytes-of-sha256-of-d-tag][4-bytes-of-the-timestamp][4-bytes-serial]
-        if (30000..=39999).contains(&event.kind) {
-            if let Some(d_tag) = event
+        if event.kind >= 30000 && event.kind < 40000 {
+            if let Some(dtag) = event
                 .tags
                 .iter()
                 .find(|tag| tag.len() >= 2 && tag[0] == "d")
             {
-                if let Some(d_value) = d_tag.get(1) {
-                    // TODO: use sha256() hashing here instead of the DefaultHasher
-                    use std::collections::hash_map::DefaultHasher;
-                    use std::hash::{Hash, Hasher};
-                    let mut hasher = DefaultHasher::new();
-                    d_value.hash(&mut hasher);
-                    let hash = hasher.finish();
+                if let Some(dtag) = dtag.get(1) {
+                    let mut hasher = Sha256::new();
+                    hasher.update(dtag.as_bytes());
+                    let hash = hasher.finalize();
 
-                    let mut pubkey_dtag_key = Vec::with_capacity(24);
-                    pubkey_dtag_key.extend_from_slice(&pubkey_key[24..32]);
-                    pubkey_dtag_key.extend_from_slice(&hash.to_be_bytes()[0..8]);
-                    pubkey_dtag_key.extend_from_slice(&timestamp.to_be_bytes());
-                    pubkey_dtag_key.extend_from_slice(&serial.to_be_bytes());
+                    let mut pubkey_dtag_key = vec![0u8; 24];
+                    pubkey_dtag_key[0..8].copy_from_slice(&pubkey_key[0..8]);
+                    pubkey_dtag_key[8..16].copy_from_slice(&hash[0..8]);
+                    pubkey_dtag_key[16..20].copy_from_slice(&timestamp.to_be_bytes());
+                    pubkey_dtag_key[20..24].copy_from_slice(&serial.to_be_bytes());
                     indexes.push(IndexEntry {
                         table_name: "index_pubkey_dtag",
                         key: pubkey_dtag_key,
@@ -850,10 +907,15 @@ impl Redstore {
                 let tag_name = &tag[0];
                 let tag_value = &tag[1];
 
-                if let Some(k) = tag_name.bytes().next() {
-                    let mut tag_key = vec![0u8, 17];
-                    tag_key[0] = k;
-                    // TODO: sha256(tag_value.as_bytes()), take the first 8 bytes, copy to tag_key[1..9]
+                if let Some(letter) = tag_name.bytes().next() {
+                    let mut tag_key = vec![0u8; 17];
+                    tag_key[0] = letter;
+
+                    let mut hasher = Sha256::new();
+                    hasher.update(tag_value.as_bytes());
+                    let hash = hasher.finalize();
+
+                    tag_key[1..9].copy_from_slice(&hash[0..8]);
                     tag_key[9..13].copy_from_slice(&timestamp.to_be_bytes());
                     tag_key[13..17].copy_from_slice(&serial.to_be_bytes());
                     indexes.push(IndexEntry {
@@ -871,19 +933,23 @@ impl Redstore {
 #[derive(Debug)]
 struct QueryPlan {
     table_name: &'static str,
-    prefix: Vec<u8>,
+    start_key: Vec<u8>,
     since: Option<u32>,
-    until: u32,
-    limit: usize,
 }
 
 #[derive(Debug)]
 struct QueryState {
-    table_name: String,
-    prefix: Vec<u8>,
-    since: Option<u32>,
-    until: u32,
-    limit: usize,
+    plan: QueryPlan,
     results: Vec<(u32, u32)>, // (timestamp, serial)
     exhausted: bool,
+}
+
+fn parse_hex_into(hex_str: &str, dest: &mut [u8]) -> Result<()> {
+    for i in (0..hex_str.len()).step_by(2) {
+        let byte_str = &hex_str[i..i + 2];
+        let byte = u8::from_str_radix(byte_str, 16)
+            .map_err(|_| JsValue::from_str(&format!("invalid hex: {}", byte_str)))?;
+        dest[i / 2] = byte;
+    }
+    Ok(())
 }
