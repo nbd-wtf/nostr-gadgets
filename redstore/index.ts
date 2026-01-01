@@ -61,7 +61,7 @@ export class RedEventStore {
   async saveEvent(
     event: NostrEvent,
     { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] } = {},
-  ): Promise<boolean> {
+  ): Promise<void> {
     if (!this.worker) await this.init()
 
     // sanity checking
@@ -90,10 +90,9 @@ export class RedEventStore {
         // to ensure that any new requests will be added to a new batch
         this.saveBatch = null
 
-        this.saveEventsBatch(events, followedBys).then(results => {
-          for (let i = 0; i < results.length; i++) {
-            if (results[i]) tasks[i].resolve(results[i])
-            else tasks[i].reject(new Error('failed to save'))
+        this.saveEventsBatch(events, followedBys).then(() => {
+          for (let i = 0; i < tasks.length; i++) {
+            tasks[i].resolve()
           }
         })
       })
@@ -111,7 +110,7 @@ export class RedEventStore {
     batch[1][idx] = event
     batch[2][idx] = followedBy
 
-    task.p = new Promise<boolean>(function (resolve, reject) {
+    task.p = new Promise<void>(function (resolve, reject) {
       task.resolve = resolve
       task.reject = reject
     })
@@ -119,7 +118,7 @@ export class RedEventStore {
     return task.p
   }
 
-  private saveEventsBatch(events: NostrEvent[], followedBys: (string[] | undefined)[]): Promise<boolean[]> {
+  private saveEventsBatch(events: NostrEvent[], followedBys: (string[] | undefined)[]): Promise<void> {
     return this.call('saveEvents', { events, followedBys })
   }
 
@@ -153,7 +152,7 @@ export class RedEventStore {
 }
 
 type SaveTask = {
-  p: Promise<boolean>
-  resolve(isSaved: boolean): void
+  p: Promise<void>
+  resolve(): void
   reject(e: Error): void
 }

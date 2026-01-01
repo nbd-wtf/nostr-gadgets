@@ -9,3 +9,8 @@ test:
 
 build-redstore:
     cd redstore && ../node_modules/.bin/wasm-pack build --target web --out-dir pkg --dev
+
+example:
+    cd redstore && node esbuild.js
+    cd redstore && cp pkg/gadgets_redstore_bg.wasm example/dist/
+    cd redstore && python3 -m http.server -b localhost 7060 --directory example
