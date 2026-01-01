@@ -1,0 +1,955 @@
+use std::io::{self};
+use std::sync::{Arc, Mutex};
+
+use gloo_utils::format::JsValueSerdeExt;
+use redb::{
+    Database, ReadTransaction, ReadableTable, StorageBackend, TableDefinition, WriteTransaction,
+};
+use serde::{Deserialize, Serialize};
+use serde_json;
+use sha2::{Digest, Sha256};
+use wasm_bindgen::prelude::*;
+use web_sys::FileSystemSyncAccessHandle;
+
+const MAX_U32_BYTES: [u8; 4] = [0xff; 4];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NostrEvent {
+    pub pubkey: String,
+    pub kind: u32,
+    pub id: String,
+    pub created_at: u32,
+    pub tags: Vec<Vec<String>>,
+    pub content: String,
+    pub sig: String,
+}
+
+struct QueryResultEvent {
+    json: Vec<u8>,
+    serial: u32,
+}
+
+#[derive(Debug)]
+struct IndexEntry {
+    table_name: &'static str,
+    key: Vec<u8>,
+}
+
+type Result<T> = std::result::Result<T, JsValue>;
+
+const EVENTS: TableDefinition<u32, &[u8]> = TableDefinition::new("events");
+const INDEX_ID: TableDefinition<&[u8], u32> = TableDefinition::new("index_id");
+
+const INDEX_NOTHING: TableDefinition<&[u8], ()> = TableDefinition::new("index_nothing");
+const INDEX_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("index_kind");
+const INDEX_PUBKEY: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey");
+const INDEX_PUBKEY_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_kind");
+const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_dtag");
+
+const INDEX_TAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_tag");
+// const INDEX_FOLLOWED: TableDefinition<&[u8], u32> = TableDefinition::new("index_followed");
+
+#[derive(Debug)]
+struct WasmBackend {
+    sync_handle: FileSystemSyncAccessHandle,
+}
+
+impl WasmBackend {
+    fn new(sync_handle: FileSystemSyncAccessHandle) -> Self {
+        Self { sync_handle }
+    }
+}
+
+impl StorageBackend for WasmBackend {
+    fn len(&self) -> io::Result<u64> {
+        let size = self
+            .sync_handle
+            .get_size()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        Ok(size as u64)
+    }
+
+    fn read(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        let mut buffer = vec![0u8; len];
+        let mut bytes_read = 0;
+        let options = web_sys::FileSystemReadWriteOptions::new();
+
+        while bytes_read != len {
+            options.set_at((offset + bytes_read as u64) as f64);
+
+            let read_result = self
+                .sync_handle
+                .read_with_u8_array_and_options(&mut buffer[bytes_read..], &options)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+            bytes_read += read_result as usize;
+        }
+        Ok(buffer)
+    }
+
+    fn set_len(&self, len: u64) -> io::Result<()> {
+        self.sync_handle
+            .truncate_with_f64(len as f64)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        Ok(())
+    }
+
+    fn sync_data(&self, _eventual: bool) -> io::Result<()> {
+        self.sync_handle
+            .flush()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        Ok(())
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        let options = web_sys::FileSystemReadWriteOptions::new();
+        let mut bytes_written = 0;
+
+        while bytes_written != data.len() {
+            options.set_at((offset + bytes_written as u64) as f64);
+
+            let written = self
+                .sync_handle
+                .write_with_u8_array_and_options(&data[bytes_written..], &options)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+
+            bytes_written += written as usize;
+        }
+        Ok(())
+    }
+}
+
+unsafe impl Send for WasmBackend {}
+unsafe impl Sync for WasmBackend {}
+
+#[wasm_bindgen]
+pub struct Redstore {
+    db: Arc<Mutex<Database>>,
+}
+
+#[wasm_bindgen]
+impl Redstore {
+    #[wasm_bindgen(constructor)]
+    pub fn new(sync_handle: &FileSystemSyncAccessHandle) -> Result<Redstore> {
+        console_error_panic_hook::set_once();
+
+        let backend = WasmBackend::new(sync_handle.clone());
+        let db = Database::builder()
+            .create_with_backend(backend)
+            .map_err(|e| JsValue::from_str(&format!("failed to create database: {:?}", e)))?;
+
+        Ok(Redstore {
+            db: Arc::new(Mutex::new(db)),
+        })
+    }
+
+    pub fn query_events(&self, filter: JsValue) -> Result<JsValue> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let read_txn = db
+            .begin_read()
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
+        let events = self.query_internal(&read_txn, &js_sys::Object::from(filter))?;
+        let array = js_sys::Array::new_with_length(events.len() as u32);
+        for QueryResultEvent { json, serial: _ } in events {
+            array.push(&js_sys::Uint8Array::from(json.as_slice()));
+        }
+        Ok(array.into())
+    }
+
+    fn query_internal(
+        &self,
+        txn: &ReadTransaction,
+        filter: &js_sys::Object,
+    ) -> Result<Vec<QueryResultEvent>> {
+        // extract filter parameters
+        let mut ids: Option<Vec<String>> = None;
+        let mut authors: Option<Vec<String>> = None;
+        let mut kinds: Option<Vec<u16>> = None;
+        let mut dtags: Option<Vec<String>> = None;
+        let mut chosen_tagname: Option<String> = None;
+        let mut chosen_tagvalues: Option<Vec<String>> = None;
+        let mut since: Option<u32> = None;
+        let mut until: u32 = (js_sys::Date::now() / 1000.0) as u32;
+        let mut limit: usize = 100;
+
+        let keys = js_sys::Object::keys(filter);
+        for i in 0..keys.length() {
+            let key = keys.get(i);
+            if let Ok(value) = js_sys::Reflect::get(&filter, &key) {
+                let key_string = key.as_string().expect("object key is not a string?");
+                let key_str = key_string.as_str();
+                match key_str {
+                    "ids" => {
+                        let array = js_sys::Array::from(&value);
+                        let ids = ids.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            ids.push(array.get(i).as_string().expect("ids must be strings"));
+                        }
+                        break; // break here because if we have ids we don't care about anything else
+                    }
+                    "authors" => {
+                        let array = js_sys::Array::from(&value);
+                        let authors = authors.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            authors
+                                .push(array.get(i).as_string().expect("authors must be strings"));
+                        }
+                    }
+                    "kinds" => {
+                        let array = js_sys::Array::from(&value);
+                        let kinds = kinds.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            kinds
+                                .push(array.get(i).as_f64().expect("kinds must be numbers") as u16);
+                        }
+                    }
+                    "since" => {
+                        since = Some(value.as_f64().expect("since must be a number") as u32);
+                    }
+                    "until" => {
+                        until = value.as_f64().expect("until must be a number") as u32;
+                    }
+                    "limit" => {
+                        limit = value.as_f64().expect("limit must be a number") as usize;
+                    }
+                    "#d" => {
+                        let array = js_sys::Array::from(&value);
+                        let dtags = dtags.insert(Vec::with_capacity(array.length() as usize));
+                        for i in 0..array.length() {
+                            dtags.push(array.get(i).as_string().expect("d-tags must be strings"));
+                        }
+                    }
+                    _ => {
+                        if chosen_tagvalues.is_none() && key_str.starts_with("#") {
+                            chosen_tagname = Some(key_str[1..].to_string());
+                            let array = js_sys::Array::from(&value);
+                            let chosen_tagvalues = chosen_tagvalues
+                                .insert(Vec::with_capacity(array.length() as usize));
+                            for i in 0..array.length() {
+                                chosen_tagvalues.push(array.get(i).as_string().unwrap());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let events_table = txn
+            .open_table(EVENTS)
+            .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
+
+        if let Some(ids) = ids {
+            let mut results: Vec<QueryResultEvent> = Vec::with_capacity(ids.len());
+
+            for id in ids {
+                let mut id_key = [0u8; 8];
+                parse_hex_into(&id[48..64], &mut id_key[0..8])
+                    .map_err(|e| JsValue::from_str(&format!("id is not valid hex: {:?}", e)))?;
+
+                let ids_index = txn
+                    .open_table(INDEX_ID)
+                    .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))?;
+
+                // get directly
+                if let Some(s) = ids_index
+                    .get(&id_key[..])
+                    .map_err(|e| JsValue::from_str(&format!("get from index_id error: {:?}", e)))?
+                {
+                    let serial = s.value();
+                    if let Some(event_json) = events_table.get(serial).map_err(|e| {
+                        JsValue::from_str(&format!("get from events error: {:?}", e))
+                    })? {
+                        results.push(QueryResultEvent {
+                            json: event_json.value().to_owned(),
+                            serial: serial,
+                        });
+                    }
+                }
+            }
+
+            return Ok(results);
+        }
+
+        // determine which index queries to run
+        let mut query_plans = Vec::new();
+
+        if let (Some(authors), Some(kinds)) = (&authors, &kinds) {
+            // use index_pubkey_kind for combined author+kind queries
+            for author in authors {
+                let mut author_bytes = vec![0u8; 8];
+                parse_hex_into(&author[48..64], &mut author_bytes)
+                    .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
+
+                for kind in kinds {
+                    let mut start_key = vec![0u8; 18];
+                    start_key[0..8].copy_from_slice(&author_bytes);
+                    start_key[8..10].copy_from_slice(&kind.to_be_bytes());
+                    start_key[10..14].copy_from_slice(&until.to_be_bytes());
+                    start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+                    query_plans.push(QueryPlan {
+                        table_name: "index_pubkey_kind",
+                        start_key,
+                        since,
+                    });
+                }
+            }
+        } else if let (Some(authors), Some(dtags)) = (&authors, &dtags) {
+            // use index_pubkey_kind for combined author+kind queries
+            for author in authors {
+                let mut author_bytes = vec![0u8; 8];
+                parse_hex_into(&author[48..64], &mut author_bytes)
+                    .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
+
+                for dtag in dtags {
+                    let mut start_key = vec![0u8; 24];
+
+                    let mut hasher = Sha256::new();
+                    hasher.update(dtag.as_bytes());
+                    let hash = hasher.finalize();
+
+                    start_key[0..8].copy_from_slice(&author_bytes);
+                    start_key[8..16].copy_from_slice(&hash[0..8]);
+                    start_key[16..20].copy_from_slice(&until.to_be_bytes());
+                    start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+                    query_plans.push(QueryPlan {
+                        table_name: "index_pubkey_kind",
+                        start_key,
+                        since,
+                    });
+                }
+            }
+        } else if let Some(authors) = &authors {
+            // use index_pubkey for author-only queries
+            for author in authors {
+                let mut start_key = vec![0u8; 16];
+                parse_hex_into(&author[48..64], &mut start_key[0..8])
+                    .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
+                start_key[8..12].copy_from_slice(&until.to_be_bytes());
+                start_key[12..16].copy_from_slice(&MAX_U32_BYTES);
+
+                query_plans.push(QueryPlan {
+                    table_name: "index_pubkey",
+                    start_key,
+                    since,
+                });
+            }
+        } else if let Some(kinds) = &kinds {
+            // use index_kind for kind-only queries
+            for kind in kinds {
+                let mut start_key = vec![0u8; 10];
+                start_key[0..2].copy_from_slice(&kind.to_be_bytes());
+                start_key[2..6].copy_from_slice(&until.to_be_bytes());
+                start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
+                query_plans.push(QueryPlan {
+                    table_name: "index_kind",
+                    start_key,
+                    since,
+                });
+            }
+        } else if let (Some(Some(letter)), Some(values)) =
+            (&chosen_tagname.map(|n| n.bytes().next()), &chosen_tagvalues)
+        {
+            // use index_tag for tag queries
+            for value in values {
+                let mut start_key = vec![0u8; 17];
+                start_key[0] = *letter;
+
+                let mut hasher = Sha256::new();
+                hasher.update(value.as_bytes());
+                let hash = hasher.finalize();
+
+                start_key[1..9].copy_from_slice(&hash[0..8]);
+                start_key[2..6].copy_from_slice(&until.to_be_bytes());
+                start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
+                query_plans.push(QueryPlan {
+                    table_name: "index_tag",
+                    start_key,
+                    since,
+                });
+            }
+        } else {
+            // use index_nothing for general queries
+            let mut start_key = vec![0u8; 8];
+            start_key[0..4].copy_from_slice(&until.to_be_bytes());
+            start_key[4..8].copy_from_slice(&MAX_U32_BYTES);
+            query_plans.push(QueryPlan {
+                table_name: "index_nothing",
+                start_key,
+                since,
+            });
+        }
+
+        // execute queries and merge results
+        let mut query_states: Vec<QueryState> = Vec::new();
+
+        for plan in query_plans {
+            let state = QueryState {
+                plan,
+                results: Vec::new(),
+                exhausted: false,
+            };
+            query_states.push(state);
+
+            self.pull_results(&mut query_states.last_mut().unwrap(), &mut limit)?;
+        }
+
+        // will merge results from all queries
+        let mut merged_results: Vec<QueryResultEvent> = Vec::new();
+        let mut emitted_count = 0;
+
+        while emitted_count < limit {
+            // find the query with the highest timestamp
+            let mut best_query_idx = None;
+            let mut best_timestamp = 0;
+
+            for (idx, state) in query_states.iter().enumerate() {
+                if let Some((timestamp, _)) = state.results.iter().last() {
+                    if *timestamp > best_timestamp {
+                        best_timestamp = *timestamp;
+                        best_query_idx = Some(idx);
+                    }
+                }
+            }
+
+            if best_query_idx.is_none() {
+                break; // no more results
+            }
+
+            let best_idx = best_query_idx.unwrap();
+            let best_timestamp = query_states[best_idx].results[0].0;
+
+            // collect all events with this timestamp from all queries
+            let mut batch = Vec::new();
+
+            for state in &mut query_states {
+                batch.append(&mut state.results);
+            }
+
+            // sort by timestamp (newest last)
+            batch.sort_by(|(a, _), (b, _)| a.cmp(&b));
+
+            loop {
+                if emitted_count >= limit {
+                    break;
+                }
+                if let Some((ts, serial)) = batch.pop() {
+                    // go on the EVENTS table and fetch the event JSON using the serial
+                    if let Some(event_json) = events_table
+                        .get(serial)
+                        .map_err(|e| JsValue::from_str(&format!("get event error: {:?}", e)))?
+                    {
+                        // TODO: extra checks for kind and pubkey if necessary
+
+                        merged_results.push(QueryResultEvent {
+                            json: event_json.value().to_owned(),
+                            serial,
+                        });
+
+                        emitted_count += 1;
+                        if emitted_count == limit {
+                            break;
+                        }
+
+                        if ts == best_timestamp {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if emitted_count >= limit {
+                break;
+            }
+
+            // pull more data from the best query
+            let has_more = self.pull_results(&mut query_states[best_idx], &mut limit)?;
+            if !has_more {
+                break;
+            }
+        }
+
+        Ok(merged_results)
+    }
+
+    fn pull_results(&self, state: &mut QueryState, limit: &mut usize) -> Result<bool> {
+        if state.exhausted {
+            return Ok(false);
+        }
+
+        // query the index table from state and push up to 20 new results to state.results
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let read_txn = db
+            .begin_read()
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
+        let table = match state.plan.table_name {
+            "index_nothing" => read_txn.open_table(INDEX_NOTHING),
+            "index_kind" => read_txn.open_table(INDEX_KIND),
+            "index_pubkey" => read_txn.open_table(INDEX_PUBKEY),
+            "index_pubkey_kind" => read_txn.open_table(INDEX_PUBKEY_KIND),
+            "index_pubkey_dtag" => read_txn.open_table(INDEX_PUBKEY_DTAG),
+            "index_tag" => read_txn.open_table(INDEX_TAG),
+            _ => {
+                return Err(JsValue::from_str(&format!(
+                    "unknown table: {}",
+                    state.plan.table_name
+                )))
+            }
+        }
+        .map_err(|e| JsValue::from_str(&format!("open table error: {:?}", e)))?;
+
+        let mut count = 0;
+        let batch_size = 20.min(*limit);
+
+        for item in table
+            .range(..&state.plan.start_key[..])
+            .map_err(|e| JsValue::from_str(&format!("iter error: {:?}", e)))?
+            .rev()
+        {
+            if count >= batch_size {
+                break;
+            }
+
+            let (key, _) = item.map_err(|e| JsValue::from_str(&format!("item error: {:?}", e)))?;
+            let key_bytes = key.value();
+            let key_len = key_bytes.len();
+
+            // check if key matches our prefix
+            if key_len != state.plan.start_key.len()
+                || key_bytes[0..key_len - 8] == state.plan.start_key[0..key_len - 8]
+            {
+                break;
+            }
+
+            // extract timestamp from key
+            let timestamp = u32::from_be_bytes([
+                key_bytes[key_len - 8],
+                key_bytes[key_len - 7],
+                key_bytes[key_len - 6],
+                key_bytes[key_len - 5],
+            ]);
+
+            // check if timestamp is in range
+            if let Some(since) = state.plan.since {
+                if timestamp < since {
+                    continue;
+                }
+            }
+
+            // extract serial
+            let serial = u32::from_be_bytes([
+                key_bytes[key_len - 4],
+                key_bytes[key_len - 3],
+                key_bytes[key_len - 2],
+                key_bytes[key_len - 2],
+            ]);
+
+            state.results.push((timestamp, serial));
+            count += 1;
+        }
+
+        if count == 0 {
+            state.exhausted = true;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+}
+
+impl Redstore {
+    pub fn save_events(&self, data: JsValue) -> Result<()> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let mut write_txn = db
+            .begin_write()
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
+        // get last serial
+        let last_serial = {
+            let events_table = write_txn
+                .open_table(EVENTS)
+                .map_err(|e| JsValue::from_str(&format!("table error: {:?}", e)))?;
+
+            let s = events_table
+                .last()
+                .map_err(|e| JsValue::from_str(&format!("get serial err: {:?}", e)))?
+                .map(|l| l.0.value())
+                .unwrap_or(0);
+
+            s
+        };
+
+        // get events array from data
+        let data_obj = js_sys::Object::from(data);
+        let events_array = js_sys::Reflect::get(&data_obj, &JsValue::from_str("events"))
+            .map_err(|e| JsValue::from_str(&format!("get events error: {:?}", e)))?;
+
+        let events = js_sys::Array::from(&events_array);
+        let mut current_serial = last_serial + 1;
+
+        for i in 0..events.length() {
+            let event_js = events.get(i);
+            let event: NostrEvent = event_js
+                .into_serde()
+                .map_err(|e| JsValue::from_str(&format!("deserialize event error: {:?}", e)))?;
+
+            // serialize event to bytes
+            let event_bytes = serde_json::to_vec(&event)
+                .map_err(|e| JsValue::from_str(&format!("serialize event error: {:?}", e)))?;
+
+            // insert event and indexes
+            {
+                let mut events_table = write_txn
+                    .open_table(EVENTS)
+                    .map_err(|e| JsValue::from_str(&format!("table error: {:?}", e)))?;
+
+                events_table
+                    .insert(current_serial, &event_bytes[..])
+                    .map_err(|e| JsValue::from_str(&format!("insert error: {:?}", e)))?;
+            }
+
+            self.insert_indexes(&mut write_txn, &event, current_serial)?;
+
+            current_serial += 1;
+        }
+
+        write_txn
+            .commit()
+            .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
+        Ok(())
+    }
+
+    fn insert_indexes(
+        &self,
+        write_txn: &mut WriteTransaction,
+        event: &NostrEvent,
+        serial: u32,
+    ) -> Result<()> {
+        let indexes = self.compute_indexes(event, serial);
+
+        for index in indexes {
+            match index.table_name {
+                "index_id" => {
+                    let mut table = write_txn
+                        .open_table(INDEX_ID)
+                        .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))?;
+                    table.insert(&index.key[..], serial).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_id error: {:?}", e))
+                    })?;
+                }
+                "index_nothing" => {
+                    let mut table = write_txn.open_table(INDEX_NOTHING).map_err(|e| {
+                        JsValue::from_str(&format!("open index_nothing error: {:?}", e))
+                    })?;
+                    table.insert(&index.key[..], ()).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_nothing error: {:?}", e))
+                    })?;
+                }
+                "index_kind" => {
+                    let mut table = write_txn.open_table(INDEX_KIND).map_err(|e| {
+                        JsValue::from_str(&format!("open index_kind error: {:?}", e))
+                    })?;
+                    table.insert(&index.key[..], ()).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_kind error: {:?}", e))
+                    })?;
+                }
+                "index_pubkey" => {
+                    let mut table = write_txn.open_table(INDEX_PUBKEY).map_err(|e| {
+                        JsValue::from_str(&format!("open index_pubkey error: {:?}", e))
+                    })?;
+                    table.insert(&index.key[..], ()).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_pubkey error: {:?}", e))
+                    })?;
+                }
+                "index_pubkey_kind" => {
+                    let mut table = write_txn.open_table(INDEX_PUBKEY_KIND).map_err(|e| {
+                        JsValue::from_str(&format!("open index_pubkey_kind error: {:?}", e))
+                    })?;
+                    table.insert(&index.key[..], ()).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_pubkey_kind error: {:?}", e))
+                    })?;
+                }
+                "index_pubkey_dtag" => {
+                    let mut table = write_txn.open_table(INDEX_PUBKEY_DTAG).map_err(|e| {
+                        JsValue::from_str(&format!("open index_pubkey_dtag error: {:?}", e))
+                    })?;
+                    table.insert(&index.key[..], ()).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_pubkey_dtag error: {:?}", e))
+                    })?;
+                }
+                "index_tag" => {
+                    let mut table = write_txn.open_table(INDEX_TAG).map_err(|e| {
+                        JsValue::from_str(&format!("open index_tag error: {:?}", e))
+                    })?;
+                    table.insert(&index.key[..], ()).map_err(|e| {
+                        JsValue::from_str(&format!("insert index_tag error: {:?}", e))
+                    })?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn delete_events(&self, ids: JsValue) -> Result<()> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let mut write_txn = db
+            .begin_write()
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
+        // create filter for the IDs
+        let filter_js = js_sys::Object::new();
+        js_sys::Reflect::set(&filter_js, &JsValue::from_str("ids"), &ids)
+            .map_err(|e| JsValue::from_str(&format!("set ids error: {:?}", e)))?;
+
+        // get the read transaction for querying
+        let read_txn = db
+            .begin_read()
+            .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
+
+        // query for the events to delete
+        for QueryResultEvent { json, serial } in &self.query_internal(&read_txn, &filter_js)? {
+            // parse the event JSON to get the event structure
+            let event: NostrEvent = serde_json::from_slice(&json)
+                .map_err(|e| JsValue::from_str(&format!("parse event error: {:?}", e)))?;
+
+            // delete the event and its indexes
+            self.delete_internal(&mut write_txn, &event, *serial)?;
+        }
+
+        write_txn
+            .commit()
+            .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    fn delete_internal(
+        &self,
+        write_txn: &mut WriteTransaction,
+        event: &NostrEvent,
+        serial: u32,
+    ) -> Result<()> {
+        // delete from EVENTS table
+        {
+            let mut events_table = write_txn
+                .open_table(EVENTS)
+                .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
+            events_table
+                .remove(serial)
+                .map_err(|e| JsValue::from_str(&format!("remove event error: {:?}", e)))?;
+        }
+
+        // delete from index tables
+        let indexes = self.compute_indexes(event, serial);
+
+        for index in indexes {
+            match index.table_name {
+                "index_nothing" => {
+                    let mut table = write_txn.open_table(INDEX_NOTHING).map_err(|e| {
+                        JsValue::from_str(&format!("open index_nothing error: {:?}", e))
+                    })?;
+                    table.remove(&index.key[..]).map_err(|e| {
+                        JsValue::from_str(&format!("remove index_nothing error: {:?}", e))
+                    })?;
+                }
+                "index_id" => {
+                    let mut table = write_txn
+                        .open_table(INDEX_ID)
+                        .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))?;
+                    table.remove(&index.key[..]).map_err(|e| {
+                        JsValue::from_str(&format!("remove index_id error: {:?}", e))
+                    })?;
+                }
+                "index_kind" => {
+                    let mut table = write_txn.open_table(INDEX_KIND).map_err(|e| {
+                        JsValue::from_str(&format!("open index_kind error: {:?}", e))
+                    })?;
+                    table.remove(&index.key[..]).map_err(|e| {
+                        JsValue::from_str(&format!("remove index_kind error: {:?}", e))
+                    })?;
+                }
+                "index_pubkey" => {
+                    let mut table = write_txn.open_table(INDEX_PUBKEY).map_err(|e| {
+                        JsValue::from_str(&format!("open index_pubkey error: {:?}", e))
+                    })?;
+                    table.remove(&index.key[..]).map_err(|e| {
+                        JsValue::from_str(&format!("remove index_pubkey error: {:?}", e))
+                    })?;
+                }
+                "index_pubkey_kind" => {
+                    let mut table = write_txn.open_table(INDEX_PUBKEY_KIND).map_err(|e| {
+                        JsValue::from_str(&format!("open index_pubkey_kind error: {:?}", e))
+                    })?;
+                    table.remove(&index.key[..]).map_err(|e| {
+                        JsValue::from_str(&format!("remove index_pubkey_kind error: {:?}", e))
+                    })?;
+                }
+                "index_pubkey_dtag" => {
+                    let mut table = write_txn.open_table(INDEX_PUBKEY_DTAG).map_err(|e| {
+                        JsValue::from_str(&format!("open index_pubkey_dtag error: {:?}", e))
+                    })?;
+                    table.remove(&index.key[..]).map_err(|e| {
+                        JsValue::from_str(&format!("remove index_pubkey_dtag error: {:?}", e))
+                    })?;
+                }
+                "index_tag" => {
+                    let mut table = write_txn.open_table(INDEX_TAG).map_err(|e| {
+                        JsValue::from_str(&format!("open index_tag error: {:?}", e))
+                    })?;
+                    table.remove(&index.key[..]).map_err(|e| {
+                        JsValue::from_str(&format!("remove index_tag error: {:?}", e))
+                    })?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    fn compute_indexes(&self, event: &NostrEvent, serial: u32) -> Vec<IndexEntry> {
+        let mut indexes = Vec::new();
+        let timestamp = event.created_at;
+
+        // index_id: [8-bytes-at-the-end-of-id] => [u32 serial]
+        // (this is different from the rest)
+        let mut id_key = vec![0u8; 12];
+        parse_hex_into(&event.id[48..64], &mut id_key[0..8]).expect("invalid hex id");
+        id_key[8..12].copy_from_slice(&serial.to_be_bytes());
+        indexes.push(IndexEntry {
+            table_name: "index_id",
+            key: id_key,
+        });
+
+        // index_nothing: [4-bytes-of-the-timestamp][4-bytes-serial]
+        let mut nothing_key = Vec::with_capacity(8);
+        nothing_key.extend_from_slice(&timestamp.to_be_bytes());
+        nothing_key.extend_from_slice(&serial.to_be_bytes());
+        indexes.push(IndexEntry {
+            table_name: "index_nothing",
+            key: nothing_key,
+        });
+
+        // index_kind: [2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
+        let mut kind_key = Vec::with_capacity(10);
+        kind_key.extend_from_slice(&(event.kind as u16).to_be_bytes());
+        kind_key.extend_from_slice(&timestamp.to_be_bytes());
+        kind_key.extend_from_slice(&serial.to_be_bytes());
+        indexes.push(IndexEntry {
+            table_name: "index_kind",
+            key: kind_key,
+        });
+
+        // index_pubkey: [8-bytes-at-the-end-of-pubkey][4-bytes-of-the-timestamp][4-bytes-serial]
+        let mut pubkey_key = vec![0u8; 16];
+        parse_hex_into(&event.pubkey[48..64], &mut pubkey_key[0..8]).expect("invalid hex pubkey");
+        pubkey_key[8..12].copy_from_slice(&timestamp.to_be_bytes());
+        pubkey_key[12..16].copy_from_slice(&serial.to_be_bytes());
+        indexes.push(IndexEntry {
+            table_name: "index_pubkey",
+            key: pubkey_key.clone(),
+        });
+
+        // index_pubkey_kind: [8-bytes-at-the-end-of-pubkey][2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
+        let mut pubkey_kind_key = Vec::with_capacity(18);
+        pubkey_kind_key.extend_from_slice(&pubkey_key[0..8]);
+        pubkey_kind_key.extend_from_slice(&event.kind.to_be_bytes());
+        pubkey_kind_key.extend_from_slice(&timestamp.to_be_bytes());
+        pubkey_kind_key.extend_from_slice(&serial.to_be_bytes());
+        indexes.push(IndexEntry {
+            table_name: "index_pubkey_kind",
+            key: pubkey_kind_key,
+        });
+
+        // index_pubkey_dtag: [8-bytes-at-the-end-of-pubkey][8-initial-bytes-of-sha256-of-d-tag][4-bytes-of-the-timestamp][4-bytes-serial]
+        if event.kind >= 30000 && event.kind < 40000 {
+            if let Some(dtag) = event
+                .tags
+                .iter()
+                .find(|tag| tag.len() >= 2 && tag[0] == "d")
+            {
+                if let Some(dtag) = dtag.get(1) {
+                    let mut hasher = Sha256::new();
+                    hasher.update(dtag.as_bytes());
+                    let hash = hasher.finalize();
+
+                    let mut pubkey_dtag_key = vec![0u8; 24];
+                    pubkey_dtag_key[0..8].copy_from_slice(&pubkey_key[0..8]);
+                    pubkey_dtag_key[8..16].copy_from_slice(&hash[0..8]);
+                    pubkey_dtag_key[16..20].copy_from_slice(&timestamp.to_be_bytes());
+                    pubkey_dtag_key[20..24].copy_from_slice(&serial.to_be_bytes());
+                    indexes.push(IndexEntry {
+                        table_name: "index_pubkey_dtag",
+                        key: pubkey_dtag_key,
+                    });
+                }
+            }
+        }
+
+        // index_tag: for each tag, create index entries
+        for tag in &event.tags {
+            if tag.len() >= 2 {
+                let tag_name = &tag[0];
+                let tag_value = &tag[1];
+
+                if let Some(letter) = tag_name.bytes().next() {
+                    let mut tag_key = vec![0u8; 17];
+                    tag_key[0] = letter;
+
+                    let mut hasher = Sha256::new();
+                    hasher.update(tag_value.as_bytes());
+                    let hash = hasher.finalize();
+
+                    tag_key[1..9].copy_from_slice(&hash[0..8]);
+                    tag_key[9..13].copy_from_slice(&timestamp.to_be_bytes());
+                    tag_key[13..17].copy_from_slice(&serial.to_be_bytes());
+                    indexes.push(IndexEntry {
+                        table_name: "index_tag",
+                        key: tag_key,
+                    });
+                }
+            }
+        }
+
+        indexes
+    }
+}
+
+#[derive(Debug)]
+struct QueryPlan {
+    table_name: &'static str,
+    start_key: Vec<u8>,
+    since: Option<u32>,
+}
+
+#[derive(Debug)]
+struct QueryState {
+    plan: QueryPlan,
+    results: Vec<(u32, u32)>, // (timestamp, serial)
+    exhausted: bool,
+}
+
+fn parse_hex_into(hex_str: &str, dest: &mut [u8]) -> Result<()> {
+    for i in (0..hex_str.len()).step_by(2) {
+        let byte_str = &hex_str[i..i + 2];
+        let byte = u8::from_str_radix(byte_str, 16)
+            .map_err(|_| JsValue::from_str(&format!("invalid hex: {}", byte_str)))?;
+        dest[i / 2] = byte;
+    }
+    Ok(())
+}
