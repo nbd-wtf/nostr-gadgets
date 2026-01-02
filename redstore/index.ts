@@ -91,7 +91,7 @@ export class RedEventStore {
         // to ensure that any new requests will be added to a new batch
         this.saveBatch = null
 
-        this.saveEventsBatch(events, followedBys).then(() => {
+        this.call('saveEvents', { events, followedBys }).then(() => {
           for (let i = 0; i < tasks.length; i++) {
             tasks[i].resolve()
           }
@@ -119,10 +119,6 @@ export class RedEventStore {
     return task.p
   }
 
-  private saveEventsBatch(events: NostrEvent[], followedBys: (string[] | undefined)[]): Promise<void> {
-    return this.call('saveEvents', { events, followedBys })
-  }
-
   /**
    * deletes events from the store by their ID.
    * removes the events and all associated indexes.
@@ -134,7 +130,7 @@ export class RedEventStore {
    */
   async deleteEvents(ids: string[]): Promise<number> {
     if (!this.worker) await this.init()
-    return this.call('deleteEvents', { ids })
+    return this.call('deleteEvents', ids)
   }
 
   /**
@@ -148,7 +144,7 @@ export class RedEventStore {
    */
   async queryEvents(filter: Filter & { followedBy?: string }): Promise<NostrEvent[]> {
     if (!this.worker) await this.init()
-    const events = await this.call('queryEvents', filter) as Uint8Array[]
+    const events = (await this.call('queryEvents', filter)) as Uint8Array[]
     return events.map(b => JSON.parse(utf8Decoder.decode(b)))
   }
 }
