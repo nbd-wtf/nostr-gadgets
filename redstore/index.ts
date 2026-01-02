@@ -145,9 +145,9 @@ export class RedEventStore {
    * @param maxLimit - maximum number of events to return (default: 500)
    * @returns events matching the filter criteria
    */
-  async queryEvents(filter: Filter & { followedBy?: string }, maxLimit: number = 500): Promise<NostrEvent[]> {
+  async queryEvents(filter: Filter & { followedBy?: string }): Promise<NostrEvent[]> {
     if (!this.worker) await this.init()
-    return this.call('queryEvents', { filter, maxLimit })
+    return this.call('queryEvents', filter)
   }
 }
 
