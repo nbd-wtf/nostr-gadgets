@@ -128,8 +128,8 @@ impl Redstore {
 
         let events = self.query_internal(&read_txn, &js_sys::Object::from(filter))?;
         let array = js_sys::Array::new_with_length(events.len() as u32);
-        for QueryResultEvent { json, serial: _ } in events {
-            array.push(&js_sys::Uint8Array::from(json.as_slice()));
+        for (i, QueryResultEvent { json, serial: _ }) in events.iter().enumerate() {
+            array.set(i as u32, js_sys::Uint8Array::from(json.as_slice()).into());
         }
         Ok(array.into())
     }
