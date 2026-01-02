@@ -213,12 +213,6 @@ impl Redstore {
             }
         }
 
-        web_sys::console::log_3(
-            &js_sys::JsString::from("prepared"),
-            &js_sys::Number::from(kinds.as_ref().unwrap()[0] as u32),
-            &js_sys::Number::from(kinds.as_ref().unwrap().len() as u32),
-        );
-
         let events_table = txn
             .open_table(EVENTS)
             .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
@@ -394,11 +388,6 @@ impl Redstore {
         while emitted_count < limit {
             let last_run = remaining_unexhausted == 0;
 
-            web_sys::console::log_2(
-                &js_sys::JsString::from("loop"),
-                &js_sys::Boolean::from(last_run),
-            );
-
             // find the query with the highest timestamp
             let mut top_query_idx = None;
             let mut top_query_timestamp = 0;
@@ -429,13 +418,6 @@ impl Redstore {
             batch.sort_by(|(a, _), (b, _)| a.cmp(&b));
 
             while !batch.is_empty() {
-                web_sys::console::log_4(
-                    &js_sys::JsString::from("emitting from batch?"),
-                    &js_sys::Number::from(emitted_count as u32),
-                    &js_sys::Number::from(limit as u32),
-                    &js_sys::Number::from(batch.len() as u32),
-                );
-
                 if emitted_count >= limit {
                     break;
                 }

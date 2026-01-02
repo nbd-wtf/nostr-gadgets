@@ -88,7 +88,7 @@ impl Query {
                 key_bytes[key_len - 4],
                 key_bytes[key_len - 3],
                 key_bytes[key_len - 2],
-                key_bytes[key_len - 2],
+                key_bytes[key_len - 1],
             ]);
 
             web_sys::console::log_3(
@@ -101,7 +101,6 @@ impl Query {
 
             self.curr_key.copy_from_slice(key_bytes);
             if count >= batch_size {
-                web_sys::console::log_1(&js_sys::JsString::from("1"));
                 break;
             }
         }
