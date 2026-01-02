@@ -147,6 +147,40 @@ export class RedEventStore {
     const events = (await this.call('queryEvents', filter)) as Uint8Array[]
     return events.map(b => JSON.parse(utf8Decoder.decode(b)))
   }
+
+  /**
+   * deletes a database file from OPFS.
+   *
+   * @param dbName - name of the database to delete
+   * @returns boolean - true if deletion was successful
+   */
+  static async delete(dbName: string): Promise<void> {
+    const dir = await navigator.storage.getDirectory()
+    await dir.removeEntry(dbName)
+  }
+
+  /**
+   * lists all existing database files in OPFS with their stats.
+   *
+   * @returns array of database info objects with name, size, and lastModified
+   */
+  static async list(): Promise<{ name: string; size: number; lastModified: number }[]> {
+    const result: { name: string; size: number; lastModified: number }[] = []
+    const dir = await navigator.storage.getDirectory()
+    await walkDir(dir)
+    return result
+
+    async function walkDir(dir: FileSystemDirectoryHandle, base: string = '') {
+      for await (let [name, entry] of dir.entries()) {
+        if (entry.kind === 'file') {
+          const file = await (entry as FileSystemFileHandle).getFile()
+          result.push({ name: base + name, size: file.size, lastModified: file.lastModified })
+        } else {
+          walkDir(entry as FileSystemDirectoryHandle, name + '/')
+        }
+      }
+    }
+  }
 }
 
 type SaveTask = {
