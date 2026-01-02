@@ -1,6 +1,7 @@
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
 import { DatabaseError } from '../store'
+import { utf8Decoder } from '@nostr/tools/utils'
 
 export class RedEventStore {
   private dbName: string
@@ -147,7 +148,8 @@ export class RedEventStore {
    */
   async queryEvents(filter: Filter & { followedBy?: string }): Promise<NostrEvent[]> {
     if (!this.worker) await this.init()
-    return this.call('queryEvents', filter)
+    const events = await this.call('queryEvents', filter) as Uint8Array[]
+    return events.map(b => JSON.parse(utf8Decoder.decode(b)))
   }
 }
 

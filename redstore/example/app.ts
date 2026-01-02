@@ -29,10 +29,22 @@ async function main() {
 
   // query events
   try {
-    const events = await store.queryEvents({ kinds: [1] })
-    console.log('✓ query results:', events.length, 'events found')
+    const events = await store.queryEvents({})
+    console.log('✓ query results:', {}, events.length, 'events found')
     events.forEach((event, i) => {
-      console.log(`  event ${i + 1}:`, event.content)
+      console.log(`  event ${i + 1}:`, event)
+    })
+  } catch (error) {
+    console.error('failed to query events:', error)
+  }
+
+  // query events
+  try {
+    const filter = { kinds: [1] }
+    const events = await store.queryEvents(filter)
+    console.log('✓ query results:',filter, events.length, 'events found')
+    events.forEach((event, i) => {
+      console.log(`  event ${i + 1}:`, event)
     })
   } catch (error) {
     console.error('failed to query events:', error)
