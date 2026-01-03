@@ -1,7 +1,7 @@
 use redb::TableDefinition;
 use sha2::{Digest, Sha256};
 
-use crate::utils::{parse_hex_into, NostrEvent};
+use crate::utils::{parse_hex_into, IndexableEvent};
 
 pub const EVENTS: TableDefinition<u32, &[u8]> = TableDefinition::new("events");
 pub const INDEX_ID: TableDefinition<&[u8], u32> = TableDefinition::new("index_id");
@@ -11,8 +11,8 @@ pub const INDEX_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("index_k
 pub const INDEX_PUBKEY: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey");
 pub const INDEX_PUBKEY_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_kind");
 pub const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_dtag");
-
 pub const INDEX_TAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_tag");
+
 // pub const INDEX_FOLLOWED: TableDefinition<&[u8], u32> = TableDefinition::new("index_followed");
 
 #[derive(Debug)]
@@ -21,14 +21,14 @@ pub struct IndexEntry {
     pub key: Vec<u8>,
 }
 
-pub fn compute_indexes(event: &NostrEvent, serial: u32) -> Vec<IndexEntry> {
+pub fn compute_indexes(indexable_event: &IndexableEvent, serial: u32) -> Vec<IndexEntry> {
     let mut indexes = Vec::new();
-    let timestamp = event.created_at;
+    let timestamp = indexable_event.timestamp;
 
     // index_id: [8-bytes-at-the-end-of-id] => [u32 serial]
     // (this is different from the rest)
     let mut id_key = vec![0u8; 12];
-    parse_hex_into(&event.id[48..64], &mut id_key[0..8]).expect("invalid hex id");
+    parse_hex_into(&indexable_event.id[48..64], &mut id_key[0..8]).expect("invalid hex id");
     id_key[8..12].copy_from_slice(&serial.to_be_bytes());
     indexes.push(IndexEntry {
         table_name: "index_id",
@@ -46,7 +46,7 @@ pub fn compute_indexes(event: &NostrEvent, serial: u32) -> Vec<IndexEntry> {
 
     // index_kind: [2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
     let mut kind_key = Vec::with_capacity(10);
-    kind_key.extend_from_slice(&(event.kind as u16).to_be_bytes());
+    kind_key.extend_from_slice(&(indexable_event.kind as u16).to_be_bytes());
     kind_key.extend_from_slice(&timestamp.to_be_bytes());
     kind_key.extend_from_slice(&serial.to_be_bytes());
     indexes.push(IndexEntry {
@@ -56,7 +56,8 @@ pub fn compute_indexes(event: &NostrEvent, serial: u32) -> Vec<IndexEntry> {
 
     // index_pubkey: [8-bytes-at-the-end-of-pubkey][4-bytes-of-the-timestamp][4-bytes-serial]
     let mut pubkey_key = vec![0u8; 16];
-    parse_hex_into(&event.pubkey[48..64], &mut pubkey_key[0..8]).expect("invalid hex pubkey");
+    parse_hex_into(&indexable_event.pubkey[48..64], &mut pubkey_key[0..8])
+        .expect("invalid hex pubkey");
     pubkey_key[8..12].copy_from_slice(&timestamp.to_be_bytes());
     pubkey_key[12..16].copy_from_slice(&serial.to_be_bytes());
     indexes.push(IndexEntry {
@@ -67,7 +68,7 @@ pub fn compute_indexes(event: &NostrEvent, serial: u32) -> Vec<IndexEntry> {
     // index_pubkey_kind: [8-bytes-at-the-end-of-pubkey][2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
     let mut pubkey_kind_key = Vec::with_capacity(18);
     pubkey_kind_key.extend_from_slice(&pubkey_key[0..8]);
-    pubkey_kind_key.extend_from_slice(&event.kind.to_be_bytes());
+    pubkey_kind_key.extend_from_slice(&indexable_event.kind.to_be_bytes());
     pubkey_kind_key.extend_from_slice(&timestamp.to_be_bytes());
     pubkey_kind_key.extend_from_slice(&serial.to_be_bytes());
     indexes.push(IndexEntry {
@@ -76,53 +77,40 @@ pub fn compute_indexes(event: &NostrEvent, serial: u32) -> Vec<IndexEntry> {
     });
 
     // index_pubkey_dtag: [8-bytes-at-the-end-of-pubkey][8-initial-bytes-of-sha256-of-d-tag][4-bytes-of-the-timestamp][4-bytes-serial]
-    if event.kind >= 30000 && event.kind < 40000 {
-        if let Some(dtag) = event
-            .tags
-            .iter()
-            .find(|tag| tag.len() >= 2 && tag[0] == "d")
-        {
-            if let Some(dtag) = dtag.get(1) {
-                let mut hasher = Sha256::new();
-                hasher.update(dtag.as_bytes());
-                let hash = hasher.finalize();
+    if indexable_event.kind >= 30000 && indexable_event.kind < 40000 {
+        if let Some(d) = &indexable_event.dtag {
+            let mut hasher = Sha256::new();
+            hasher.update(d.as_bytes());
+            let hash = hasher.finalize();
 
-                let mut pubkey_dtag_key = vec![0u8; 24];
-                pubkey_dtag_key[0..8].copy_from_slice(&pubkey_key[0..8]);
-                pubkey_dtag_key[8..16].copy_from_slice(&hash[0..8]);
-                pubkey_dtag_key[16..20].copy_from_slice(&timestamp.to_be_bytes());
-                pubkey_dtag_key[20..24].copy_from_slice(&serial.to_be_bytes());
-                indexes.push(IndexEntry {
-                    table_name: "index_pubkey_dtag",
-                    key: pubkey_dtag_key,
-                });
-            }
+            let mut pubkey_dtag_key = vec![0u8; 24];
+            pubkey_dtag_key[0..8].copy_from_slice(&pubkey_key[0..8]);
+            pubkey_dtag_key[8..16].copy_from_slice(&hash[0..8]);
+            pubkey_dtag_key[16..20].copy_from_slice(&timestamp.to_be_bytes());
+            pubkey_dtag_key[20..24].copy_from_slice(&serial.to_be_bytes());
+            indexes.push(IndexEntry {
+                table_name: "index_pubkey_dtag",
+                key: pubkey_dtag_key,
+            });
         }
     }
 
     // index_tag: for each tag, create index entries
-    for tag in &event.tags {
-        if tag.len() >= 2 {
-            let tag_name = &tag[0];
-            let tag_value = &tag[1];
+    for (tag_letter, tag_value) in &indexable_event.tags {
+        let mut tag_key = vec![0u8; 17];
+        tag_key[0] = *tag_letter;
 
-            if let Some(letter) = tag_name.bytes().next() {
-                let mut tag_key = vec![0u8; 17];
-                tag_key[0] = letter;
+        let mut hasher = Sha256::new();
+        hasher.update(tag_value.as_bytes());
+        let hash = hasher.finalize();
 
-                let mut hasher = Sha256::new();
-                hasher.update(tag_value.as_bytes());
-                let hash = hasher.finalize();
-
-                tag_key[1..9].copy_from_slice(&hash[0..8]);
-                tag_key[9..13].copy_from_slice(&timestamp.to_be_bytes());
-                tag_key[13..17].copy_from_slice(&serial.to_be_bytes());
-                indexes.push(IndexEntry {
-                    table_name: "index_tag",
-                    key: tag_key,
-                });
-            }
-        }
+        tag_key[1..9].copy_from_slice(&hash[0..8]);
+        tag_key[9..13].copy_from_slice(&timestamp.to_be_bytes());
+        tag_key[13..17].copy_from_slice(&serial.to_be_bytes());
+        indexes.push(IndexEntry {
+            table_name: "index_tag",
+            key: tag_key,
+        });
     }
 
     indexes

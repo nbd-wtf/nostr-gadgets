@@ -1,8 +1,7 @@
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
-import { utf8Decoder } from '@nostr/tools/utils'
+import { utf8Decoder, utf8Encoder } from '@nostr/tools/utils'
 
-import RedStoreWorker from './worker?worker'
 import { DatabaseError } from '../store'
 
 export class RedEventStore {
@@ -17,7 +16,7 @@ export class RedEventStore {
    */
   constructor(dbName: string = 'gadgets-redstore') {
     this.dbName = dbName
-    this.worker = new RedStoreWorker()
+    this.worker = new Worker('./dist/worker.js', { type: 'module' })
 
     this.worker!.addEventListener('message', (ev: MessageEvent) => {
       const { resolve, reject } = this.requests[ev.data.id]
@@ -40,7 +39,7 @@ export class RedEventStore {
   }
 
   /**
-   * closes the database. you probably do not need this.
+   * closes the database.
    */
   async close(): Promise<void> {
     if (this.worker) {
@@ -51,7 +50,13 @@ export class RedEventStore {
 
   private saveBatch:
     | null
-    | [ids: string[], events: NostrEvent[], followedBys: (string[] | undefined)[], tasks: SaveTask[]]
+    | [
+        ids: string[],
+        indexableEvents: [id: string, pubkey: string, kind: number, timestamp: number, tags: [number, string][]][],
+        followedBys: string[][],
+        rawEvents: Uint8Array[],
+        tasks: SaveTask[],
+      ]
   /**
    * saves (or replaces) a nostr event to the store with automatic batching for performance.
    * (if you want the batching to work you can't `await` it immediately upon calling it)
@@ -82,19 +87,20 @@ export class RedEventStore {
     let batch = this.saveBatch
 
     if (!batch) {
-      batch = [[], [], [], []]
+      batch = [[], [], [], [], []]
       this.saveBatch = batch
 
       // once we know we have a fresh batch, we schedule this batch to run
-      const events = batch[1]
+      const indexableEvents = batch[1]
       const followedBys = batch[2]
-      const tasks = batch[3]
+      const rawEvents = batch[3]
+      const tasks = batch[4]
       queueMicrotask(() => {
         // as soon as we start processing this batch, we need to null it
         // to ensure that any new requests will be added to a new batch
         this.saveBatch = null
 
-        this.call('saveEvents', { events, followedBys }).then(() => {
+        this.call('saveEvents', { indexableEvents, followedBys, rawEvents }).then(() => {
           for (let i = 0; i < tasks.length; i++) {
             tasks[i].resolve()
           }
@@ -106,13 +112,20 @@ export class RedEventStore {
 
     // return existing task if it exists
     let idx = batch[0].indexOf(event.id)
-    if (idx !== -1) return batch[3][idx].p
+    if (idx !== -1) return batch[4][idx].p
 
     // add a new one
     idx = batch[0].push(event.id) - 1
-    let task = (batch[3][idx] = {} as SaveTask)
-    batch[1][idx] = event
-    batch[2][idx] = followedBy
+    let task = (batch[4][idx] = {} as SaveTask)
+    batch[1][idx] = [
+      event.id,
+      event.pubkey,
+      event.kind,
+      event.created_at,
+      event.tags.filter(([t]) => t.length === 1).map(([t, v]) => [t.charCodeAt(0), v]),
+    ]
+    batch[2][idx] = followedBy || []
+    batch[3][idx] = utf8Encoder.encode(JSON.stringify(event))
 
     task.p = new Promise<void>(function (resolve, reject) {
       task.resolve = resolve
