@@ -14,7 +14,7 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn pull_results(&mut self, txn: &ReadTransaction, limit: &mut usize) -> Result<bool> {
+    pub fn pull_results(&mut self, txn: &ReadTransaction, limit: usize) -> Result<bool> {
         if self.exhausted {
             return Ok(false);
         }
@@ -36,12 +36,7 @@ impl Query {
         .map_err(|e| JsValue::from_str(&format!("open table error: {:?}", e)))?;
 
         let mut count = 0;
-        let batch_size = 20.min(*limit);
-
-        web_sys::console::log_2(
-            &js_sys::JsString::from("will range"),
-            &js_sys::Uint8Array::from(&self.curr_key[..]),
-        );
+        let batch_size = 20.min(limit);
 
         for item in table
             .range(..&self.curr_key[..])

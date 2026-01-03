@@ -1,5 +1,7 @@
 import init, { Redstore } from './pkg/gadgets_redstore.js'
 
+let syncHandle: any
+
 self.addEventListener('message', async event => {
   const { id, method, data } = event.data
 
@@ -13,22 +15,24 @@ self.addEventListener('message', async event => {
       const fileHandle = await opfsRoot.getFileHandle(data, { create: true })
 
       // @ts-ignore
-      const syncHandle = await fileHandle.createSyncAccessHandle()
+      syncHandle = await fileHandle.createSyncAccessHandle()
 
       db = new Redstore(syncHandle)
     } else if (method === 'close') {
-      // TODO?
+      syncHandle.close()
     } else {
       if (!db) throw new Error('Database not initialized')
       switch (method) {
         case 'saveEvents':
-          result = db.save_events(data)
+          result = db.save_events(
+            data /* { events: [{...}, ...], followedBys: [[pubkey, ...], ...] } */,
+          ) /* -> [bool, ...] */
           break
         case 'deleteEvents':
-          result = db.delete_events(data)
+          result = db.delete_events(data /* [filter, ...] */) /* -> [count, ...] */
           break
         case 'queryEvents':
-          result = db.query_events(data)
+          result = db.query_events(data /* [filter, ...] */)
           break
         default:
           throw new Error(`unknown method: ${method}`)

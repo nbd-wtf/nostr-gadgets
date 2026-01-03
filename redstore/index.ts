@@ -1,7 +1,9 @@
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
-import { DatabaseError } from '../store'
 import { utf8Decoder } from '@nostr/tools/utils'
+
+import RedStoreWorker from './worker?worker'
+import { DatabaseError } from '../store'
 
 export class RedEventStore {
   private dbName: string
@@ -13,14 +15,15 @@ export class RedEventStore {
    * creates a new event store instance.
    * @param dbName - name of the indexedDB database (default: '@nostr/gadgets/events')
    */
-  constructor(dbName: string = '@nostr/gadgets/events') {
+  constructor(dbName: string = 'gadgets-redstore') {
     this.dbName = dbName
-    this.worker = new Worker('./dist/worker.js', { type: 'module' })
+    this.worker = new RedStoreWorker()
 
     this.worker!.addEventListener('message', (ev: MessageEvent) => {
       const { resolve, reject } = this.requests[ev.data.id]
       if (ev.data.success) resolve(ev.data.result)
       else reject('worker: ' + ev.data.error)
+      delete this.requests[ev.data.id]
     })
   }
 
@@ -130,7 +133,12 @@ export class RedEventStore {
    */
   async deleteEvents(ids: string[]): Promise<number> {
     if (!this.worker) await this.init()
-    return this.call('deleteEvents', ids)
+    return this.call('deleteEvents', [{ ids }])
+  }
+
+  async deleteEventsFilters(filters: Filter[]): Promise<number> {
+    if (!this.worker) await this.init()
+    return this.call('deleteEvents', filters)
   }
 
   /**
@@ -144,8 +152,15 @@ export class RedEventStore {
    */
   async queryEvents(filter: Filter & { followedBy?: string }): Promise<NostrEvent[]> {
     if (!this.worker) await this.init()
-    const events = (await this.call('queryEvents', filter)) as Uint8Array[]
+    const [events] = (await this.call('queryEvents', [filter])) as Uint8Array[][]
+    console.log('events:', events)
     return events.map(b => JSON.parse(utf8Decoder.decode(b)))
+  }
+
+  async queryEventsMultiple(filters: Filter[]): Promise<NostrEvent[][]> {
+    if (!this.worker) await this.init()
+    const results = (await this.call('queryEvents', filters)) as Uint8Array[][]
+    return results.map(events => events.map(b => JSON.parse(utf8Decoder.decode(b))))
   }
 
   /**
