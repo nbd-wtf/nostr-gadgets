@@ -16,7 +16,9 @@ export class RedEventStore {
    */
   constructor(dbName: string = 'gadgets-redstore') {
     this.dbName = dbName
-    this.worker = new Worker('./dist/worker.js', { type: 'module' })
+    this.worker = new Worker(new URL('./worker.js', import.meta.url), {
+      type: 'module',
+    })
 
     this.worker!.addEventListener('message', (ev: MessageEvent) => {
       const { resolve, reject } = this.requests[ev.data.id]
