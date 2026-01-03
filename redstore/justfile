@@ -1,0 +1,24 @@
+build:
+    ../node_modules/.bin/wasm-pack build --target web --out-dir pkg --dev
+
+example: build build-example
+    cp pkg/gadgets_redstore_bg.wasm example/dist/
+    bash -c 'sleep 1; echo ""; echo ">> visit http://localhost:7060/example.html"' &
+    cd example && caddy file-server --browse --listen localhost:7060
+
+build-example:
+    #!/usr/bin/env node
+    require('{{justfile_directory()}}/../node_modules/esbuild').buildSync({
+      entryPoints: ['{{justfile_directory()}}/example/example.ts', '{{justfile_directory()}}/worker.ts'],
+      bundle: true,
+      outdir: '{{justfile_directory()}}/example/dist',
+      format: 'esm',
+      platform: 'browser',
+      sourcemap: true,
+      external: ['*.wasm'],
+      logLevel: 'info',
+    })
+    console.log('build complete')
+
+test: build
+    ../node_modules/.bin/vitest
