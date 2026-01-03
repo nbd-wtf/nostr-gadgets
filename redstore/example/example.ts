@@ -2,10 +2,16 @@ import { RedEventStore } from '../index.ts'
 
 async function main() {
   console.log('example starting...')
-  console.log(await RedEventStore.list())
+  const dbs = await RedEventStore.list()
+  console.log(dbs)
+  for (let db of dbs) {
+    if (db.name === 'example-db') {
+      await RedEventStore.delete(db.name)
+      break
+    }
+  }
 
   // initialize the store
-  await RedEventStore.delete('example-db')
   const store = new RedEventStore('example-db')
   await store.init()
   console.log('✓ store initialized')

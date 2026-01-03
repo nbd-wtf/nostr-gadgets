@@ -129,43 +129,80 @@ pub struct IndexableEvent {
     pub pubkey: String,
     pub kind: u16,
     pub id: String,
+    pub dtag: Option<String>,
     pub tags: Vec<(u8, String)>,
     pub timestamp: u32,
 }
 
-impl From<&js_sys::Object> for IndexableEvent {
-    fn from(event_obj: &js_sys::Object) -> Self {
-        let indexable_tags = js_sys::Array::from(
-            &js_sys::Reflect::get(&event_obj, &JsValue::from_str("indexable_tags")).unwrap(),
-        );
+impl From<&js_sys::Array> for IndexableEvent {
+    fn from(indexables_arr: &js_sys::Array) -> Self {
+        // the indexables_arr has the shape [id, pubkey, kind, timestamp, tags]
+
+        let indexable_tags = js_sys::Array::from(&indexables_arr.get(4));
         let mut tags = Vec::with_capacity(indexable_tags.length() as usize);
+        let mut dtag = None;
+
         for t in 0..indexable_tags.length() {
             let indexable_tag = js_sys::Array::from(&indexable_tags.get(t));
             let letter = indexable_tag.get(0).as_f64().unwrap() as u8;
             let value = indexable_tag.get(1).as_string().unwrap();
-            tags.push((letter, value));
+            if letter == 100 {
+                dtag = Some(value)
+            } else {
+                tags.push((letter, value));
+            }
         }
 
         Self {
-            pubkey: js_sys::Reflect::get(&event_obj, &JsValue::from_str("pubkey"))
-                .unwrap()
-                .as_string()
-                .unwrap(),
-            kind: js_sys::Reflect::get(&event_obj, &JsValue::from_str("kind"))
-                .unwrap()
-                .as_f64()
-                .unwrap() as u16,
-            id: js_sys::Reflect::get(&event_obj, &JsValue::from_str("id"))
-                .unwrap()
-                .as_string()
-                .unwrap(),
-            timestamp: js_sys::Reflect::get(&event_obj, &JsValue::from_str("timestamp"))
-                .unwrap()
-                .as_f64()
-                .unwrap() as u32,
+            id: indexables_arr.get(0).as_string().unwrap(),
+            pubkey: indexables_arr.get(1).as_string().unwrap(),
+            kind: indexables_arr.get(2).as_f64().unwrap() as u16,
+            timestamp: indexables_arr.get(3).as_f64().unwrap() as u32,
+            dtag,
             tags,
         }
     }
 }
 
-impl Deserialize for IndexableEvent {}
+impl<'de> Deserialize<'de> for IndexableEvent {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct TempEvent {
+            pubkey: String,
+            kind: u16,
+            id: String,
+            created_at: u32,
+            tags: Vec<Vec<String>>,
+        }
+        let temp = TempEvent::deserialize(deserializer)?;
+
+        let mut tags = Vec::with_capacity(temp.tags.len());
+        let mut dtag = None;
+
+        for mut tag in temp.tags.into_iter() {
+            if tag.len() >= 2 {
+                let first = tag.swap_remove(0);
+                if first.len() == 1 {
+                    let second = tag.swap_remove(1);
+                    if first.as_str() == "d" {
+                        dtag = Some(second);
+                    } else {
+                        tags.push((first.bytes().next().unwrap(), second));
+                    }
+                }
+            }
+        }
+
+        Ok(IndexableEvent {
+            pubkey: temp.pubkey,
+            kind: temp.kind,
+            id: temp.id,
+            timestamp: temp.created_at,
+            tags,
+            dtag,
+        })
+    }
+}
