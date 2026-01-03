@@ -111,6 +111,40 @@ impl Redstore {
             .create_with_backend(backend)
             .map_err(|e| JsValue::from_str(&format!("failed to create database: {:?}", e)))?;
 
+        let write_txn = db
+            .begin_write()
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+        write_txn
+            .open_table(EVENTS)
+            .map_err(|e| JsValue::from_str(&format!("initial open events: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_ID)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_id: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_ID)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_id: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_NOTHING)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_nothing: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_KIND)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_kind: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_PUBKEY)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_pubkey: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_PUBKEY_KIND)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_pubkey_kind: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_PUBKEY_DTAG)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_pubkey_dtag: {:?}", e)))?;
+        write_txn
+            .open_table(INDEX_TAG)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_tag: {:?}", e)))?;
+        write_txn
+            .commit()
+            .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
+
         Ok(Redstore {
             db: Arc::new(Mutex::new(db)),
         })
@@ -152,6 +186,7 @@ impl Redstore {
         Ok(results.into())
     }
 
+    #[allow(unused_assignments)]
     fn query_internal(
         &self,
         txn: &ReadTransaction,
@@ -474,21 +509,28 @@ impl Redstore {
 
         // get events array from data
         let data_obj = js_sys::Object::from(data);
-        let events_arr = js_sys::Array::from(
-            &js_sys::Reflect::get(&data_obj, &JsValue::from_str("events"))
-                .map_err(|e| JsValue::from_str(&format!("events array error: {:?}", e)))?,
+        let indexable_events_arr = js_sys::Array::from(
+            &js_sys::Reflect::get(&data_obj, &JsValue::from_str("indexableEvents")).map_err(
+                |e| JsValue::from_str(&format!("indexable events array error: {:?}", e)),
+            )?,
         );
         // let followedbys_arr = js_sys::Array::from(
         //     &js_sys::Reflect::get(&data_obj, &JsValue::from_str("followedBys"))
         //         .map_err(|e| JsValue::from_str(&format!("followedbys array error: {:?}", e)))?,
         // );
+        let raw_events_arr = js_sys::Array::from(
+            &js_sys::Reflect::get(&data_obj, &JsValue::from_str("rawEvents"))
+                .map_err(|e| JsValue::from_str(&format!("raw events array error: {:?}", e)))?,
+        );
 
-        let result = js_sys::Array::new_with_length(events_arr.length());
+        let result = js_sys::Array::new_with_length(indexable_events_arr.length());
 
         let mut current_serial = last_serial + 1;
 
-        for i in 0..events_arr.length() {
-            let indexable_event: IndexableEvent = (&js_sys::Object::from(events_arr.get(i))).into();
+        for i in 0..indexable_events_arr.length() {
+            let indexable_event: IndexableEvent =
+                (&js_sys::Array::from(&indexable_events_arr.get(i))).into();
+            let raw_event = (&js_sys::Uint8Array::from(raw_events_arr.get(i))).to_vec();
 
             // check if event has be replaced
             let replacement_query = if indexable_event.kind == 0
@@ -564,7 +606,7 @@ impl Redstore {
                     .query_internal(
                         &read_txn,
                         Querier {
-                            ids: Some(vec![event.id.clone()]),
+                            ids: Some(vec![indexable_event.id.clone()]),
                             ..Default::default()
                         },
                     )
@@ -576,10 +618,6 @@ impl Redstore {
                 }
             }
 
-            // serialize event to bytes
-            let event_bytes = serde_json::to_vec(&event)
-                .map_err(|e| JsValue::from_str(&format!("serialize event error: {:?}", e)))?;
-
             // insert event and indexes
             {
                 let mut events_table = write_txn.open_table(EVENTS).map_err(|e| {
@@ -587,11 +625,11 @@ impl Redstore {
                 })?;
 
                 events_table
-                    .insert(current_serial, &event_bytes[..])
+                    .insert(current_serial, &raw_event[..])
                     .map_err(|e| JsValue::from_str(&format!("events insert error: {:?}", e)))?;
             }
 
-            self.insert_indexes(&mut write_txn, &event, current_serial)?;
+            self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
 
             current_serial += 1;
             result.set(i, js_sys::Boolean::from(true).into());
@@ -607,15 +645,14 @@ impl Redstore {
     fn insert_indexes(
         &self,
         write_txn: &mut WriteTransaction,
-        event: &NostrEvent,
+        indexable_event: &IndexableEvent,
         serial: u32,
     ) -> Result<()> {
-        let indexes = compute_indexes(event, serial);
+        let indexes = compute_indexes(indexable_event, serial);
 
         for index in indexes {
-            web_sys::console::log_4(
+            web_sys::console::log_3(
                 &js_sys::JsString::from_str("inserting index").unwrap(),
-                &js_sys::JsString::from_str(&serde_json::to_string(&event).unwrap()).unwrap(),
                 &js_sys::Uint8Array::from(&index.key[..]),
                 &js_sys::JsString::from_str(&index.table_name).unwrap(),
             );
@@ -713,11 +750,11 @@ impl Redstore {
                 (&js_sys::Object::from(filters_arr.get(f))).into(),
             )? {
                 // parse the event JSON to get the event structure
-                let event: NostrEvent = serde_json::from_slice(&json)
+                let indexable_event: IndexableEvent = serde_json::from_slice(&json)
                     .map_err(|e| JsValue::from_str(&format!("parse event error: {:?}", e)))?;
 
                 // delete the event and its indexes
-                self.delete_internal(&mut write_txn, &event, *serial)?;
+                self.delete_internal(&mut write_txn, &indexable_event, *serial)?;
 
                 count += 1;
             }
@@ -735,7 +772,7 @@ impl Redstore {
     fn delete_internal(
         &self,
         write_txn: &mut WriteTransaction,
-        event: &NostrEvent,
+        indexable_event: &IndexableEvent,
         serial: u32,
     ) -> Result<()> {
         // delete from EVENTS table
@@ -749,7 +786,7 @@ impl Redstore {
         }
 
         // delete from index tables
-        let indexes = compute_indexes(event, serial);
+        let indexes = compute_indexes(indexable_event, serial);
 
         for index in indexes {
             match index.table_name {
