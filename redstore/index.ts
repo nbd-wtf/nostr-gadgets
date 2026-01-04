@@ -28,16 +28,18 @@ export class RedEventStore {
     })
   }
 
-  private async call<D, R>(method: string, data: D): Promise<R> {
-    const id = this.serial++
+  private async call(method: string, data: any): Promise<any> {
+    data.id = this.serial++
+    data.method = method
+
     return new Promise((resolve, reject) => {
-      this.requests[id] = { resolve, reject }
-      this.worker!.postMessage({ id, method: method, data: data })
+      this.requests[data.id] = { resolve, reject }
+      this.worker!.postMessage(data)
     })
   }
 
   async init(): Promise<void> {
-    return this.call('init', this.dbName)
+    return this.call('init', { fileName: this.dbName })
   }
 
   /**
@@ -45,7 +47,7 @@ export class RedEventStore {
    */
   async close(): Promise<void> {
     if (this.worker) {
-      this.call('close', null)
+      this.call('close', {})
       this.worker = undefined
     }
   }
@@ -177,6 +179,28 @@ export class RedEventStore {
     if (!this.worker) await this.init()
     const results = (await this.call('queryEvents', filters)) as Uint8Array[][]
     return results.map(events => events.map(b => JSON.parse(utf8Decoder.decode(b))))
+  }
+
+  /**
+   * removes followedBy indexes for all events of a pubkey followed by another pubkey.
+   *
+   * @param follower - the pubkey that is unfollowing
+   * @param followed - the pubkey being unfollowed
+   */
+  async markFollow(follower: string, followed: string): Promise<void> {
+    if (!this.worker) await this.init()
+    await this.call('markFollow', { follower, followed })
+  }
+
+  /**
+   * removes followedBy indexes for all events of a pubkey followed by another pubkey.
+   *
+   * @param follower - the pubkey that is unfollowing
+   * @param followed - the pubkey being unfollowed
+   */
+  async markUnfollow(follower: string, followed: string): Promise<void> {
+    if (!this.worker) await this.init()
+    await this.call('markUnfollow', { follower, followed })
   }
 
   /**

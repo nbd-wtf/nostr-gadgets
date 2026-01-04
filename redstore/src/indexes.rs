@@ -13,7 +13,7 @@ pub const INDEX_PUBKEY_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("
 pub const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_dtag");
 pub const INDEX_TAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_tag");
 
-// pub const INDEX_FOLLOWED: TableDefinition<&[u8], u32> = TableDefinition::new("index_followed");
+pub const INDEX_FOLLOWED: TableDefinition<[u8; 16], ()> = TableDefinition::new("index_followed");
 
 #[derive(Debug)]
 pub struct IndexEntry {

@@ -143,6 +143,9 @@ impl Redstore {
             .open_table(INDEX_TAG)
             .map_err(|e| JsValue::from_str(&format!("initial open index_tag: {:?}", e)))?;
         write_txn
+            .open_table(INDEX_FOLLOWED)
+            .map_err(|e| JsValue::from_str(&format!("initial open index_followed: {:?}", e)))?;
+        write_txn
             .commit()
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
@@ -484,7 +487,12 @@ impl Redstore {
     // followedBys are arrays of pubkeys;
     // rawEvents are JSON-encoded raw events, as Uint8Arrays.
     // on the return: true means it was saved, false it wasn't because we already had it or something newer than it)
-    pub fn save_events(&self, data: JsValue) -> Result<JsValue> {
+    pub fn save_events(
+        &self,
+        indexable_events_arr: js_sys::Array,
+        followedbys_arr: js_sys::Array,
+        raw_events_arr: js_sys::Array,
+    ) -> Result<JsValue> {
         let db = self
             .db
             .lock()
@@ -511,22 +519,6 @@ impl Redstore {
             s
         };
 
-        // get events array from data
-        let data_obj = js_sys::Object::from(data);
-        let indexable_events_arr = js_sys::Array::from(
-            &js_sys::Reflect::get(&data_obj, &JsValue::from_str("indexableEvents")).map_err(
-                |e| JsValue::from_str(&format!("indexable events array error: {:?}", e)),
-            )?,
-        );
-        // let followedbys_arr = js_sys::Array::from(
-        //     &js_sys::Reflect::get(&data_obj, &JsValue::from_str("followedBys"))
-        //         .map_err(|e| JsValue::from_str(&format!("followedbys array error: {:?}", e)))?,
-        // );
-        let raw_events_arr = js_sys::Array::from(
-            &js_sys::Reflect::get(&data_obj, &JsValue::from_str("rawEvents"))
-                .map_err(|e| JsValue::from_str(&format!("raw events array error: {:?}", e)))?,
-        );
-
         web_sys::console::log_3(
             &js_sys::JsString::from_str("save_events").unwrap(),
             &js_sys::Number::from(indexable_events_arr.length()),
@@ -541,6 +533,7 @@ impl Redstore {
             let indexable_event: IndexableEvent =
                 (&js_sys::Array::from(&indexable_events_arr.get(i))).into();
             let raw_event = (&js_sys::Uint8Array::from(raw_events_arr.get(i))).to_vec();
+            let followed_bys = js_sys::Array::from(&followedbys_arr.get(i));
 
             // check if event has be replaced
             let replacement_query = if indexable_event.kind == 0
@@ -608,38 +601,43 @@ impl Redstore {
                 }
                 if !should_store {
                     result.set(i, js_sys::Boolean::from(false).into());
-                    continue;
-                }
-            } else {
-                // for non-replaceables, check for identical ids
-                let results = self
-                    .query_internal(
-                        &read_txn,
-                        Querier {
-                            ids: Some(vec![indexable_event.id.clone()]),
-                            ..Default::default()
-                        },
-                    )
-                    .map_err(|e| JsValue::from_str(&format!("pre-save id query error: {:?}", e)))?;
-                if !results.is_empty() {
-                    // event already exists
-                    result.set(i, js_sys::Boolean::from(false).into());
+
+                    // even when not storing we still update the followed_bys
+                    self.insert_followedby_indexes(
+                        &mut write_txn,
+                        &indexable_event,
+                        current_serial,
+                        &followed_bys,
+                    )?;
+
                     continue;
                 }
             }
 
             // insert event and indexes
-            {
+            let is_new = {
                 let mut events_table = write_txn.open_table(EVENTS).map_err(|e| {
                     JsValue::from_str(&format!("events insert table error: {:?}", e))
                 })?;
 
                 events_table
                     .insert(current_serial, &raw_event[..])
-                    .map_err(|e| JsValue::from_str(&format!("events insert error: {:?}", e)))?;
+                    .map_err(|e| JsValue::from_str(&format!("events insert error: {:?}", e)))?
+                    .is_none() // it will be None if the key is new, otherwise will return the old value
+            };
+
+            // normal indexes (if new)
+            if is_new {
+                self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
             }
 
-            self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
+            // followed_by indexes (always)
+            self.insert_followedby_indexes(
+                &mut write_txn,
+                &indexable_event,
+                current_serial,
+                &followed_bys,
+            )?;
 
             current_serial += 1;
             result.set(i, js_sys::Boolean::from(true).into());
@@ -650,6 +648,37 @@ impl Redstore {
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
         Ok(result.into())
+    }
+
+    fn insert_followedby_indexes(
+        &self,
+        write_txn: &mut WriteTransaction,
+        indexable_event: &IndexableEvent,
+        serial: u32,
+        followed_bys: &js_sys::Array,
+    ) -> Result<()> {
+        let mut followedby_table = write_txn
+            .open_table(INDEX_FOLLOWED)
+            .map_err(|e| JsValue::from_str(&format!("followed_by insert table error: {:?}", e)))?;
+
+        for i in 0..followed_bys.length() {
+            let pubkey_hex = followed_bys
+                .get(i)
+                .as_string()
+                .expect("followed_by must be hex pubkey");
+
+            let mut key = [0u8; 16];
+            parse_hex_into(&pubkey_hex[48..64], &mut key[0..8])
+                .map_err(|e| JsValue::from_str(&format!("followed_by hex error: {:?}", e)))?;
+            key[8..12].copy_from_slice(&indexable_event.timestamp.to_be_bytes());
+            key[12..16].copy_from_slice(&serial.to_be_bytes());
+
+            followedby_table
+                .insert(key, ())
+                .map_err(|e| JsValue::from_str(&format!("followed_by insert error: {:?}", e)))?;
+        }
+
+        Ok(())
     }
 
     fn insert_indexes(
@@ -766,6 +795,8 @@ impl Redstore {
                 // delete the event and its indexes
                 self.delete_internal(&mut write_txn, &indexable_event, *serial)?;
 
+                // TODO: scan the entire INDEX_FOLLOWED for the serial (the last 4 bytes) and delete those entries
+
                 count += 1;
             }
 
@@ -860,6 +891,16 @@ impl Redstore {
             }
         }
 
+        Ok(())
+    }
+
+    fn mark_follow(&self, follower: JsValue, followed: JsValue) -> Result<()> {
+        // TODO: query_internal() all events from {pubkey: [followed]} and add an entry to the INDEX_FOLLOWED for each from [follower[48..64]][timestamp][serial]
+        Ok(())
+    }
+
+    fn mark_unfollow(&self, follower: JsValue, followed: JsValue) -> Result<()> {
+        // TODO: query_internal() all events from {pubkey: [followed]} and remove the corresponding entry from the INDEX_FOLLOWED for each from [follower[48..64]][timestamp][serial]
         Ok(())
     }
 }
