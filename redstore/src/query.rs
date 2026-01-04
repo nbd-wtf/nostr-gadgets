@@ -1,3 +1,4 @@
+use fastbloom::BloomFilter;
 use redb::ReadTransaction;
 use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
@@ -6,16 +7,29 @@ use crate::indexes::*;
 use crate::utils::{MAX_U32_BYTES, Querier, Result, parse_hex_into};
 
 #[derive(Debug)]
+pub struct Plan {
+    pub queries: Vec<Query>,
+    pub since: u32,
+    pub extra_kinds: Vec<u16>,
+    pub extra_authors: Option<BloomFilter>,
+    pub extra_tags: Option<(Vec<u8>, BloomFilter)>,
+}
+
+#[derive(Debug)]
 pub struct Query {
     pub table_name: &'static str,
     pub curr_key: Vec<u8>,
-    pub since: Option<u32>,
     pub results: Vec<(u32, u32)>, // (timestamp, serial)
     pub exhausted: bool,
 }
 
 impl Query {
-    pub fn pull_results(&mut self, txn: &ReadTransaction, batch_size: usize) -> Result<bool> {
+    pub fn pull_results(
+        &mut self,
+        txn: &ReadTransaction,
+        batch_size: usize,
+        since: u32,
+    ) -> Result<bool> {
         web_sys::console::log_1(&js_sys::JsString::from(format!(
             "> pulling up to {} from {}/{:?}",
             batch_size, self.table_name, self.curr_key
@@ -80,11 +94,9 @@ impl Query {
             ]);
 
             // check if timestamp is in range
-            if let Some(since) = self.since {
-                if timestamp < since {
-                    web_sys::console::log_1(&js_sys::JsString::from("exiting on 'since'"));
-                    break;
-                }
+            if timestamp < since {
+                web_sys::console::log_1(&js_sys::JsString::from("exiting on 'since'"));
+                break;
             }
 
             // extract serial
@@ -118,10 +130,59 @@ impl Query {
     }
 }
 
-pub fn prepare_queries(spec: &mut Querier) -> Result<Vec<Query>> {
+pub fn prepare_queries(spec: &mut Querier) -> Result<Plan> {
     let mut queries = Vec::new();
 
-    if let (Some(authors), Some(kinds)) = (&spec.authors, &spec.kinds) {
+    if let (Some(authors), Some(dtags)) = (&spec.authors, spec.dtags.take()) {
+        // use index_pubkey_kind for combined author+kind queries
+        for author in authors {
+            let mut author_bytes = vec![0u8; 8];
+            parse_hex_into(&author[48..64], &mut author_bytes)
+                .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
+
+            for dtag in &dtags {
+                let mut start_key = vec![0u8; 24];
+
+                let mut hasher = Sha256::new();
+                hasher.update(dtag.as_bytes());
+                let hash = hasher.finalize();
+
+                start_key[0..8].copy_from_slice(&author_bytes);
+                start_key[8..16].copy_from_slice(&hash[0..8]);
+                start_key[16..20].copy_from_slice(&spec.until.to_be_bytes());
+                start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+                queries.push(Query {
+                    table_name: "index_pubkey_dtag",
+                    curr_key: start_key,
+                    results: Vec::new(),
+                    exhausted: false,
+                });
+            }
+        }
+
+        // remove here so we don't use it extra_authors later
+        spec.authors.take();
+    } else if let Some((letter, values)) = spec.tags.pop() {
+        // use index_tag for tag queries
+        for value in values {
+            let mut start_key = vec![0u8; 17];
+            start_key[0] = letter;
+
+            let mut hasher = Sha256::new();
+            hasher.update(value.as_bytes());
+            let hash = hasher.finalize();
+
+            start_key[1..9].copy_from_slice(&hash[0..8]);
+            start_key[9..13].copy_from_slice(&spec.until.to_be_bytes());
+            start_key[13..17].copy_from_slice(&MAX_U32_BYTES);
+            queries.push(Query {
+                table_name: "index_tag",
+                curr_key: start_key,
+                results: Vec::new(),
+                exhausted: false,
+            });
+        }
+    } else if let (Some(authors), Some(kinds)) = (&spec.authors, &spec.kinds) {
         // use index_pubkey_kind for combined author+kind queries
         for author in authors {
             let mut author_bytes = vec![0u8; 8];
@@ -137,40 +198,16 @@ pub fn prepare_queries(spec: &mut Querier) -> Result<Vec<Query>> {
                 queries.push(Query {
                     table_name: "index_pubkey_kind",
                     curr_key: start_key,
-                    since: spec.since,
                     results: Vec::new(),
                     exhausted: false,
                 });
             }
         }
-    } else if let (Some(authors), Some(dtags)) = (&spec.authors, &spec.dtags) {
-        // use index_pubkey_kind for combined author+kind queries
-        for author in authors {
-            let mut author_bytes = vec![0u8; 8];
-            parse_hex_into(&author[48..64], &mut author_bytes)
-                .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
 
-            for dtag in dtags {
-                let mut start_key = vec![0u8; 24];
-
-                let mut hasher = Sha256::new();
-                hasher.update(dtag.as_bytes());
-                let hash = hasher.finalize();
-
-                start_key[0..8].copy_from_slice(&author_bytes);
-                start_key[8..16].copy_from_slice(&hash[0..8]);
-                start_key[16..20].copy_from_slice(&spec.until.to_be_bytes());
-                start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
-                queries.push(Query {
-                    table_name: "index_pubkey_kind",
-                    curr_key: start_key,
-                    since: spec.since,
-                    results: Vec::new(),
-                    exhausted: false,
-                });
-            }
-        }
-    } else if let Some(authors) = &spec.authors {
+        // remove here so we don't use it stuff in extra_* later
+        spec.authors.take();
+        spec.kinds.take();
+    } else if let Some(authors) = spec.authors.take() {
         // use index_pubkey for author-only queries
         for author in authors {
             let mut start_key = vec![0u8; 16];
@@ -182,12 +219,11 @@ pub fn prepare_queries(spec: &mut Querier) -> Result<Vec<Query>> {
             queries.push(Query {
                 table_name: "index_pubkey",
                 curr_key: start_key,
-                since: spec.since,
                 results: Vec::new(),
                 exhausted: false,
             });
         }
-    } else if let Some(kinds) = &spec.kinds {
+    } else if let Some(kinds) = spec.kinds.take() {
         // use index_kind for kind-only queries
         for kind in kinds {
             let mut start_key = vec![0u8; 10];
@@ -197,31 +233,6 @@ pub fn prepare_queries(spec: &mut Querier) -> Result<Vec<Query>> {
             queries.push(Query {
                 table_name: "index_kind",
                 curr_key: start_key,
-                since: spec.since,
-                results: Vec::new(),
-                exhausted: false,
-            });
-        }
-    } else if let (Some(Some(letter)), Some(values)) = (
-        &spec.chosen_tagname.take().map(|n| n.bytes().next()),
-        &spec.chosen_tagvalues,
-    ) {
-        // use index_tag for tag queries
-        for value in values {
-            let mut start_key = vec![0u8; 17];
-            start_key[0] = *letter;
-
-            let mut hasher = Sha256::new();
-            hasher.update(value.as_bytes());
-            let hash = hasher.finalize();
-
-            start_key[1..9].copy_from_slice(&hash[0..8]);
-            start_key[9..13].copy_from_slice(&spec.until.to_be_bytes());
-            start_key[13..17].copy_from_slice(&MAX_U32_BYTES);
-            queries.push(Query {
-                table_name: "index_tag",
-                curr_key: start_key,
-                since: spec.since,
                 results: Vec::new(),
                 exhausted: false,
             });
@@ -234,11 +245,74 @@ pub fn prepare_queries(spec: &mut Querier) -> Result<Vec<Query>> {
         queries.push(Query {
             table_name: "index_nothing",
             curr_key: start_key,
-            since: spec.since,
             results: Vec::new(),
             exhausted: false,
         });
     }
 
-    Ok(queries)
+    // we'll do these only if kinds/authors remain after planning the queries above (i.e. they weren't used)
+    let extra_kinds = spec.kinds.take().unwrap_or(Vec::new());
+
+    let extra_authors = spec.authors.take().map(|authors| {
+        let mut bf = BloomFilter::with_false_pos(0.01).expected_items(authors.len());
+        for author in authors {
+            bf.insert(author.as_bytes());
+        }
+        bf
+    });
+
+    let extra_tags = match (spec.dtags.take(), spec.tags.len() > 0) {
+        (Some(dtags), false) => {
+            let mut bf = BloomFilter::with_false_pos(0.01).expected_items(dtags.len());
+            for dtag in dtags {
+                let full = format!("d=>{}", dtag);
+                bf.insert(&full);
+            }
+            Some((vec!['d' as u8], bf))
+        }
+        (Some(dtags), true) => {
+            let mut bf_letters = Vec::with_capacity(1 + spec.tags.len());
+            let mut bf =
+                BloomFilter::with_false_pos(0.01).expected_items(dtags.len() + spec.tags.len() * 2);
+            for dtag in dtags {
+                bf_letters.push('d' as u8);
+                let full = format!("d=>{}", dtag);
+                bf.insert(&full);
+            }
+            for (letter, values) in &spec.tags {
+                bf_letters.push(*letter);
+                for value in values {
+                    let full = format!("{}=>{}", letter, value);
+                    bf.insert(&full);
+                }
+            }
+            Some((bf_letters, bf))
+        }
+        (None, true) => {
+            let mut bf_letters = Vec::with_capacity(1 + spec.tags.len());
+            let mut bf = BloomFilter::with_false_pos(0.01).expected_items(spec.tags.len() * 2);
+            for (letter, values) in &spec.tags {
+                bf_letters.push(*letter);
+                for value in values {
+                    let full = format!(
+                        "{}=>{}",
+                        letter.as_ascii().expect("filter tag not ascii").as_str(),
+                        value
+                    );
+                    web_sys::console::log_1(&js_sys::JsString::from(format!("bf ins: {}", full)));
+                    bf.insert(&full);
+                }
+            }
+            Some((bf_letters, bf))
+        }
+        (None, false) => None,
+    };
+
+    Ok(Plan {
+        queries,
+        since: spec.since.unwrap_or(0),
+        extra_kinds,
+        extra_authors,
+        extra_tags,
+    })
 }
