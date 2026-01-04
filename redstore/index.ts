@@ -72,7 +72,7 @@ export class RedEventStore {
   async saveEvent(
     event: NostrEvent,
     { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (!this.worker) await this.init()
 
     // sanity checking
@@ -102,9 +102,9 @@ export class RedEventStore {
         // to ensure that any new requests will be added to a new batch
         this.saveBatch = null
 
-        this.call('saveEvents', { indexableEvents, followedBys, rawEvents }).then(() => {
+        this.call('saveEvents', { indexableEvents, followedBys, rawEvents }).then(results => {
           for (let i = 0; i < tasks.length; i++) {
-            tasks[i].resolve()
+            tasks[i].resolve((results as boolean[])[i])
           }
         })
       })
@@ -129,7 +129,7 @@ export class RedEventStore {
     batch[2][idx] = followedBy || []
     batch[3][idx] = utf8Encoder.encode(JSON.stringify(event))
 
-    task.p = new Promise<void>(function (resolve, reject) {
+    task.p = new Promise<boolean>(function (resolve, reject) {
       task.resolve = resolve
       task.reject = reject
     })
@@ -168,7 +168,6 @@ export class RedEventStore {
   async queryEvents(filter: Filter & { followedBy?: string }): Promise<NostrEvent[]> {
     if (!this.worker) await this.init()
     const [events] = (await this.call('queryEvents', [filter])) as Uint8Array[][]
-    console.log('events:', events)
     return events.map(b => JSON.parse(utf8Decoder.decode(b)))
   }
 
@@ -214,7 +213,7 @@ export class RedEventStore {
 }
 
 type SaveTask = {
-  p: Promise<void>
-  resolve(): void
+  p: Promise<boolean>
+  resolve(saved: boolean): void
   reject(e: Error): void
 }
