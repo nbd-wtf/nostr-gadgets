@@ -3,7 +3,7 @@ import init, { Redstore } from './pkg/gadgets_redstore.js'
 let syncHandle: any
 
 self.addEventListener('message', async event => {
-  const { id, method, data } = event.data
+  const { id, method } = event.data
 
   try {
     let result: any
@@ -12,7 +12,7 @@ self.addEventListener('message', async event => {
       await init()
 
       const opfsRoot = await navigator.storage.getDirectory()
-      const fileHandle = await opfsRoot.getFileHandle(data, { create: true })
+      const fileHandle = await opfsRoot.getFileHandle(event.data.fileName, { create: true })
 
       // @ts-ignore
       syncHandle = await fileHandle.createSyncAccessHandle()
@@ -25,14 +25,22 @@ self.addEventListener('message', async event => {
       switch (method) {
         case 'saveEvents':
           result = db.save_events(
-            data /* { events: [{...}, ...], followedBys: [[pubkey, ...], ...] } */,
+            event.data.indexableEvents,
+            event.data.followedBys,
+            event.data.rawEvents,
           ) /* -> [bool, ...] */
           break
         case 'deleteEvents':
-          result = db.delete_events(data /* [filter, ...] */) /* -> [count, ...] */
+          result = db.delete_events(event.data /* [filter, ...] */) /* -> [count, ...] */
           break
         case 'queryEvents':
-          result = db.query_events(data /* [filter, ...] */)
+          result = db.query_events(event.data /* [filter, ...] */)
+          break
+        case 'markFollow':
+          result = db.mark_follow(event.data /* [filter, ...] */)
+          break
+        case 'markUnfollow':
+          result = db.mark_unfollow(event.data /* [filter, ...] */)
           break
         default:
           throw new Error(`unknown method: ${method}`)
