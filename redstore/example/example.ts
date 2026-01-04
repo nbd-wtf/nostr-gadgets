@@ -1,3 +1,4 @@
+import { finalizeEvent, generateSecretKey } from '@nostr/tools/pure'
 import { RedEventStore } from '../index.ts'
 
 async function main() {
@@ -16,28 +17,22 @@ async function main() {
   await store.init()
   console.log('✓ store initialized')
 
-  // create a sample event
-  const sampleEvent = {
-    id: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-    pubkey: 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
-    created_at: Math.floor(Date.now() / 1000),
-    kind: 1,
-    tags: [],
-    content: 'hello from example',
-    sig: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12345678',
-  }
-
-  // save the event
+  // store some events
   try {
-    await store.saveEvent(sampleEvent, { seenOn: ['wss://relay.damus.io'] })
-    console.log('✓ event saved')
+    const sk = generateSecretKey()
+    await Promise.all([
+      store.saveEvent(finalizeEvent({ kind: 1, content: 'one', created_at: 1, tags: [] }, sk)),
+      store.saveEvent(finalizeEvent({ kind: 1, content: 'two', created_at: 2, tags: [] }, sk)),
+      store.saveEvent(finalizeEvent({ kind: 7, content: '', created_at: 3, tags: [] }, sk)),
+    ])
+    console.log('✓ events saved')
   } catch (error) {
-    console.error('failed to save event:', error)
+    console.error('failed to save events:', error)
   }
 
   // query events
   try {
-    const events = await store.queryEvents({})
+    const events = await store.queryEvents({ kinds: [1] })
     console.log('✓ query results:', {}, events)
   } catch (error) {
     console.error('failed to query events:', error)
@@ -45,7 +40,7 @@ async function main() {
 
   // query events
   try {
-    const filter = { kinds: [1] }
+    const filter = { kinds: [7] }
     const events = await store.queryEvents(filter)
     console.log('✓ query results:', filter, events)
   } catch (error) {

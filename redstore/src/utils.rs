@@ -39,7 +39,7 @@ impl Default for Querier {
             chosen_tagvalues: None,
             since: None,
             until: (js_sys::Date::now() / 1000.0) as u32,
-            limit: 100,
+            limit: 250,
         };
     }
 }
@@ -138,6 +138,7 @@ impl From<&js_sys::Array> for IndexableEvent {
     fn from(indexables_arr: &js_sys::Array) -> Self {
         // the indexables_arr has the shape [id, pubkey, kind, timestamp, tags]
 
+        let kind = indexables_arr.get(2).as_f64().unwrap() as u16;
         let indexable_tags = js_sys::Array::from(&indexables_arr.get(4));
         let mut tags = Vec::with_capacity(indexable_tags.length() as usize);
         let mut dtag = None;
@@ -147,7 +148,9 @@ impl From<&js_sys::Array> for IndexableEvent {
             let letter = indexable_tag.get(0).as_f64().unwrap() as u8;
             let value = indexable_tag.get(1).as_string().unwrap();
             if letter == 100 {
-                dtag = Some(value)
+                if kind >= 30000 && kind < 40000 {
+                    dtag = Some(value)
+                }
             } else {
                 tags.push((letter, value));
             }
@@ -156,7 +159,7 @@ impl From<&js_sys::Array> for IndexableEvent {
         Self {
             id: indexables_arr.get(0).as_string().unwrap(),
             pubkey: indexables_arr.get(1).as_string().unwrap(),
-            kind: indexables_arr.get(2).as_f64().unwrap() as u16,
+            kind,
             timestamp: indexables_arr.get(3).as_f64().unwrap() as u32,
             dtag,
             tags,
