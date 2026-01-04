@@ -21,8 +21,7 @@ pub struct Querier {
     pub authors: Option<Vec<String>>,
     pub kinds: Option<Vec<u16>>,
     pub dtags: Option<Vec<String>>,
-    pub chosen_tagname: Option<String>,
-    pub chosen_tagvalues: Option<Vec<String>>,
+    pub tags: Vec<(u8, Vec<String>)>,
     pub since: Option<u32>,
     pub until: u32,
     pub limit: usize,
@@ -35,8 +34,7 @@ impl Default for Querier {
             authors: None,
             kinds: None,
             dtags: None,
-            chosen_tagname: None,
-            chosen_tagvalues: None,
+            tags: Vec::new(),
             since: None,
             until: (js_sys::Date::now() / 1000.0) as u32,
             limit: 250,
@@ -105,15 +103,14 @@ impl From<&js_sys::Object> for Querier {
                         }
                     }
                     _ => {
-                        if querier.chosen_tagvalues.is_none() && key_str.starts_with("#") {
-                            querier.chosen_tagname = Some(key_str[1..].to_string());
+                        if key_str.starts_with("#") {
+                            let name = key_str[1..].to_string();
                             let array = js_sys::Array::from(&value);
-                            let chosen_tagvalues = querier
-                                .chosen_tagvalues
-                                .insert(Vec::with_capacity(array.length() as usize));
+                            let mut values = Vec::with_capacity(array.length() as usize);
                             for i in 0..array.length() {
-                                chosen_tagvalues.push(array.get(i).as_string().unwrap());
+                                values.push(array.get(i).as_string().unwrap());
                             }
+                            querier.tags.push((name.bytes().next().unwrap(), values));
                         }
                     }
                 }
@@ -149,11 +146,10 @@ impl From<&js_sys::Array> for IndexableEvent {
             let value = indexable_tag.get(1).as_string().unwrap();
             if letter == 100 {
                 if kind >= 30000 && kind < 40000 {
-                    dtag = Some(value)
+                    dtag = Some(value.clone())
                 }
-            } else {
-                tags.push((letter, value));
             }
+            tags.push((letter, value));
         }
 
         Self {
@@ -187,13 +183,15 @@ impl<'de> Deserialize<'de> for IndexableEvent {
 
         for mut tag in temp.tags.into_iter() {
             if tag.len() >= 2 {
-                let first = tag.swap_remove(0);
-                if first.len() == 1 {
-                    let second = tag.swap_remove(1);
-                    if first.as_str() == "d" {
-                        dtag = Some(second);
+                let name = &tag[0];
+                if name.len() == 1 {
+                    if name.as_str() == "d" {
+                        let value = tag.swap_remove(1);
+                        dtag = Some(value);
                     } else {
-                        tags.push((first.bytes().next().unwrap(), second));
+                        let letter = name.bytes().next().unwrap();
+                        let value = tag.swap_remove(1);
+                        tags.push((letter, value));
                     }
                 }
             }

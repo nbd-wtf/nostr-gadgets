@@ -3,8 +3,8 @@ import { hexToBytes } from '@nostr/tools/utils'
 import { finalizeEvent } from '@nostr/tools/pure'
 
 import { RedEventStore } from './index.ts'
-import { getPublicKey, matchFilter } from '@nostr/tools'
-import { NostrEvent } from '@nostr/tools'
+import { matchFilter } from '@nostr/tools'
+import { NostrEvent, getPublicKey } from '@nostr/tools/pure'
 
 const TEST_DB = '_.test.db'
 
@@ -23,7 +23,7 @@ const sk4 = hexToBytes('2ab02d4c78e7dbe59c36bbd12f93241a072aebc34b9f888108952034
 const sk5 = hexToBytes('4e91489c0cc70387fa217ec7b40e47af6e52abe7ba2d5e784d11dadd6377d263')
 
 describe('redstore', () => {
-  test('redstore basic', async () => {
+  test('basic', async () => {
     const store = new RedEventStore(TEST_DB)
     await store.init()
 
@@ -109,7 +109,7 @@ describe('redstore', () => {
     await store.close()
   })
 
-  test('redstore more', async () => {
+  test('more', async () => {
     const store = new RedEventStore(TEST_DB)
     await store.init()
 
@@ -119,7 +119,7 @@ describe('redstore', () => {
       let [signer, other] = i % 2 === 0 ? [sk1, sk2] : [sk2, sk1]
       const event = {
         created_at: 10000 + i,
-        kind: [1, 11, 1111][i % 3],
+        kind: [9, 99, 9999][i % 3],
         content: 'post ' + i,
         tags: [['t', i % 2 === 0 ? 'even' : 'odd']],
       }
@@ -183,17 +183,17 @@ describe('redstore', () => {
 
     {
       let count = 0
-      let filter = { authors: [getPublicKey(sk2)], kinds: [1] }
+      let filter = { authors: [getPublicKey(sk2)], kinds: [9] }
       for (let evt of await store.queryEvents(filter)) {
         count++
         expect(matchFilter(filter, evt)).toBe(true)
       }
-      expect(count).toEqual(134)
+      expect(count).toEqual(133 /* 800 / 2 / 3 */)
     }
 
     {
       let count = 0
-      let filter = { authors: [getPublicKey(sk2)], kinds: [1], limit: 12 }
+      let filter = { authors: [getPublicKey(sk2)], kinds: [9], limit: 12 }
       for (let evt of await store.queryEvents(filter)) {
         count++
         expect(matchFilter(filter, evt)).toBe(true)
@@ -203,7 +203,7 @@ describe('redstore', () => {
 
     {
       let count = 0
-      let filter = { authors: [getPublicKey(sk1), getPublicKey(sk2)], kinds: [1, 11], limit: 60 }
+      let filter = { authors: [getPublicKey(sk1), getPublicKey(sk2)], kinds: [9, 99], limit: 60 }
       for (let evt of await store.queryEvents(filter)) {
         count++
         expect(matchFilter(filter, evt)).toBe(true)
@@ -213,7 +213,7 @@ describe('redstore', () => {
 
     {
       let count = 0
-      let filter = { authors: [getPublicKey(sk1), getPublicKey(sk2)], kinds: [1, 11, 1111], '#t': ['odd'] }
+      let filter = { authors: [getPublicKey(sk1), getPublicKey(sk2)], kinds: [9, 99, 9999], '#t': ['odd'], limit: 800 }
       for (let evt of await store.queryEvents(filter)) {
         count++
         expect(matchFilter(filter, evt)).toBe(true)
@@ -224,7 +224,7 @@ describe('redstore', () => {
     let ids: string[] = []
     {
       let count = 0
-      let filter = { authors: [getPublicKey(sk2)], kinds: [1], since: 10050, until: 10100 }
+      let filter = { authors: [getPublicKey(sk2)], kinds: [9], since: 10050, until: 10100 }
       for (let evt of await store.queryEvents(filter)) {
         count++
         expect(matchFilter(filter, evt)).toBe(true)
@@ -283,6 +283,12 @@ describe('redstore', () => {
       }
       expect(count).toEqual(2)
     }
+    await store.close()
+  })
+
+  test('replacing', async () => {
+    const store = new RedEventStore(TEST_DB)
+    await store.init()
 
     // test replacing
     {
@@ -412,9 +418,10 @@ describe('redstore', () => {
     await store.close()
   })
 
-  test('redstore following', async () => {
+  test('following', async () => {
     const store = new RedEventStore(TEST_DB)
     await store.init()
+
     const skA = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
     const skB = hexToBytes('611b5b25b45854a36c3621c94f3508516c9b373c18e2eca59ffd15a6908c96be')
     const skC = hexToBytes('a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5')
@@ -549,9 +556,10 @@ describe('redstore', () => {
     await store.close()
   })
 
-  test('redstore deletion with followedBy index', async () => {
+  test('deletion with followedBy index', async () => {
     const store = new RedEventStore(TEST_DB)
     await store.init()
+
     const skA = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
     const skB = hexToBytes('611b5b25b45854a36c3621c94f3508516c9b373c18e2eca59ffd15a6908c96be')
 

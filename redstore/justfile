@@ -6,3 +6,6 @@ example: build
 
 test: build
     ../node_modules/.bin/vitest
+
+test-only testName: build
+    ../node_modules/.bin/vitest -t {{testName}}

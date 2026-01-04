@@ -127,7 +127,9 @@ export class RedEventStore {
       event.tags.filter(([t]) => t.length === 1).map(([t, v]) => [t.charCodeAt(0), v]),
     ]
     batch[2][idx] = followedBy || []
-    batch[3][idx] = utf8Encoder.encode(JSON.stringify(event))
+    batch[3][idx] = utf8Encoder.encode(
+      `{"pubkey":"${event.pubkey}","id":"${event.id}","kind":${event.kind},"created_at":${event.created_at},"sig":"${event.sig}","tags":${JSON.stringify(event.tags)},"content":${JSON.stringify(event.content)}}`,
+    )
 
     task.p = new Promise<boolean>(function (resolve, reject) {
       task.resolve = resolve
