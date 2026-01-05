@@ -309,6 +309,8 @@ impl Redstore {
 
                 if let Some((ts, serial)) = batch.pop() {
                     if ts < top_query_timestamp {
+                        // return it to the end of the batch and exit here for now
+                        batch.push((ts, serial));
                         break;
                     }
 
@@ -756,7 +758,7 @@ impl Redstore {
     }
 
     // takes [filter, ...] and returns [deleted_count, ...]
-    pub fn delete_events(&self, filters_arr: js_sys::Array) -> Result<()> {
+    pub fn delete_events(&self, filters_arr: js_sys::Array) -> Result<JsValue> {
         let db = self
             .db
             .lock()
@@ -787,52 +789,59 @@ impl Redstore {
                     .map_err(|e| JsValue::from_str(&format!("parse event error: {:?}", e)))?;
 
                 // delete the event and its indexes
-                self.delete_internal(&mut write_txn, &indexable_event, *serial)?;
+                let deleted = self.delete_internal(&mut write_txn, &indexable_event, *serial)?;
 
-                // scan the entire INDEX_FOLLOWED for the serial (the last 4 bytes) and delete those entries
-                {
-                    let mut followed_table = write_txn.open_table(INDEX_FOLLOWED).map_err(|e| {
-                        JsValue::from_str(&format!("open index_followed error: {:?}", e))
-                    })?;
+                if deleted {
+                    // count this
+                    count += 1;
 
-                    let mut to_delete: Vec<[u8; 16]> = Vec::new();
-                    for item in followed_table.iter().map_err(|e| {
-                        JsValue::from_str(&format!("iter index_followed error: {:?}", e))
-                    })? {
-                        let (key, _) = item.map_err(|e| {
-                            JsValue::from_str(&format!("get index_followed item error: {:?}", e))
-                        })?;
-                        let key_bytes = key.value();
+                    // scan the entire INDEX_FOLLOWED for the serial (the last 4 bytes) and delete those entries
+                    {
+                        let mut followed_table =
+                            write_txn.open_table(INDEX_FOLLOWED).map_err(|e| {
+                                JsValue::from_str(&format!("open index_followed error: {:?}", e))
+                            })?;
 
-                        // check if the last 4 bytes match our serial
-                        let stored_serial = u32::from_be_bytes([
-                            key_bytes[key_bytes.len() - 4],
-                            key_bytes[key_bytes.len() - 3],
-                            key_bytes[key_bytes.len() - 2],
-                            key_bytes[key_bytes.len() - 1],
-                        ]);
+                        let mut to_delete: Vec<[u8; 16]> = Vec::new();
+                        for item in followed_table.iter().map_err(|e| {
+                            JsValue::from_str(&format!("iter index_followed error: {:?}", e))
+                        })? {
+                            let (key, _) = item.map_err(|e| {
+                                JsValue::from_str(&format!(
+                                    "get index_followed item error: {:?}",
+                                    e
+                                ))
+                            })?;
+                            let key_bytes = key.value();
 
-                        if stored_serial == *serial {
-                            to_delete.push(
-                                key_bytes
-                                    .try_into()
-                                    .expect("index_followed key should have 16 bytes"),
-                            );
+                            // check if the last 4 bytes match our serial
+                            let stored_serial = u32::from_be_bytes([
+                                key_bytes[key_bytes.len() - 4],
+                                key_bytes[key_bytes.len() - 3],
+                                key_bytes[key_bytes.len() - 2],
+                                key_bytes[key_bytes.len() - 1],
+                            ]);
+
+                            if stored_serial == *serial {
+                                to_delete.push(
+                                    key_bytes
+                                        .try_into()
+                                        .expect("index_followed key should have 16 bytes"),
+                                );
+                            }
+                        }
+
+                        // delete the found entries
+                        for key in to_delete {
+                            followed_table.remove(&key[..]).map_err(|e| {
+                                JsValue::from_str(&format!(
+                                    "remove index_followed entry error: {:?}",
+                                    e
+                                ))
+                            })?;
                         }
                     }
-
-                    // delete the found entries
-                    for key in to_delete {
-                        followed_table.remove(&key[..]).map_err(|e| {
-                            JsValue::from_str(&format!(
-                                "remove index_followed entry error: {:?}",
-                                e
-                            ))
-                        })?;
-                    }
                 }
-
-                count += 1;
             }
 
             result.set(f, js_sys::Number::from(count).into());
@@ -842,7 +851,7 @@ impl Redstore {
             .commit()
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
-        Ok(())
+        Ok(result.into())
     }
 
     fn delete_internal(
@@ -850,16 +859,18 @@ impl Redstore {
         write_txn: &mut WriteTransaction,
         indexable_event: &IndexableEvent,
         serial: u32,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // delete from EVENTS table
-        {
+        let was_deleted = {
             let mut events_table = write_txn
                 .open_table(EVENTS)
                 .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
-            events_table
+
+            !events_table
                 .remove(serial)
-                .map_err(|e| JsValue::from_str(&format!("remove event error: {:?}", e)))?;
-        }
+                .map_err(|e| JsValue::from_str(&format!("remove event error: {:?}", e)))?
+                .is_none()
+        };
 
         // delete from index tables
         let indexes = compute_indexes(indexable_event, serial);
@@ -926,7 +937,7 @@ impl Redstore {
             }
         }
 
-        Ok(())
+        Ok(was_deleted)
     }
 
     pub fn mark_follow(&self, follower: JsValue, followed: JsValue) -> Result<()> {
