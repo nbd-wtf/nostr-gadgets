@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 
 use crate::indexes::*;
-use crate::utils::{parse_hex_into, Querier, Result, MAX_U32_BYTES};
+use crate::utils::{MAX_U32_BYTES, Querier, Result, parse_hex_into};
 
 #[derive(Debug)]
 pub struct Plan {
@@ -30,6 +30,7 @@ impl Query {
         batch_size: usize,
         since: u32,
     ) -> Result<bool> {
+        #[cfg(debug_assertions)]
         web_sys::console::log_1(&js_sys::JsString::from(format!(
             "> pulling up to {} from {}/{:?}",
             batch_size, self.table_name, self.curr_key
@@ -71,6 +72,7 @@ impl Query {
             if key_len != self.curr_key.len()
                 || key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8]
             {
+                #[cfg(debug_assertions)]
                 web_sys::console::log_7(
                     &js_sys::JsString::from("exiting on prefix"),
                     &js_sys::Number::from(key_len as u32),
@@ -96,6 +98,7 @@ impl Query {
 
             // check if timestamp is in range
             if timestamp < since {
+                #[cfg(debug_assertions)]
                 web_sys::console::log_1(&js_sys::JsString::from("exiting on 'since'"));
                 break;
             }
@@ -108,6 +111,7 @@ impl Query {
                 key_bytes[key_len - 1],
             ]);
 
+            #[cfg(debug_assertions)]
             web_sys::console::log_3(
                 &js_sys::JsString::from("pulled"),
                 &js_sys::Number::from(timestamp as u32),
@@ -312,6 +316,7 @@ pub fn prepare_queries(spec: &mut Querier) -> Result<Plan> {
                         letter.as_ascii().expect("filter tag not ascii").as_str(),
                         value
                     );
+                    #[cfg(debug_assertions)]
                     web_sys::console::log_1(&js_sys::JsString::from(format!("bf ins: {}", full)));
                     bf.insert(&full);
                 }

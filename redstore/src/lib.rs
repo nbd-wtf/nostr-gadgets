@@ -153,6 +153,7 @@ impl Redstore {
 
     // takes an array of filters (js array of js objects) and returns an array of arrays of events.
     pub fn query_events(&self, filters_arr: js_sys::Array) -> Result<JsValue> {
+        #[cfg(debug_assertions)]
         web_sys::console::log_2(&js_sys::JsString::from("query_events"), &filters_arr);
 
         let db = self
@@ -217,6 +218,7 @@ impl Redstore {
                 {
                     let serial = s.value();
 
+                    #[cfg(debug_assertions)]
                     web_sys::console::log_2(
                         &js_sys::JsString::from("serial"),
                         &js_sys::Number::from(serial as u32),
@@ -275,6 +277,7 @@ impl Redstore {
         while emitted_count < spec.limit {
             let last_run = remaining_unexhausted == 0;
 
+            #[cfg(debug_assertions)]
             web_sys::console::log_7(
                 &js_sys::JsString::from("loop"),
                 &js_sys::JsString::from("last run?"),
@@ -325,6 +328,7 @@ impl Redstore {
                         if let Some(authors_bf) = &plan.extra_authors {
                             let author_hex = &event_json[11..75]; // saved events always have the pubkey at this pos
                             if !authors_bf.contains(author_hex) {
+                                #[cfg(debug_assertions)]
                                 web_sys::console::log_1(&js_sys::JsString::from(format!(
                                     "prevented on extra_authors ({}): {}",
                                     String::from_utf8_lossy(author_hex),
@@ -344,6 +348,7 @@ impl Redstore {
                                 }
                             }
                             if !plan.extra_kinds.contains(&kind) {
+                                #[cfg(debug_assertions)]
                                 web_sys::console::log_1(&js_sys::JsString::from(format!(
                                     "prevented on extra_kind ({} & {:?}): {}",
                                     &kind,
@@ -387,6 +392,7 @@ impl Redstore {
                                                     ))
                                             })
                                         }) {
+                                            #[cfg(debug_assertions)]
                                             web_sys::console::log_1(&js_sys::JsString::from(
                                                 format!(
                                                     "prevented on extra_tags ({:?}): {}",
@@ -397,6 +403,7 @@ impl Redstore {
 
                                             for tag in tags {
                                                 if tag[0] == "e" {
+                                                    #[cfg(debug_assertions)]
                                                     web_sys::console::log_1(
                                                         &js_sys::JsString::from(format!(
                                                             "bf: {} << {}",
@@ -417,6 +424,7 @@ impl Redstore {
                             }
                         }
 
+                        #[cfg(debug_assertions)]
                         web_sys::console::log_1(&js_sys::JsString::from(format!(
                             "emitted {} skipping extras {} {:?} {}",
                             String::from_utf8_lossy(&event_json),
@@ -444,6 +452,7 @@ impl Redstore {
             }
 
             // pull more data from the best query
+            #[cfg(debug_assertions)]
             web_sys::console::log_1(&js_sys::JsString::from("pulling more"));
             if let Some(top_idx) = top_query_idx
                 && !plan.queries[top_idx].exhausted
@@ -475,6 +484,7 @@ impl Redstore {
             }
         }
 
+        #[cfg(debug_assertions)]
         web_sys::console::log_1(&js_sys::JsString::from("done"));
 
         Ok(merged_results)
@@ -517,6 +527,7 @@ impl Redstore {
             s
         };
 
+        #[cfg(debug_assertions)]
         web_sys::console::log_2(
             &js_sys::JsString::from_str("save_events").unwrap(),
             &indexable_events_arr,
@@ -674,6 +685,7 @@ impl Redstore {
                 .insert(&key[..], ())
                 .map_err(|e| JsValue::from_str(&format!("followed_by insert error: {:?}", e)))?;
 
+            #[cfg(debug_assertions)]
             web_sys::console::log_3(
                 &js_sys::JsString::from_str("inserting following").unwrap(),
                 &js_sys::JsString::from(follower_hex),
@@ -1002,6 +1014,8 @@ impl Redstore {
                         followedby_table.insert(&key[..], ()).map_err(|e| {
                             JsValue::from_str(&format!("mark_follow insert error: {:?}", e))
                         })?;
+
+                        #[cfg(debug_assertions)]
                         web_sys::console::log_3(
                             &js_sys::JsString::from_str("new follower").unwrap(),
                             &js_sys::JsString::from(follower_hex.clone()),
@@ -1012,6 +1026,8 @@ impl Redstore {
                         followedby_table.remove(&key[..]).map_err(|e| {
                             JsValue::from_str(&format!("mark_unfollow insert error: {:?}", e))
                         })?;
+
+                        #[cfg(debug_assertions)]
                         web_sys::console::log_3(
                             &js_sys::JsString::from_str("unfollowed").unwrap(),
                             &js_sys::JsString::from(follower_hex.clone()),
@@ -1133,6 +1149,7 @@ impl Redstore {
                     JsValue::from_str(&format!("remove index_followed entry error: {:?}", e))
                 })?;
 
+                #[cfg(debug_assertions)]
                 web_sys::console::log_2(
                     &js_sys::JsString::from_str("clean_followed deleted").unwrap(),
                     &js_sys::Uint8Array::from(&key[..]),

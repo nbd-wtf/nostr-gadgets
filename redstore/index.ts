@@ -22,7 +22,7 @@ export class RedEventStore {
    */
   constructor(dbName: string = 'gadgets-redstore') {
     this.dbName = dbName
-    this.worker = new Worker(new URL('./worker.js', import.meta.url), {
+    this.worker = new Worker(new URL('./redstore-worker.js', import.meta.url), {
       type: 'module',
     })
 

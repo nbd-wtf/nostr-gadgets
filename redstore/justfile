@@ -1,6 +1,9 @@
 build:
     ../node_modules/.bin/wasm-pack build --target web --out-dir pkg --dev
 
+build-prod:
+    ../node_modules/.bin/wasm-pack build --target web --out-dir pkg --release
+
 example: build
     cd example && ../../node_modules/.bin/vite dev
 
