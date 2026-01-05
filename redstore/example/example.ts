@@ -5,10 +5,18 @@ async function main() {
   console.log('example starting...')
   const dbs = await RedEventStore.list()
   console.log(dbs)
-  for (let db of dbs) {
-    if (db.name === 'example-db') {
-      await RedEventStore.delete(db.name)
-      break
+  try {
+    for (let db of dbs) {
+      if (db.name === 'example-db') {
+        await RedEventStore.delete(db.name)
+        break
+      }
+    }
+  } catch (err) {
+    if (String(err).includes("Failed to execute 'removeEntry'")) {
+      console.warn('failed to delete:', err)
+    } else {
+      throw err
     }
   }
 

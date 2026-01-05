@@ -10,9 +10,10 @@ export class DatabaseError extends Error {
 }
 
 export class RedEventStore {
+  initialized = false
+  private worker: Worker
   private dbName: string
   private requests: Record<string, any> = {}
-  private worker: Worker | undefined
   private serial = 1
 
   /**
@@ -33,7 +34,7 @@ export class RedEventStore {
     })
   }
 
-  private async call(method: string, data: any): Promise<any> {
+  async call(method: string, data: any): Promise<any> {
     data.id = this.serial++
     data.method = method
 
@@ -43,7 +44,12 @@ export class RedEventStore {
     })
   }
 
-  async init(): Promise<void> {
+  /**
+   * initializes the database.
+   * @returns boolean - true if we're the main database operators, false if we're just forwarding calls to others.
+   */
+  async init(): Promise<true> {
+    this.initialized = true
     return this.call('init', { fileName: this.dbName })
   }
 
@@ -51,9 +57,9 @@ export class RedEventStore {
    * closes the database.
    */
   async close(): Promise<void> {
-    if (this.worker) {
+    if (this.initialized) {
       this.call('close', {})
-      this.worker = undefined
+      this.initialized = false
     }
   }
 
@@ -80,7 +86,7 @@ export class RedEventStore {
     event: NostrEvent,
     { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] } = {},
   ): Promise<boolean> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
 
     // sanity checking
     if (event.created_at > 0xffffffff || event.kind > 0xffff) {
@@ -155,12 +161,12 @@ export class RedEventStore {
    * @throws {DatabaseError} if deletion fails
    */
   async deleteEvents(ids: string[]): Promise<number> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
     return this.call('deleteEvents', [{ ids }]).then(([count]) => count)
   }
 
   async deleteEventsFilters(filters: Filter[]): Promise<number> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
     return this.call('deleteEvents', filters)
   }
 
@@ -174,13 +180,13 @@ export class RedEventStore {
    * @returns events matching the filter criteria
    */
   async queryEvents(filter: Filter & { followedBy?: string }): Promise<NostrEvent[]> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
     const [events] = (await this.call('queryEvents', [filter])) as Uint8Array[][]
     return events.map(b => JSON.parse(utf8Decoder.decode(b)))
   }
 
   async queryEventsMultiple(filters: Filter[]): Promise<NostrEvent[][]> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
     const results = (await this.call('queryEvents', filters)) as Uint8Array[][]
     return results.map(events => events.map(b => JSON.parse(utf8Decoder.decode(b))))
   }
@@ -192,7 +198,7 @@ export class RedEventStore {
    * @param followed - the pubkey being unfollowed
    */
   async markFollow(follower: string, followed: string): Promise<void> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
     await this.call('markFollow', { follower, followed })
   }
 
@@ -203,7 +209,7 @@ export class RedEventStore {
    * @param followed - the pubkey being unfollowed
    */
   async markUnfollow(follower: string, followed: string): Promise<void> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
     await this.call('markUnfollow', { follower, followed })
   }
 
@@ -214,7 +220,7 @@ export class RedEventStore {
    * @param except - list of authors whose indexes should not be deleted.
    */
   async cleanFollowed(followedBy: string, except: string[]): Promise<void> {
-    if (!this.worker) await this.init()
+    if (!this.initialized) await this.init()
     await this.call('cleanFollowed', { followedBy, except })
   }
 
