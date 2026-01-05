@@ -2,7 +2,12 @@ import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
 import { utf8Decoder, utf8Encoder } from '@nostr/tools/utils'
 
-import { DatabaseError } from '../store'
+export class DatabaseError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DatabaseError'
+  }
+}
 
 export class RedEventStore {
   private dbName: string
@@ -146,7 +151,6 @@ export class RedEventStore {
    * removes the events and all associated indexes.
    *
    * @param ids - hex-encoded event IDs to delete
-   * @param followedBy - optional array of pubkeys that are following this event
    * @returns the number of events actually deleted, ignoring those that we couldn't find
    * @throws {DatabaseError} if deletion fails
    */
@@ -201,6 +205,17 @@ export class RedEventStore {
   async markUnfollow(follower: string, followed: string): Promise<void> {
     if (!this.worker) await this.init()
     await this.call('markUnfollow', { follower, followed })
+  }
+
+  /**
+   * cleans followedBy indexes for events followed by a specific pubkey, except for some.
+   *
+   * @param followedBy - the pubkey whose followed events to clean
+   * @param except - list of authors whose indexes should not be deleted.
+   */
+  async cleanFollowed(followedBy: string, except: string[]): Promise<void> {
+    if (!this.worker) await this.init()
+    await this.call('cleanFollowed', { followedBy, except })
   }
 
   /**

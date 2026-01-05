@@ -25,6 +25,7 @@ pub struct Querier {
     pub since: Option<u32>,
     pub until: u32,
     pub limit: usize,
+    pub followed_by: Option<String>,
 }
 
 impl Default for Querier {
@@ -38,6 +39,7 @@ impl Default for Querier {
             since: None,
             until: (js_sys::Date::now() / 1000.0) as u32,
             limit: 250,
+            followed_by: None,
         };
     }
 }
@@ -92,6 +94,10 @@ impl From<&js_sys::Object> for Querier {
                     }
                     "limit" => {
                         querier.limit = value.as_f64().expect("limit must be a number") as usize;
+                    }
+                    "followedBy" => {
+                        querier.followed_by =
+                            Some(value.as_string().expect("followedBy must be a string"));
                     }
                     "#d" => {
                         let array = js_sys::Array::from(&value);

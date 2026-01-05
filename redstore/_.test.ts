@@ -463,7 +463,7 @@ describe('redstore', () => {
       }
     }
 
-    // query by followed by A
+    // query by followed_by A
     {
       let count = 0
       for (const evt of await store.queryEvents({ followedBy: pkA })) {
@@ -473,7 +473,7 @@ describe('redstore', () => {
       expect(count).toEqual(20)
     }
 
-    // query by followed B
+    // query by followed_by B
     {
       let count = 0
       for (const evt of await store.queryEvents({ followedBy: pkB })) {
@@ -484,11 +484,13 @@ describe('redstore', () => {
     }
 
     // call markFollow so A starts following D
+    console.log('MARKFOLLOW', pkA, pkD)
     await store.markFollow(pkA, pkD)
 
     // query by followed by A (should return D events too)
     {
       let count = 0
+    console.log('FOLLOWED', pkA)
       for (const evt of await store.queryEvents({ followedBy: pkA })) {
         count++
         expect(evt.pubkey === pkB || evt.pubkey === pkC || evt.pubkey === pkD).toBe(true)
@@ -531,8 +533,8 @@ describe('redstore', () => {
     }
 
     // clean followed indexes
-    await store.cleanFollowed(pkA, event => event.pubkey === pkB)
-    await store.cleanFollowed(pkB, _ => false)
+    await store.cleanFollowed(pkA, [pkB])
+    await store.cleanFollowed(pkB, [])
 
     // query by followed by A (now it should also not return D events)
     {

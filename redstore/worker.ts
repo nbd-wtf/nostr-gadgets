@@ -37,11 +37,13 @@ self.addEventListener('message', async event => {
           result = db.query_events(event.data /* [filter, ...] */)
           break
         case 'markFollow':
-          result = db.mark_follow(event.data /* [filter, ...] */)
+          result = db.mark_follow(event.data.follower, event.data.followed)
           break
         case 'markUnfollow':
-          result = db.mark_unfollow(event.data /* [filter, ...] */)
+          result = db.mark_unfollow(event.data.follower, event.data.followed)
           break
+        case 'cleanFollowed':
+          result = db.clean_followed(event.data.followedBy, event.data.except)
         default:
           throw new Error(`unknown method: ${method}`)
       }
