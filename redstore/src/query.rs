@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 
 use crate::indexes::*;
-use crate::utils::{MAX_U32_BYTES, Querier, Result, parse_hex_into};
+use crate::utils::{parse_hex_into, Querier, Result, MAX_U32_BYTES};
 
 #[derive(Debug)]
 pub struct Plan {
@@ -40,6 +40,7 @@ impl Query {
         }
 
         let table = match self.table_name {
+            "index_followed" => txn.open_table(INDEX_FOLLOWED),
             "index_nothing" => txn.open_table(INDEX_NOTHING),
             "index_kind" => txn.open_table(INDEX_KIND),
             "index_pubkey" => txn.open_table(INDEX_PUBKEY),
@@ -133,7 +134,19 @@ impl Query {
 pub fn prepare_queries(spec: &mut Querier) -> Result<Plan> {
     let mut queries = Vec::new();
 
-    if let (Some(authors), Some(dtags)) = (&spec.authors, spec.dtags.take()) {
+    if let Some(followed_by) = &spec.followed_by {
+        let mut start_key = vec![0u8; 16];
+        parse_hex_into(&followed_by[48..64], &mut start_key[0..8])
+            .map_err(|e| JsValue::from_str(&format!("invalid followed_by hex: {:?}", e)))?;
+        start_key[8..12].copy_from_slice(&spec.until.to_be_bytes());
+        start_key[12..16].copy_from_slice(&MAX_U32_BYTES);
+        queries.push(Query {
+            table_name: "index_followed",
+            curr_key: start_key,
+            results: Vec::new(),
+            exhausted: false,
+        });
+    } else if let (Some(authors), Some(dtags)) = (&spec.authors, spec.dtags.take()) {
         // use index_pubkey_kind for combined author+kind queries
         for author in authors {
             let mut author_bytes = vec![0u8; 8];

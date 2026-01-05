@@ -1,7 +1,7 @@
 use redb::TableDefinition;
 use sha2::{Digest, Sha256};
 
-use crate::utils::{IndexableEvent, parse_hex_into};
+use crate::utils::{parse_hex_into, IndexableEvent};
 
 pub const EVENTS: TableDefinition<u32, &[u8]> = TableDefinition::new("events");
 pub const INDEX_ID: TableDefinition<&[u8], u32> = TableDefinition::new("index_id");
@@ -13,7 +13,7 @@ pub const INDEX_PUBKEY_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("
 pub const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_dtag");
 pub const INDEX_TAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_tag");
 
-pub const INDEX_FOLLOWED: TableDefinition<[u8; 16], ()> = TableDefinition::new("index_followed");
+pub const INDEX_FOLLOWED: TableDefinition<&[u8], ()> = TableDefinition::new("index_followed");
 
 #[derive(Debug)]
 pub struct IndexEntry {
