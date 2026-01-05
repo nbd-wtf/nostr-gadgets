@@ -44,6 +44,7 @@ self.addEventListener('message', async event => {
           break
         case 'cleanFollowed':
           result = db.clean_followed(event.data.followedBy, event.data.except)
+          break
         default:
           throw new Error(`unknown method: ${method}`)
       }

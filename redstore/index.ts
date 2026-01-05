@@ -156,7 +156,7 @@ export class RedEventStore {
    */
   async deleteEvents(ids: string[]): Promise<number> {
     if (!this.worker) await this.init()
-    return this.call('deleteEvents', [{ ids }])
+    return this.call('deleteEvents', [{ ids }]).then(([count]) => count)
   }
 
   async deleteEventsFilters(filters: Filter[]): Promise<number> {

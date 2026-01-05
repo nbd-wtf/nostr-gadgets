@@ -80,13 +80,13 @@ describe('redstore', () => {
     const fiveKeys = [sk1, sk2, sk3, sk4, sk5]
     await Promise.all(
       fiveKeys.map(async (sk, f) => {
-        for (let i = 0; i < 10; i++) {
+        for (let i = 1; i <= 10; i++) {
           await store.saveEvent(
             finalizeEvent(
               {
                 kind: 1111,
                 created_at: 1000 + f * 10 + i,
-                content: `zpzp ${i}`,
+                content: `aiaiaiaiaiai ${i}`,
                 tags: [],
               },
               sk,
@@ -100,7 +100,7 @@ describe('redstore', () => {
       let count = 0
       for (let evt of await store.queryEvents({ limit: 40, authors: fiveKeys.map(getPublicKey), kinds: [1111] })) {
         count++
-        expect(evt.content.startsWith('zpzp')).toBe(true)
+        expect(evt.content.startsWith('aiaiaiaiaiai')).toBe(true)
         expect(evt.pubkey === getPublicKey(sk1)).toBe(false)
       }
       expect(count).toEqual(40)
@@ -490,7 +490,7 @@ describe('redstore', () => {
     // query by followed by A (should return D events too)
     {
       let count = 0
-    console.log('FOLLOWED', pkA)
+      console.log('FOLLOWED', pkA)
       for (const evt of await store.queryEvents({ followedBy: pkA })) {
         count++
         expect(evt.pubkey === pkB || evt.pubkey === pkC || evt.pubkey === pkD).toBe(true)
@@ -562,8 +562,8 @@ describe('redstore', () => {
     const store = new RedEventStore(TEST_DB)
     await store.init()
 
-    const skA = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
-    const skB = hexToBytes('611b5b25b45854a36c3621c94f3508516c9b373c18e2eca59ffd15a6908c96be')
+    const skA = hexToBytes('8343c1ff3cc685cf9cd9faf4b7d5f2fa6ee061e48cfe97708428f6b7cd9c9fa4')
+    const skB = hexToBytes('0a0869ac5240c995729cdb73626cf393b08759fca883c2e9646ba176f30ad82c')
 
     const pkA = getPublicKey(skA)
     const pkB = getPublicKey(skB)
