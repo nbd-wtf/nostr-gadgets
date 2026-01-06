@@ -1,6 +1,6 @@
 {
   "name": "@nostr/gadgets",
-  "version": "0.0.46",
+  "version": "0.0.47",
   "exports": {
     "./global": "./global.ts",
     "./lists": "./lists.ts",
@@ -10,7 +10,7 @@
     "./wot": "./wot.ts",
     "./utils": "./utils.ts",
     "./outbox": "./outbox.ts",
-    "./store": "./store.ts",
+    "./store": "./redstore/index.ts",
     "./defaults": "./defaults.ts"
   }
 }

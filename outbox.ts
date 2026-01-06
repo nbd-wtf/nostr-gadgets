@@ -1,10 +1,10 @@
 import { getSemaphore } from '@henrygd/semaphore'
 import { Filter, NostrEvent, SimplePool } from '@nostr/tools'
 import { normalizeURL } from '@nostr/tools/utils'
-import { EventDeletion, isRegularKind } from '@nostr/tools/kinds'
+import { EventDeletion } from '@nostr/tools/kinds'
 
 import { loadRelayList } from './lists.ts'
-import { IDBEventStore } from './store.ts'
+import { RedEventStore } from './redstore/index.ts'
 import { pool } from './global.ts'
 import { shuffle } from './utils.ts'
 import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
@@ -14,7 +14,7 @@ import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
  * Use it to create OutboxFeed instances.
  */
 export class OutboxManager {
-  readonly store: IDBEventStore
+  readonly store: RedEventStore
   readonly baseFilters: Filter[]
   private bounds: { [pubkey: string]: [oldest: number, newest: number] }
   private boundsPromise: null | Promise<{ [pubkey: string]: [number, number] }>
@@ -37,7 +37,7 @@ export class OutboxManager {
   constructor(
     baseFilters: Filter[],
     opts?: {
-      store?: IDBEventStore
+      store?: RedEventStore
       pool?: SimplePool
       label?: string
       onliveupdate?: (event: NostrEvent) => void
@@ -50,7 +50,7 @@ export class OutboxManager {
     },
   ) {
     this.baseFilters = baseFilters
-    this.store = opts?.store || new IDBEventStore()
+    this.store = opts?.store || new RedEventStore()
     this.bounds = {}
     this.boundsPromise = this.getBounds()
     this.pool = opts?.pool || pool
@@ -244,16 +244,12 @@ export class OutboxManager {
             events.map(async event => {
               const deletion = event.kind === EventDeletion
 
-              const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
-                this.store,
-                event,
-                {
-                  seenOn: this.storeRelaysSeenOn
-                    ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-                    : undefined,
-                  followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
-                },
-              )
+              const isNew = await this.store.saveEvent(event, {
+                seenOn: this.storeRelaysSeenOn
+                  ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+                  : undefined,
+                followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+              })
 
               if (isNew && deletion) {
                 this.performDeletions(event)
@@ -337,16 +333,12 @@ export class OutboxManager {
       onevent: async event => {
         const deletion = event.kind === EventDeletion
 
-        const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
-          this.store,
-          event,
-          {
-            seenOn: this.storeRelaysSeenOn
-              ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-              : undefined,
-            followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
-          },
-        )
+        const isNew = await this.store.saveEvent(event, {
+          seenOn: this.storeRelaysSeenOn
+            ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+            : undefined,
+          followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+        })
 
         if (isNew && deletion) {
           this.performDeletions(event)
@@ -453,16 +445,12 @@ export class OutboxManager {
           events.map(async event => {
             const deletion = event.kind === EventDeletion
 
-            const isNew = await (isRegularKind(event.kind) ? this.store.saveEvent : this.store.replaceEvent).call(
-              this.store,
-              event,
-              {
-                seenOn: this.storeRelaysSeenOn
-                  ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-                  : undefined,
-                followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
-              },
-            )
+            const isNew = await this.store.saveEvent(event, {
+              seenOn: this.storeRelaysSeenOn
+                ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+                : undefined,
+              followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
+            })
 
             if (isNew && deletion) {
               this.performDeletions(event)
@@ -493,118 +481,49 @@ export class OutboxManager {
    * retrieves bounds from the syncing store.
    */
   async getBounds(): Promise<{ [pubkey: string]: [number, number] }> {
-    if (!this.store._db) await this.store.init()
-
-    return new Promise((resolve, reject) => {
-      const transaction = this.store._db!.transaction(['syncing'], 'readonly')
-      const store = transaction.objectStore('syncing')
-      const keys = store.getAllKeys()
-      const values = store.getAll()
-
-      const result: [string, [number, number]][] = []
-      let doneFirst = [false, 0]
-
-      keys.onsuccess = () => {
-        let i = 0
-        if (doneFirst[0]) {
-          for (const item of keys.result) {
-            result[i][0] = item as string
-            i++
-          }
-          if (doneFirst[1] === i) {
-            resolve(Object.fromEntries(result))
-          } else {
-            reject(new Error('failed to read bounds'))
-          }
-        } else {
-          for (const item of keys.result) {
-            result[i] = [item as string, [0, 0]]
-            i++
-          }
-          doneFirst = [true, i]
-        }
-      }
-
-      values.onsuccess = () => {
-        let i = 0
-        if (doneFirst[0]) {
-          for (const item of values.result) {
-            result[i][1] = item
-            i++
-          }
-          if (doneFirst[1] === i) {
-            resolve(Object.fromEntries(result))
-          } else {
-            reject(new Error('failed to read bounds'))
-          }
-        } else {
-          for (const item of values.result) {
-            result[i] = ['', item]
-            i++
-          }
-          doneFirst = [true, i]
-        }
-      }
-
-      keys.onerror = () => {
-        reject(new Error(`failed to get bounds: ${keys.error?.message}`))
-      }
-
-      values.onerror = () => {
-        reject(new Error(`failed to get bounds: ${values.error?.message}`))
-      }
-    })
+    if (!this.store.initialized) await this.store.init()
+    return this.store.getOutboxBounds()
   }
 
   /**
    * saves a single bound to the syncing store.
    */
   async setBound(pubkey: string, bound: [number, number]): Promise<void> {
-    if (!this.store._db) await this.store.init()
-
+    if (!this.store.initialized) await this.store.init()
     console.debug(
       'new bound for',
       pubkey,
       bound.map(d => new Date(d * 1000).toLocaleString()),
     )
-    return new Promise((resolve, reject) => {
-      const transaction = this.store._db!.transaction(['syncing'], 'readwrite')
-      const store = transaction.objectStore('syncing')
-      const putRequest = store.put(bound, pubkey)
-      putRequest.onsuccess = () => resolve()
-      putRequest.onerror = () => reject(new Error(`failed to set bound: ${putRequest.error?.message}`))
-    })
+    return this.store.setOutboxBound(pubkey, bound)
   }
 
   private async performDeletions(event: NostrEvent) {
     // event is assumed to be a kind:5
-    const ids: string[] = []
+    const filters: Filter[] = []
     for (let t = 0; t < event.tags.length; t++) {
       const tag = event.tags[t]
       switch (tag[0]) {
-        case 'e':
-          ids.push(tag[1])
+        case 'e': {
+          const filter = { ids: [tag[1]] }
+          filters.push(filter)
           break
-        case 'a':
+        }
+        case 'a': {
           const spl = tag[1].split(':')
           if (spl.length < 3) continue
-          for await (const target of this.store.queryEvents(
-            {
-              kinds: [parseInt(spl[0])],
-              authors: [spl[1]],
-              '#d': [spl.slice(2).join(':')],
-            },
-            100,
-          )) {
-            if (target.created_at < event.created_at) {
-              ids.push(target.id)
-            }
+          const filter = {
+            kinds: [parseInt(spl[0])],
+            authors: [spl[1]],
+            '#d': [spl.slice(2).join(':')],
           }
+          filters.push(filter)
           break
+        }
       }
     }
 
-    await this.store.deleteEvents(ids)
+    const ids = await this.store.deleteEventsFilters(filters)
     this.ondeletions?.(ids)
   }
 }

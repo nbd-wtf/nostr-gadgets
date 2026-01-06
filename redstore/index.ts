@@ -226,6 +226,23 @@ export class RedEventStore {
   }
 
   /**
+   * only for use by the outbox module.
+   */
+  async getOutboxBounds(): Promise<{ [pubkey: string]: [number, number] }> {
+    if (!this.initialized) await this.init()
+    const response = await this.call('getOutboxBounds', {})
+    return JSON.parse(utf8Decoder.decode(response))
+  }
+
+  /**
+   * only for use by the outbox module.
+   */
+  async setOutboxBound(pubkey: string, bound: [start: number, end: number]): Promise<void> {
+    if (!this.initialized) await this.init()
+    await this.call('setOutboxBound', { pubkey, bound })
+  }
+
+  /**
    * deletes a database file from OPFS.
    *
    * @param dbName - name of the database to delete
@@ -264,4 +281,16 @@ type SaveTask = {
   p: Promise<boolean>
   resolve(saved: boolean): void
   reject(e: Error): void
+}
+
+// special properties we sneak into the event objects
+const isLocalSymbol = Symbol('this event is stored locally')
+const seenOnSymbol = Symbol('relays where this event was seen before stored')
+
+export function isLocal(event: NostrEvent): boolean {
+  return (event as any)[isLocalSymbol] || false
+}
+
+export function seenOn(event: NostrEvent): string[] {
+  return (event as any)[seenOnSymbol] || []
 }
