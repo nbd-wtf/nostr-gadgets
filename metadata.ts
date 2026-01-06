@@ -6,9 +6,8 @@
 import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
-import { createStore, getMany, setMany, set, del } from 'idb-keyval'
 
-import { pool } from './global'
+import { pool, eventStore } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
 
@@ -71,7 +70,7 @@ export function bareNostrUser(input: string): NostrUser {
   }
 }
 
-const metadataStore = createStore('@nostr/gadgets/metadata', 'cache')
+const lastAttemptCache = new Map<string, number>()
 
 export type NostrUserRequest = {
   pubkey: string
@@ -89,7 +88,8 @@ export async function loadNostrUser(request: NostrUserRequest | string): Promise
   } else {
     if (request.refreshStyle === null) {
       // refreshStyle === null: reset cache and return empty
-      await del(request.pubkey, metadataStore)
+      await eventStore.deleteEventsFilters([{ kinds: [0], authors: [request.pubkey] }])
+      lastAttemptCache.delete(request.pubkey)
       metadataLoader._cacheMap.delete(request.pubkey)
       return bareNostrUser(request.pubkey)
     } else if (request.refreshStyle) {
@@ -112,47 +112,56 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
       const toFetch: NostrUserRequest[] = []
       let now = Math.round(Date.now() / 1000)
 
-      // try to get from idb first -- also set up the results array with defaults
-      let results: Array<NostrUser | Error> = await getMany<NostrUser & { lastAttempt: number }>(
-        requests.map(r => r.pubkey),
-        metadataStore,
-      ).then(results =>
-        results.map((res, i): NostrUser => {
-          const req = requests[i]
+      // try to get from redstore first -- also set up the results array with defaults
+      await eventStore.init()
+      const cachedEvents = await eventStore.queryEventsMultiple(
+        requests.map(r => ({ kinds: [0], authors: [r.pubkey], limit: 1 })),
+      )
 
-          if (typeof req.refreshStyle === 'object') {
-            // we have the event right here, so just use it
-            let nu = bareNostrUser(req.pubkey)
-            enhanceNostrUserWithEvent(nu, req.refreshStyle)
-            set(req.pubkey, nu, metadataStore)
-            return nu
-          } else if (!res) {
-            if (req.refreshStyle !== false) toFetch.push(req)
-            // we don't have anything for this key, fill in with a placeholder
-            let nu = bareNostrUser(req.pubkey)
-            ;(nu as any).lastAttempt = now
-            return nu
-          } else if (req.refreshStyle === true || res.lastAttempt < now - 60 * 60 * 24 * 2) {
-            if (req.refreshStyle !== false) toFetch.push(req)
-            // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-            res.lastAttempt = now
-            return res
-          } else if (
-            res.lastAttempt < now - 60 * 60 &&
-            !res.metadata.name &&
-            !res.metadata.picture &&
-            !res.metadata.about
+      let results: Array<NostrUser | Error> = cachedEvents.map((events, i): NostrUser => {
+        const req = requests[i]
+        const cachedEvent = events[0]
+        const lastAttempt = lastAttemptCache.get(req.pubkey) || 0
+
+        if (typeof req.refreshStyle === 'object') {
+          // we have the event right here, so just use it
+          let nu = bareNostrUser(req.pubkey)
+          enhanceNostrUserWithEvent(nu, req.refreshStyle)
+          eventStore.saveEvent(req.refreshStyle)
+          lastAttemptCache.set(req.pubkey, now)
+          return nu
+        } else if (!cachedEvent) {
+          if (req.refreshStyle !== false) toFetch.push(req)
+          // we don't have anything for this key, fill in with a placeholder
+          let nu = bareNostrUser(req.pubkey)
+          lastAttemptCache.set(req.pubkey, now)
+          return nu
+        } else if (req.refreshStyle === true || lastAttempt < now - 60 * 60 * 24 * 2) {
+          if (req.refreshStyle !== false) toFetch.push(req)
+          // we have something but it's old (2 days), so we will use it but still try to fetch a new version
+          let nu = bareNostrUser(req.pubkey)
+          enhanceNostrUserWithEvent(nu, cachedEvent)
+          lastAttemptCache.set(req.pubkey, now)
+          return nu
+        } else {
+          const nu = bareNostrUser(req.pubkey)
+          enhanceNostrUserWithEvent(nu, cachedEvent)
+          if (
+            lastAttempt < now - 60 * 60 &&
+            !nu.metadata.name &&
+            !nu.metadata.picture &&
+            !nu.metadata.about
           ) {
             if (req.refreshStyle !== false) toFetch.push(req)
             // we have something but and it's not so old (1 hour), but it's empty, so we will try again
-            res.lastAttempt = Math.round(Date.now() / 1000)
-            return res
+            lastAttemptCache.set(req.pubkey, now)
+            return nu
           } else {
             // this one is so good we won't try to fetch it again
-            return res
+            return nu
           }
-        }),
-      )
+        }
+      })
 
       // no need to do any requests if we don't have anything to fetch
       if (toFetch.length === 0) {
@@ -205,6 +214,8 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
           filter: { kinds: [0], authors: pubkeys },
         }))
 
+        const eventsToSave: NostrEvent[] = []
+
         let h = pool.subscribeMap(requestMap, {
           label: `metadata(${requests.length})`,
           onevent(evt) {
@@ -214,6 +225,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
                 if (nu.lastUpdated > evt.created_at) return
 
                 enhanceNostrUserWithEvent(nu, evt)
+                eventsToSave.push(evt)
 
                 return
               }
@@ -224,16 +236,10 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
 
             h.close()
 
-            // save our updated results to idb
-            let idbSave: [IDBValidKey, any][] = []
-            for (let i = 0; i < results.length; i++) {
-              let res = results[i] as NostrUser
-              if (res.pubkey) {
-                idbSave.push([res.pubkey, res])
-              }
+            // save fetched events to redstore
+            for (const evt of eventsToSave) {
+              eventStore.saveEvent(evt)
             }
-
-            setMany(idbSave, metadataStore)
           },
         })
       } catch (err) {

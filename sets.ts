@@ -7,9 +7,8 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
-import { createStore, getMany, setMany } from 'idb-keyval'
 
-import { pool } from './global'
+import { pool, eventStore } from './global'
 import { isHex32 } from './utils'
 import { Emoji, itemsFromTags, loadRelayList } from './lists'
 
@@ -75,7 +74,7 @@ export const loadEmojiSets: SetFetcher<Emoji> = makeSetFetcher<Emoji>(
  * differentiated by their "d" tag values.
  */
 export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => I[]): SetFetcher<I> {
-  const store = createStore(`@nostr/gadgets/set:${kind}`, 'cache')
+  const lastAttemptCache = new Map<string, number>()
 
   type Request = { target: string; relays: string[]; forceUpdate?: boolean }
 
@@ -85,32 +84,43 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         let remainingRequests: (Request & { index: number })[] = []
         let now = Math.round(Date.now() / 1000)
 
-        // try to get from idb first -- also set up the results array with defaults
-        let results = await getMany<{
-          result: SetResult<I>
-          lastAttempt: number
-        }>(
-          requests.map(r => r.target),
-          store,
-        ).then(results =>
-          results.map((res, i) => {
-            const req = requests[i] as Request & { index: number }
-            req.index = i
-
-            if (!res) {
-              remainingRequests.push(req)
-              // we don't have anything for this key, fill in with empty object
-              return { lastAttempt: now, result: {} }
-            } else if (req.forceUpdate || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
-              remainingRequests.push(req)
-              // we have something but it's old (2 days), so we will use it but still try to fetch new versions
-              return res
-            } else {
-              // this one is so good we won't try to fetch it again
-              return res
-            }
-          }),
+        // try to get from redstore first -- also set up the results array with defaults
+        await eventStore.init()
+        const cachedEventsArrays = await eventStore.queryEventsMultiple(
+          requests.map(r => ({ kinds: [kind], authors: [r.target], limit: 100 })),
         )
+
+        let results = cachedEventsArrays.map((events, i) => {
+          const req = requests[i] as Request & { index: number }
+          req.index = i
+          const lastAttempt = lastAttemptCache.get(req.target) || 0
+
+          // build SetResult from cached events
+          const result: SetResult<I> = {}
+          for (const evt of events) {
+            const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
+            const existing = result[dTag]
+            if (!existing || existing.event.created_at < evt.created_at) {
+              result[dTag] = {
+                event: evt,
+                items: process(evt),
+              }
+            }
+          }
+
+          if (events.length === 0) {
+            remainingRequests.push(req)
+            // we don't have anything for this key, fill in with empty object
+            return { lastAttempt: now, result: {} }
+          } else if (req.forceUpdate || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
+            remainingRequests.push(req)
+            // we have something but it's old (2 days), so we will use it but still try to fetch new versions
+            return { lastAttempt, result }
+          } else {
+            // this one is so good we won't try to fetch it again
+            return { lastAttempt, result }
+          }
+        })
 
         if (remainingRequests.length === 0) {
           resolve(results.map(r => r.result))
@@ -134,6 +144,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
 
         try {
           let handle: SubCloser | undefined
+          const eventsToSave: NostrEvent[] = []
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
             {
@@ -152,6 +163,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
                         event: evt,
                         items: process(evt),
                       }
+                      eventsToSave.push(evt)
                     }
                     return
                   }
@@ -163,11 +175,13 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
               async onclose() {
                 resolve(results.map(r => r.result))
 
-                // save our updated results to idb
-                setMany(
-                  remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
-                  store,
-                )
+                // save fetched events to redstore and update lastAttempt
+                for (const evt of eventsToSave) {
+                  eventStore.saveEvent(evt)
+                }
+                for (const req of remainingRequests) {
+                  lastAttemptCache.set(req.target, now)
+                }
               },
             },
           )

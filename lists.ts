@@ -7,9 +7,8 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
-import { createStore, del, getMany, set, setMany } from 'idb-keyval'
 
-import { pool } from './global'
+import { pool, eventStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
@@ -244,7 +243,7 @@ export function makeListFetcher<I>(
   hardcodedRelays: string[],
   process: (event: NostrEvent | undefined) => I[],
 ): ListFetcher<I> {
-  const store = createStore(`@nostr/gadgets/list:${kind}`, 'cache')
+  const lastAttemptCache = new Map<string, number>()
 
   type Request = { target: string; relays: string[]; refreshStyle?: boolean | NostrEvent; defaultItems?: I[] }
 
@@ -254,38 +253,37 @@ export function makeListFetcher<I>(
         let remainingRequests: (Request & { index: number })[] = []
         let now = Math.round(Date.now() / 1000)
 
-        // try to get from idb first -- also set up the results array with defaults
-        let results: ListResult<I>[] = await getMany<ListResult<I> & { lastAttempt: number }>(
-          requests.map(r => r.target),
-          store,
-        ).then(results =>
-          results.map<ListResult<I>>((res, i) => {
-            const req = requests[i] as Request & { index: number }
-            req.index = i
-
-            if (typeof req.refreshStyle === 'object') {
-              // we have the event right here, so just use it
-              const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
-              set(req.target, final, store)
-              return final
-            } else if (!res) {
-              if (req.refreshStyle !== false) remainingRequests.push(req)
-              // we don't have anything for this key, fill in with a placeholder
-              return { items: req.defaultItems || [], event: null, [isFresh]: false }
-            } else if (req.refreshStyle === true || !res.lastAttempt || res.lastAttempt < now - 60 * 60 * 24 * 2) {
-              if (req.refreshStyle !== false) remainingRequests.push(req)
-              // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-              return { ...res, [isFresh]: false }
-            } else if (res.event === null && res.lastAttempt < Date.now() / 1000 - 60 * 60) {
-              if (req.refreshStyle !== false) remainingRequests.push(req)
-              // we have something and it's not so old (1 hour), but it's empty, so we will try again
-              return { ...res, [isFresh]: false }
-            } else {
-              // this one is so good we won't try to fetch it again
-              return { ...res, [isFresh]: false }
-            }
-          }),
+        // try to get from redstore first -- also set up the results array with defaults
+        await eventStore.init()
+        const cachedEvents = await eventStore.queryEventsMultiple(
+          requests.map(r => ({ kinds: [kind], authors: [r.target], limit: 1 })),
         )
+
+        let results: ListResult<I>[] = cachedEvents.map<ListResult<I>>((events, i) => {
+          const req = requests[i] as Request & { index: number }
+          req.index = i
+          const cachedEvent = events[0] || null
+          const lastAttempt = lastAttemptCache.get(req.target) || 0
+
+          if (typeof req.refreshStyle === 'object') {
+            // we have the event right here, so just use it
+            const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
+            eventStore.saveEvent(req.refreshStyle)
+            lastAttemptCache.set(req.target, now)
+            return final
+          } else if (!cachedEvent) {
+            if (req.refreshStyle !== false) remainingRequests.push(req)
+            // we don't have anything for this key, fill in with a placeholder
+            return { items: req.defaultItems || [], event: null, [isFresh]: false }
+          } else if (req.refreshStyle === true || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
+            if (req.refreshStyle !== false) remainingRequests.push(req)
+            // we have something but it's old (2 days), so we will use it but still try to fetch a new version
+            return { event: cachedEvent, items: process(cachedEvent), [isFresh]: false }
+          } else {
+            // this one is so good we won't try to fetch it again
+            return { event: cachedEvent, items: process(cachedEvent), [isFresh]: false }
+          }
+        })
 
         if (remainingRequests.length === 0) {
           resolve(results)
@@ -312,6 +310,7 @@ export function makeListFetcher<I>(
 
         try {
           let handle: SubCloser | undefined
+          const eventsToSave: NostrEvent[] = []
           // eslint-disable-next-line prefer-const
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
@@ -324,6 +323,7 @@ export function makeListFetcher<I>(
                     const previous = results[req.index]?.event
                     if ((previous?.created_at || 0) > evt.created_at) return
                     results[req.index] = { event: evt, items: process(evt), [isFresh]: true }
+                    eventsToSave.push(evt)
                     return
                   }
                 }
@@ -334,11 +334,13 @@ export function makeListFetcher<I>(
               async onclose() {
                 resolve(results)
 
-                // save our updated results to idb
-                setMany(
-                  remainingRequests.map(req => [req.target, { ...results[req.index], lastAttempt: now }]),
-                  store,
-                )
+                // save fetched events to redstore and update lastAttempt
+                for (const evt of eventsToSave) {
+                  eventStore.saveEvent(evt)
+                }
+                for (const req of remainingRequests) {
+                  lastAttemptCache.set(req.target, now)
+                }
               },
             },
           )
@@ -363,7 +365,9 @@ export function makeListFetcher<I>(
   ): Promise<ListResult<I>> {
     if (refreshStyle === null) {
       // refreshStyle === null: reset cache and return empty
-      await del(pubkey, store)
+      await eventStore.init()
+      await eventStore.deleteEventsFilters([{ kinds: [kind], authors: [pubkey] }])
+      lastAttemptCache.delete(pubkey)
       dataloader._cacheMap.delete(pubkey)
       return { items: defaultItems || [], event: null, [isFresh]: true }
     }
