@@ -769,8 +769,14 @@ impl Redstore {
         Ok(())
     }
 
-    // takes [filter, ...] and returns [deleted_count, ...]
+    // takes [filter, ...] and returns [deleted_id, ...]
     pub fn delete_events(&self, filters_arr: js_sys::Array) -> Result<JsValue> {
+        #[cfg(debug_assertions)]
+        web_sys::console::log_2(
+            &js_sys::JsString::from_str("delete_events").unwrap(),
+            &filters_arr,
+        );
+
         let db = self
             .db
             .lock()
@@ -782,12 +788,10 @@ impl Redstore {
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
 
-        let result = js_sys::Array::new_with_length(filters_arr.length());
+        let result = js_sys::Array::new();
 
         // query for the events to delete
         for f in 0..filters_arr.length() {
-            let mut count = 0u32;
-
             for QueryResultEvent {
                 json,
                 serial,
@@ -803,9 +807,14 @@ impl Redstore {
                 // delete the event and its indexes
                 let deleted = self.delete_internal(&mut write_txn, &indexable_event, *serial)?;
 
-                if deleted {
-                    // count this
-                    count += 1;
+                #[cfg(debug_assertions)]
+                web_sys::console::log_1(&js_sys::JsString::from(format!("deleted {:?}", &deleted)));
+
+                if let Some(id) = deleted {
+                    result.push(
+                        &js_sys::JsString::from_str(id.as_str())
+                            .expect("js string from deleted id"),
+                    );
 
                     // scan the entire INDEX_FOLLOWED for the serial (the last 4 bytes) and delete those entries
                     {
@@ -855,8 +864,6 @@ impl Redstore {
                     }
                 }
             }
-
-            result.set(f, js_sys::Number::from(count).into());
         }
 
         write_txn
@@ -871,17 +878,17 @@ impl Redstore {
         write_txn: &mut WriteTransaction,
         indexable_event: &IndexableEvent,
         serial: u32,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         // delete from EVENTS table
-        let was_deleted = {
+        let deleted = {
             let mut events_table = write_txn
                 .open_table(EVENTS)
                 .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
 
-            !events_table
+            events_table
                 .remove(serial)
                 .map_err(|e| JsValue::from_str(&format!("remove event error: {:?}", e)))?
-                .is_none()
+                .map(|item| String::from_utf8_lossy(&item.value()[83..147]).to_string())
         };
 
         // delete from index tables
@@ -949,7 +956,7 @@ impl Redstore {
             }
         }
 
-        Ok(was_deleted)
+        Ok(deleted)
     }
 
     pub fn mark_follow(&self, follower: JsValue, followed: JsValue) -> Result<()> {

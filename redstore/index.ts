@@ -157,15 +157,15 @@ export class RedEventStore {
    * removes the events and all associated indexes.
    *
    * @param ids - hex-encoded event IDs to delete
-   * @returns the number of events actually deleted, ignoring those that we couldn't find
+   * @returns the ids of the deleted events, ignoring those that we couldn't find
    * @throws {DatabaseError} if deletion fails
    */
-  async deleteEvents(ids: string[]): Promise<number> {
+  async deleteEvents(ids: string[]): Promise<string[]> {
     if (!this.initialized) await this.init()
-    return this.call('deleteEvents', [{ ids }]).then(([count]) => count)
+    return this.call('deleteEvents', [{ ids }])
   }
 
-  async deleteEventsFilters(filters: Filter[]): Promise<number> {
+  async deleteEventsFilters(filters: Filter[]): Promise<string[]> {
     if (!this.initialized) await this.init()
     return this.call('deleteEvents', filters)
   }
@@ -179,7 +179,7 @@ export class RedEventStore {
    * @param maxLimit - maximum number of events to return (default: 500)
    * @returns events matching the filter criteria
    */
-  async queryEvents(filter: Filter & { followedBy?: string }, maxLimit: number = 250): Promise<NostrEvent[]> {
+  async queryEvents(filter: Filter & { followedBy?: string }, maxLimit: number = 2500): Promise<NostrEvent[]> {
     if (!this.initialized) await this.init()
     filter.limit = filter.limit ? Math.min(filter.limit, maxLimit) : maxLimit
     const [events] = (await this.call('queryEvents', [filter])) as Uint8Array[][]

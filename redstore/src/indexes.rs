@@ -1,7 +1,7 @@
 use redb::TableDefinition;
 use sha2::{Digest, Sha256};
 
-use crate::utils::{parse_hex_into, IndexableEvent};
+use crate::utils::{IndexableEvent, parse_hex_into};
 
 pub const EVENTS: TableDefinition<u32, &[u8]> = TableDefinition::new("events");
 pub const INDEX_ID: TableDefinition<&[u8], u32> = TableDefinition::new("index_id");
