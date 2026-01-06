@@ -1,5 +1,6 @@
 import { SimplePool } from '@nostr/tools/pool'
 import { MemoryHints } from './hints'
+import { RedEventStore } from './redstore/index'
 
 /**
  * pool is a global used by all other functions in this library. Feel free to use it directly in your app.
@@ -17,3 +18,8 @@ export function setPool(p: SimplePool) {
  * hints is a global used by other functions in this library. Use it directly.
  */
 export const hints: MemoryHints = new MemoryHints()
+
+/**
+ * eventStore is a global RedEventStore used for caching Nostr events.
+ */
+export const eventStore: RedEventStore = new RedEventStore('@nostr/gadgets/events')
