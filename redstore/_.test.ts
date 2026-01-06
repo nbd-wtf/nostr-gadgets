@@ -558,7 +558,7 @@ describe('redstore', () => {
     await store.close()
   })
 
-  test('deletion with followedBy index', async () => {
+  test('deletion', async () => {
     const store = new RedEventStore(TEST_DB)
     await store.init()
 
@@ -596,8 +596,11 @@ describe('redstore', () => {
 
     // delete the first 3 events
     const idsToDelete = events.slice(0, 3).map(e => e.id)
-    const deletedCount = await store.deleteEvents(idsToDelete)
-    expect(deletedCount).toEqual(3)
+    const [first] = await store.deleteEvents([idsToDelete[0]])
+    const [second, third] = await store.deleteEventsFilters([{ ids: [idsToDelete[1]] }, { ids: [idsToDelete[2]] }])
+    expect(idsToDelete).toContain(first)
+    expect(idsToDelete).toContain(second)
+    expect(idsToDelete).toContain(third)
 
     // verify only 2 events remain and are still queryable by followedBy
     {
