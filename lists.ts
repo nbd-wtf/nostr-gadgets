@@ -243,8 +243,6 @@ export function makeListFetcher<I>(
   hardcodedRelays: string[],
   process: (event: NostrEvent | undefined) => I[],
 ): ListFetcher<I> {
-  const lastAttemptCache = new Map<string, number>()
-
   type Request = { target: string; relays: string[]; refreshStyle?: boolean | NostrEvent; defaultItems?: I[] }
 
   const dataloader = new DataLoader<Request, ListResult<I>, string>(
@@ -255,21 +253,16 @@ export function makeListFetcher<I>(
 
         // try to get from redstore first -- also set up the results array with defaults
         await eventStore.init()
-        const cachedEvents = await eventStore.queryEventsMultiple(
-          requests.map(r => ({ kinds: [kind], authors: [r.target], limit: 1 })),
-        )
+        const cached = await eventStore.loadReplaceables(requests.map(r => [kind, r.target] as [number, string]))
 
-        let results: ListResult<I>[] = cachedEvents.map<ListResult<I>>((events, i) => {
+        let results: ListResult<I>[] = cached.map<ListResult<I>>(([lastAttempt, cachedEvent], i) => {
           const req = requests[i] as Request & { index: number }
           req.index = i
-          const cachedEvent = events[0] || null
-          const lastAttempt = lastAttemptCache.get(req.target) || 0
 
           if (typeof req.refreshStyle === 'object') {
             // we have the event right here, so just use it
             const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
-            eventStore.saveEvent(req.refreshStyle)
-            lastAttemptCache.set(req.target, now)
+            eventStore.saveEvent(req.refreshStyle, { lastAttempt: now })
             return final
           } else if (!cachedEvent) {
             if (req.refreshStyle !== false) remainingRequests.push(req)
@@ -310,7 +303,7 @@ export function makeListFetcher<I>(
 
         try {
           let handle: SubCloser | undefined
-          const eventsToSave: NostrEvent[] = []
+          const eventsReceived = new Set<string>()
           // eslint-disable-next-line prefer-const
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
@@ -323,7 +316,8 @@ export function makeListFetcher<I>(
                     const previous = results[req.index]?.event
                     if ((previous?.created_at || 0) > evt.created_at) return
                     results[req.index] = { event: evt, items: process(evt), [isFresh]: true }
-                    eventsToSave.push(evt)
+                    eventsReceived.add(evt.pubkey)
+                    eventStore.saveEvent(evt, { lastAttempt: now })
                     return
                   }
                 }
@@ -334,12 +328,22 @@ export function makeListFetcher<I>(
               async onclose() {
                 resolve(results)
 
-                // save fetched events to redstore and update lastAttempt
-                for (const evt of eventsToSave) {
-                  eventStore.saveEvent(evt)
-                }
+                // save blank events for pubkeys that didn't receive any events (they won't be really saved)
                 for (const req of remainingRequests) {
-                  lastAttemptCache.set(req.target, now)
+                  if (!eventsReceived.has(req.target)) {
+                    eventStore.saveEvent(
+                      {
+                        id: '0'.repeat(64),
+                        pubkey: req.target,
+                        kind: kind,
+                        sig: '',
+                        tags: [],
+                        created_at: 0,
+                        content: '',
+                      },
+                      { lastAttempt: now },
+                    )
+                  }
                 }
               },
             },
@@ -367,7 +371,6 @@ export function makeListFetcher<I>(
       // refreshStyle === null: reset cache and return empty
       await eventStore.init()
       await eventStore.deleteEventsFilters([{ kinds: [kind], authors: [pubkey] }])
-      lastAttemptCache.delete(pubkey)
       dataloader._cacheMap.delete(pubkey)
       return { items: defaultItems || [], event: null, [isFresh]: true }
     }

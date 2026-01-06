@@ -74,8 +74,6 @@ export const loadEmojiSets: SetFetcher<Emoji> = makeSetFetcher<Emoji>(
  * differentiated by their "d" tag values.
  */
 export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => I[]): SetFetcher<I> {
-  const lastAttemptCache = new Map<string, number>()
-
   type Request = { target: string; relays: string[]; forceUpdate?: boolean }
 
   const dataloader = new DataLoader<Request, SetResult<I>, string>(
@@ -86,18 +84,26 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
 
         // try to get from redstore first -- also set up the results array with defaults
         await eventStore.init()
-        const cachedEventsArrays = await eventStore.queryEventsMultiple(
-          requests.map(r => ({ kinds: [kind], authors: [r.target], limit: 100 })),
+
+        // get lastAttempt markers (using empty d-tag as marker)
+        const markers = await eventStore.loadReplaceables(
+          requests.map(r => [kind, r.target, ''] as [number, string, string]),
+        )
+
+        // get all cached events
+        const cachedEventsArrays = await Promise.all(
+          requests.map(r => eventStore.queryEvents({ kinds: [kind], authors: [r.target], limit: 100 })),
         )
 
         let results = cachedEventsArrays.map((events, i) => {
           const req = requests[i] as Request & { index: number }
           req.index = i
-          const lastAttempt = lastAttemptCache.get(req.target) || 0
+          const lastAttempt = markers[i][0] || 0
 
-          // build SetResult from cached events
+          // build SetResult from cached events (excluding marker events with created_at: 0)
           const result: SetResult<I> = {}
           for (const evt of events) {
+            if (evt.created_at === 0) continue // skip marker events
             const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
             const existing = result[dTag]
             if (!existing || existing.event.created_at < evt.created_at) {
@@ -108,7 +114,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
             }
           }
 
-          if (events.length === 0) {
+          if (Object.keys(result).length === 0) {
             remainingRequests.push(req)
             // we don't have anything for this key, fill in with empty object
             return { lastAttempt: now, result: {} }
@@ -175,12 +181,25 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
               async onclose() {
                 resolve(results.map(r => r.result))
 
-                // save fetched events to redstore and update lastAttempt
+                // save fetched events to redstore
                 for (const evt of eventsToSave) {
                   eventStore.saveEvent(evt)
                 }
+
+                // save marker events with lastAttempt for each request
                 for (const req of remainingRequests) {
-                  lastAttemptCache.set(req.target, now)
+                  eventStore.saveEvent(
+                    {
+                      id: '0'.repeat(64),
+                      pubkey: req.target,
+                      kind: kind,
+                      sig: '',
+                      tags: [['d', '']],
+                      created_at: 0,
+                      content: '',
+                    },
+                    { lastAttempt: now },
+                  )
                 }
               },
             },

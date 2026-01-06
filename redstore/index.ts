@@ -21,7 +21,7 @@ export class RedEventStore {
    * creates a new event store instance.
    * @param dbName - name of the indexedDB database (default: '@nostr/gadgets/events')
    */
-  constructor(dbName: string = 'gadgets-redstore') {
+  constructor(dbName: string = '@gadgets-redstore') {
     this.dbName = dbName
     this.worker = new Worker(new URL('./redstore-worker.js', import.meta.url), {
       type: 'module',
@@ -188,7 +188,7 @@ export class RedEventStore {
 
   async loadReplaceables(
     specs: [kind: number, pubkey: string, dtag?: string][],
-  ): Promise<[last_attempt: number, event: NostrEvent][]> {
+  ): Promise<[last_attempt: number | undefined, event: NostrEvent | undefined][]> {
     if (!this.initialized) await this.init()
 
     const binQuery = new Uint8Array(18 * specs.length)
@@ -202,13 +202,17 @@ export class RedEventStore {
       }
     }
 
-    return ((await this.call('loadReplaceables', binQuery)) as [number, Uint8Array][]).map(b => {
-      const event = JSON.parse(utf8Decoder.decode(b[1]))
-      event[isLocalSymbol] = true
-      event[seenOnSymbol] = event.seen_on
-      delete event.seen_on
-      return [b[0], event]
-    })
+    return ((await this.call('loadReplaceables', binQuery)) as [number | undefined, Uint8Array | undefined][]).map(
+      b => {
+        if (!b[1]) return b
+
+        const event = JSON.parse(utf8Decoder.decode(b[1]))
+        event[isLocalSymbol] = true
+        event[seenOnSymbol] = event.seen_on
+        delete event.seen_on
+        return [b[0], event]
+      },
+    )
   }
 
   /**
