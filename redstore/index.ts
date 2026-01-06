@@ -28,20 +28,20 @@ export class RedEventStore {
     })
 
     this.worker!.addEventListener('message', (ev: MessageEvent) => {
-      const { resolve, reject } = this.requests[ev.data.id]
-      if (ev.data.success) resolve(ev.data.result)
-      else reject('worker: ' + ev.data.error)
-      delete this.requests[ev.data.id]
+      const [id, success, result] = ev.data
+      const { resolve, reject } = this.requests[id]
+      if (success) resolve(result)
+      else reject('worker: ' + result)
+      delete this.requests[id]
     })
   }
 
   async call(method: string, data: any): Promise<any> {
-    data.id = this.serial++
-    data.method = method
+    const id = this.serial++
 
     return new Promise((resolve, reject) => {
-      this.requests[data.id] = { resolve, reject }
-      this.worker!.postMessage(data)
+      this.requests[id] = { resolve, reject }
+      this.worker!.postMessage([id, method, data])
     })
   }
 

@@ -373,13 +373,18 @@ impl Redstore {
         };
 
         #[cfg(debug_assertions)]
-        web_sys::console::log_2(
-            &js_sys::JsString::from_str("save_events").unwrap(),
-            &raw_events_arr,
+        web_sys::console::log_1(
+            &js_sys::JsString::from_str(&format!(
+                "save_events {:?}",
+                (0..raw_events_arr.length()).map(|i| {
+                    String::from_utf8(js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec())
+                        .unwrap()
+                })
+            ))
+            .unwrap(),
         );
 
         let result = js_sys::Array::new_with_length(raw_events_arr.length());
-
         let mut current_serial = last_serial + 1;
 
         for i in 0..raw_events_arr.length() {
@@ -390,13 +395,6 @@ impl Redstore {
 
             let raw_event = &js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec();
             let indexable_event = IndexableEvent::from_json_event(&raw_event)?;
-
-            #[cfg(debug_assertions)]
-            web_sys::console::log_1(&js_sys::JsString::from(format!(
-                "raw: {}, indexable: {:?}",
-                String::from_utf8_lossy(&raw_event),
-                &indexable_event
-            )));
 
             if last_attempt > 0 {
                 // store last attempt if it came
