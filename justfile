@@ -5,4 +5,7 @@ publish:
     jsr publish
 
 test:
-    bun test --timeout=30000
+    ./node_modules/.bin/vitest --exclude redstore
+
+test-only testName:
+    ./node_modules/.bin/vitest -t {{testName}} --exclude redstore
