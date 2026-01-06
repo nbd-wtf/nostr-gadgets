@@ -959,18 +959,26 @@ impl Redstore {
         Ok(deleted)
     }
 
-    pub fn mark_follow(&self, follower: JsValue, followed: JsValue) -> Result<()> {
+    pub fn mark_follow(
+        &self,
+        follower: js_sys::JsString,
+        followed: js_sys::JsString,
+    ) -> Result<()> {
         self.modify_follow_internal(follower, followed, ModifyFollow::Add)
     }
 
-    pub fn mark_unfollow(&self, follower: JsValue, followed: JsValue) -> Result<()> {
+    pub fn mark_unfollow(
+        &self,
+        follower: js_sys::JsString,
+        followed: js_sys::JsString,
+    ) -> Result<()> {
         self.modify_follow_internal(follower, followed, ModifyFollow::Remove)
     }
 
     fn modify_follow_internal(
         &self,
-        follower: JsValue,
-        followed: JsValue,
+        follower: js_sys::JsString,
+        followed: js_sys::JsString,
         action: ModifyFollow,
     ) -> Result<()> {
         let db = self
@@ -1052,7 +1060,7 @@ impl Redstore {
         Ok(())
     }
 
-    pub fn clean_followed(&self, follower: JsValue, except: js_sys::Array) -> Result<()> {
+    pub fn clean_followed(&self, follower: js_sys::JsString, except: js_sys::Array) -> Result<()> {
         let db = self
             .db
             .lock()
@@ -1167,6 +1175,82 @@ impl Redstore {
         write_txn
             .commit()
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
+
+        Ok(())
+    }
+
+    // returns a JSON like `{"<pubkey>": [<start>, <end>]} as an Uint8Array`
+    pub fn get_outbox_bounds(&self) -> Result<js_sys::Uint8Array> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let read_txn = db
+            .begin_read()
+            .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
+
+        let bounds_table = read_txn
+            .open_table(OUTBOX_BOUNDS)
+            .map_err(|e| JsValue::from_str(&format!("open bounds table error: {:?}", e)))?;
+
+        let mut map = serde_json::Map::new();
+        for item in bounds_table
+            .iter()
+            .map_err(|e| JsValue::from_str(&format!("bounds iteration error: {:?}", e)))?
+        {
+            let (pubkey, bound) =
+                item.map_err(|e| JsValue::from_str(&format!("bound access error: {:?}", e)))?;
+            let (start, end) = bound.value();
+            map.insert(
+                pubkey.value(),
+                serde_json::Value::Array(vec![
+                    serde_json::Value::Number(start.into()),
+                    serde_json::Value::Number(end.into()),
+                ]),
+            );
+        }
+
+        let json = serde_json::to_vec(&serde_json::Value::Object(map))
+            .expect("serialization of serde_json::Value should never fail");
+
+        Ok(js_sys::Uint8Array::from(json.as_slice()))
+    }
+
+    pub fn set_outbox_bound(
+        &self,
+        pubkey: js_sys::JsString,
+        bound_start: js_sys::Number,
+        bound_end: js_sys::Number,
+    ) -> Result<()> {
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let write_txn = db
+            .begin_write()
+            .map_err(|e| JsValue::from_str(&format!("write transaction error: {:?}", e)))?;
+
+        let mut bounds_table = write_txn
+            .open_table(OUTBOX_BOUNDS)
+            .map_err(|e| JsValue::from_str(&format!("open bounds table error: {:?}", e)))?;
+
+        bounds_table
+            .insert(
+                pubkey
+                    .as_string()
+                    .expect("set_outbox_bound pubkey param must be string"),
+                (
+                    bound_start
+                        .as_f64()
+                        .expect("set_outbox_bound bound_start param must be a numeric timestamp")
+                        as u32,
+                    bound_end
+                        .as_f64()
+                        .expect("set_outbox_bound bound_end param must be a numeric timestamp")
+                        as u32,
+                ),
+            )
+            .map_err(|e| JsValue::from_str(&format!("bounds set error: {:?}", e)))?;
 
         Ok(())
     }

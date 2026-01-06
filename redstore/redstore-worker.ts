@@ -107,6 +107,12 @@ function command(method: string, data: any): any {
     case 'cleanFollowed':
       result = db!.clean_followed(data.followedBy, data.except)
       break
+    case 'getOutboxBounds':
+      result = db!.get_outbox_bounds()
+      break
+    case 'setOutboxBound':
+      result = db!.set_outbox_bound(data.pubkey, data.bound[0], data.bound[1])
+      break
     default:
       throw new Error(`unknown method: ${method}`)
   }
