@@ -137,35 +137,46 @@ pub struct IndexableEvent {
     pub timestamp: u32,
 }
 
-impl From<&js_sys::Array> for IndexableEvent {
-    fn from(indexables_arr: &js_sys::Array) -> Self {
-        // the indexables_arr has the shape [id, pubkey, kind, timestamp, tags]
+impl IndexableEvent {
+    pub fn from_json_event(event_bytes: &[u8]) -> Result<Self> {
+        let kind = extract_kind(event_bytes);
 
-        let kind = indexables_arr.get(2).as_f64().unwrap() as u16;
-        let indexable_tags = js_sys::Array::from(&indexables_arr.get(4));
-        let mut tags = Vec::with_capacity(indexable_tags.length() as usize);
+        let extracted_tags = extract_tags(event_bytes)?;
+        let mut tags = Vec::with_capacity(extracted_tags.len());
         let mut dtag = None;
+        for mut tag in extracted_tags {
+            if tag.len() < 2 {
+                continue;
+            }
+            if tag[0].len() != 1 {
+                continue;
+            }
 
-        for t in 0..indexable_tags.length() {
-            let indexable_tag = js_sys::Array::from(&indexable_tags.get(t));
-            let letter = indexable_tag.get(0).as_f64().unwrap() as u8;
-            let value = indexable_tag.get(1).as_string().unwrap();
+            let letter = tag[0]
+                .chars()
+                .next()
+                .expect("very weird tag")
+                .as_ascii()
+                .unwrap() as u8;
+
+            let value = tag.swap_remove(1);
             if letter == 100 {
                 if kind >= 30000 && kind < 40000 {
                     dtag = Some(value.clone())
                 }
             }
+
             tags.push((letter, value));
         }
 
-        Self {
-            id: indexables_arr.get(0).as_string().unwrap(),
-            pubkey: indexables_arr.get(1).as_string().unwrap(),
+        Ok(Self {
+            id: extract_id(event_bytes),
+            pubkey: extract_pubkey(event_bytes),
             kind,
-            timestamp: indexables_arr.get(3).as_f64().unwrap() as u32,
-            dtag,
             tags,
-        }
+            dtag,
+            timestamp: extract_created_at(event_bytes)?,
+        })
     }
 }
 
@@ -211,5 +222,86 @@ impl<'de> Deserialize<'de> for IndexableEvent {
             tags,
             dtag,
         })
+    }
+}
+
+// weird functions that depend on the JSON being always formed in the same way:
+
+#[inline]
+pub fn extract_pubkey(event_json: &[u8]) -> String {
+    // saved events always have the pubkey at this pos
+    let author_hex = &event_json[11..75];
+    String::from_utf8_lossy(author_hex).to_string()
+}
+
+#[inline]
+pub fn extract_pubkey_bytes<'a>(event_json: &'a [u8]) -> &'a [u8] {
+    &event_json[11..75]
+}
+
+#[inline]
+pub fn extract_id(event_json: &[u8]) -> String {
+    String::from_utf8_lossy(&event_json[83..147]).to_string()
+}
+
+#[inline]
+pub fn extract_kind(event_json: &[u8]) -> u16 {
+    let mut kind = (event_json[156] - 48) as u16; // the first char is always a number
+    for c in &event_json[157..161] {
+        // then the next 4 may or may not be
+        if (*c >= 48/* '0' */) && (*c <= 57/* '9' */) {
+            kind = kind * 10 + ((*c - 48) as u16)
+        } else {
+            break;
+        }
+    }
+    kind
+}
+
+#[inline]
+pub fn extract_tags(event_json: &[u8]) -> Result<Vec<Vec<String>>> {
+    if let Some(tags_start) = event_json[305..]
+        .iter()
+        .position(|c| *c == 34 /* '"' */)
+        .map(|pos| pos + 305 + 9)
+    {
+        if let Some(tags_end) = event_json[tags_start..]
+            .iter()
+            .enumerate()
+            .position(|(i, c)| {
+                // search for '],"'
+                *c == 34 // '"'
+                && event_json[tags_start + i - 1] == 44 // ','
+                && event_json[tags_start + i - 2] == 93 // ']'
+            })
+            .map(|pos| pos + tags_start - 1)
+        {
+            return serde_json::from_slice::<Vec<Vec<String>>>(&event_json[tags_start..tags_end])
+                .map_err(|e| JsValue::from_str(&format!("invalid tags json extracted: {:?}", e,)));
+        }
+    }
+
+    Err(JsValue::from("failed to extract tags"))
+}
+
+#[inline]
+pub fn extract_created_at(event_json: &[u8]) -> Result<u32> {
+    if let Some(start) = event_json[169..]
+        .iter()
+        .position(|c| *c == 58 /* ':' */)
+        .map(|pos| pos + 169 + 1)
+    {
+        let mut ts = (event_json[start] - 48) as u32; // the first char is always a number
+        for c in &event_json[start + 1..start + 11] {
+            // then the next may or may not be
+            if (*c >= 48/* '0' */) && (*c <= 57/* '9' */) {
+                ts = ts * 10 + ((*c - 48) as u32)
+            } else {
+                break;
+            }
+        }
+        Ok(ts)
+    } else {
+        Err(JsValue::from("failed to extract created_at"))
     }
 }

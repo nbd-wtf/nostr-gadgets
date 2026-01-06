@@ -21,7 +21,7 @@ self.addEventListener('message', async event => {
           return
         }
 
-        const result = command(event.data.request.method, event.data.request.data)
+        const result = command(event.data.request.method, event.data.request)
         bc.postMessage({ type: 'response', response: { id, success: true, result } })
 
         break
@@ -90,13 +90,16 @@ function command(method: string, data: any): any {
 
   switch (method) {
     case 'saveEvents':
-      result = db!.save_events(data.indexableEvents, data.followedBys, data.rawEvents)
+      result = db!.save_events(data.lastAttempts, data.followedBys, data.rawEvents)
       break
     case 'deleteEvents':
       result = db!.delete_events(data)
       break
     case 'queryEvents':
       result = db!.query_events(data)
+      break
+    case 'loadReplaceables':
+      result = db!.load_replaceables(data)
       break
     case 'markFollow':
       result = db!.mark_follow(data.follower, data.followed)

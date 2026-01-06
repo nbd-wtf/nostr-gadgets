@@ -1,6 +1,7 @@
+import { sha256 } from '@noble/hashes/sha256'
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
-import { utf8Decoder, utf8Encoder } from '@nostr/tools/utils'
+import { hexToBytes, utf8Decoder, utf8Encoder } from '@nostr/tools/utils'
 
 export class DatabaseError extends Error {
   constructor(message: string) {
@@ -65,37 +66,27 @@ export class RedEventStore {
 
   private saveBatch:
     | null
-    | [
-        ids: string[],
-        indexableEvents: [id: string, pubkey: string, kind: number, timestamp: number, tags: [number, string][]][],
-        followedBys: string[][],
-        rawEvents: Uint8Array[],
-        tasks: SaveTask[],
-      ]
+    | [ids: string[], lastAttempts: number[], followedBys: string[][], rawEvents: Uint8Array[], tasks: SaveTask[]]
   /**
    * saves (or replaces) a nostr event to the store with automatic batching for performance.
    * (if you want the batching to work you can't `await` it immediately upon calling it)
    *
    * @param event - the nostr event to save
    * @param seenOn - optional array of relay URLs where this event was seen
+   * @param lastAttempt - optional timestamp, used by the replaceable fetchers
    * @param followedBy - optional array of pubkeys that are following this event
    * @returns boolean - true if the event was new, false if it was already saved
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
   async saveEvent(
     event: NostrEvent,
-    { seenOn, followedBy }: { seenOn?: string[]; followedBy?: string[] } = {},
+    { seenOn, lastAttempt, followedBy }: { seenOn?: string[]; lastAttempt?: number; followedBy?: string[] } = {},
   ): Promise<boolean> {
     if (!this.initialized) await this.init()
 
     // sanity checking
     if (event.created_at > 0xffffffff || event.kind > 0xffff) {
       throw new DatabaseError('event with values out of expected boundaries')
-    }
-
-    // store relays on "seen_on" (so it's saved on database when calling JSON.stringify)
-    if (seenOn) {
-      ;(event as unknown as { seen_on: string[] }).seen_on = seenOn
     }
 
     // start batching logic
@@ -106,16 +97,20 @@ export class RedEventStore {
       this.saveBatch = batch
 
       // once we know we have a fresh batch, we schedule this batch to run
-      const indexableEvents = batch[1]
-      const followedBys = batch[2]
-      const rawEvents = batch[3]
-      const tasks = batch[4]
       queueMicrotask(() => {
+        const batch = this.saveBatch
+        if (!batch) return
+
+        const lastAttempts = batch[1]
+        const followedBys = batch[2]
+        const rawEvents = batch[3]
+        const tasks = batch[4]
+
         // as soon as we start processing this batch, we need to null it
         // to ensure that any new requests will be added to a new batch
         this.saveBatch = null
 
-        this.call('saveEvents', { indexableEvents, followedBys, rawEvents }).then(results => {
+        this.call('saveEvents', { lastAttempts, followedBys, rawEvents }).then(results => {
           for (let i = 0; i < tasks.length; i++) {
             tasks[i].resolve((results as boolean[])[i])
           }
@@ -130,18 +125,18 @@ export class RedEventStore {
     if (idx !== -1) return batch[4][idx].p
 
     // add a new one
+    let extra = ''
+    if (seenOn) {
+      // store relays on "seen_on" only in the JSON
+      extra += `,"seen_on":${JSON.stringify(seenOn)}`
+    }
+
     idx = batch[0].push(event.id) - 1
     let task = (batch[4][idx] = {} as SaveTask)
-    batch[1][idx] = [
-      event.id,
-      event.pubkey,
-      event.kind,
-      event.created_at,
-      event.tags.filter(([t]) => t.length === 1).map(([t, v]) => [t.charCodeAt(0), v]),
-    ]
+    batch[1][idx] = lastAttempt || 0
     batch[2][idx] = followedBy || []
     batch[3][idx] = utf8Encoder.encode(
-      `{"pubkey":"${event.pubkey}","id":"${event.id}","kind":${event.kind},"created_at":${event.created_at},"sig":"${event.sig}","tags":${JSON.stringify(event.tags)},"content":${JSON.stringify(event.content)}}`,
+      `{"pubkey":"${event.pubkey}","id":"${event.id}","kind":${event.kind},"created_at":${event.created_at},"sig":"${event.sig}","tags":${JSON.stringify(event.tags)},"content":${JSON.stringify(event.content)}${extra}}`,
     )
 
     task.p = new Promise<boolean>(function (resolve, reject) {
@@ -182,14 +177,38 @@ export class RedEventStore {
   async queryEvents(filter: Filter & { followedBy?: string }, maxLimit: number = 2500): Promise<NostrEvent[]> {
     if (!this.initialized) await this.init()
     filter.limit = filter.limit ? Math.min(filter.limit, maxLimit) : maxLimit
-    const [events] = (await this.call('queryEvents', [filter])) as Uint8Array[][]
-    return events.map(b => JSON.parse(utf8Decoder.decode(b)))
+    return ((await this.call('queryEvents', filter)) as Uint8Array[]).map(b => {
+      const event = JSON.parse(utf8Decoder.decode(b))
+      event[isLocalSymbol] = true
+      event[seenOnSymbol] = event.seen_on
+      delete event.seen_on
+      return event
+    })
   }
 
-  async queryEventsMultiple(filters: Filter[]): Promise<NostrEvent[][]> {
+  async loadReplaceables(
+    specs: [kind: number, pubkey: string, dtag?: string][],
+  ): Promise<[last_attempt: number, event: NostrEvent][]> {
     if (!this.initialized) await this.init()
-    const results = (await this.call('queryEvents', filters)) as Uint8Array[][]
-    return results.map(events => events.map(b => JSON.parse(utf8Decoder.decode(b))))
+
+    const binQuery = new Uint8Array(18 * specs.length)
+    for (let i = 0; i < specs.length; i++) {
+      binQuery[0] = specs[i][0] & 0xff
+      binQuery[1] = (specs[i][0] >> 8) & 0xff
+      binQuery.set(hexToBytes(specs[i][1].slice(48, 64)), i * 18 + 2)
+      if (specs[i][2]) {
+        const hash = sha256(specs[i][2]!)
+        binQuery.set(hash, i * 18 + 2 + 8)
+      }
+    }
+
+    return ((await this.call('loadReplaceables', binQuery)) as [number, Uint8Array][]).map(b => {
+      const event = JSON.parse(utf8Decoder.decode(b[1]))
+      event[isLocalSymbol] = true
+      event[seenOnSymbol] = event.seen_on
+      delete event.seen_on
+      return [b[0], event]
+    })
   }
 
   /**
