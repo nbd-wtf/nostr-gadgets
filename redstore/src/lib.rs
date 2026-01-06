@@ -6,12 +6,15 @@ use std::sync::{Arc, Mutex};
 
 use redb::{Database, ReadTransaction, ReadableTable, StorageBackend, WriteTransaction};
 use serde_json;
+use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
 use crate::indexes::*;
-use crate::query::prepare_queries;
-use crate::utils::{IndexableEvent, Querier, Result, parse_hex_into};
+use crate::query::{Plan, Query, execute, prepare};
+use crate::utils::{
+    IndexableEvent, MAX_U32_BYTES, Querier, Result, extract_id, extract_pubkey, parse_hex_into,
+};
 
 mod indexes;
 mod query;
@@ -143,6 +146,12 @@ impl Redstore {
             .open_table(INDEX_FOLLOWED)
             .map_err(|e| JsValue::from_str(&format!("initial open index_followed: {:?}", e)))?;
         write_txn
+            .open_table(OUTBOX_BOUNDS)
+            .map_err(|e| JsValue::from_str(&format!("initial open outbox_bounds: {:?}", e)))?;
+        write_txn
+            .open_table(LAST_ATTEMPT)
+            .map_err(|e| JsValue::from_str(&format!("initial open last_attempts: {:?}", e)))?;
+        write_txn
             .commit()
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
@@ -151,10 +160,10 @@ impl Redstore {
         })
     }
 
-    // takes an array of filters (js array of js objects) and returns an array of arrays of events.
-    pub fn query_events(&self, filters_arr: js_sys::Array) -> Result<JsValue> {
+    // takes a filter and returns an array of events.
+    pub fn query_events(&self, filter: js_sys::Object) -> Result<js_sys::Array> {
         #[cfg(debug_assertions)]
-        web_sys::console::log_2(&js_sys::JsString::from("query_events"), &filters_arr);
+        web_sys::console::log_2(&js_sys::JsString::from("query_events"), &filter);
 
         let db = self
             .db
@@ -164,26 +173,91 @@ impl Redstore {
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
-        let results = js_sys::Array::new_with_length(filters_arr.length());
-        for f in 0..filters_arr.length() {
-            let events = self.query_internal(
-                &read_txn,
-                (&js_sys::Object::from(filters_arr.get(f))).into(),
-            )?;
-            let array = js_sys::Array::new_with_length(events.len() as u32);
-            for (
-                i,
-                QueryResultEvent {
-                    json,
-                    timestamp: _,
-                    serial: _,
-                },
-            ) in events.iter().enumerate()
+        let spec: Querier = (&filter).into();
+        let events = self.query_internal(&read_txn, spec)?;
+        let array = js_sys::Array::new_with_length(events.len() as u32);
+        for (
+            i,
+            QueryResultEvent {
+                json,
+                timestamp: _,
+                serial: _,
+            },
+        ) in events.iter().enumerate()
+        {
+            array.set(i as u32, js_sys::Uint8Array::from(json.as_slice()).into());
+        }
+
+        Ok(array)
+    }
+
+    // takes a single Uint8Array in the form [kind_u16][pubkey-8bytes][d-tag-hash-8-bytes-or-zeroes][...repeat],
+    // returns an array of [last_attempt_timestamp, event_json_as_uint8array]
+    pub fn load_replaceables(&self, specs: &[u8]) -> Result<JsValue> {
+        #[cfg(debug_assertions)]
+        web_sys::console::log_1(&js_sys::JsString::from(format!(
+            "load_replaceables {:?}",
+            specs
+        )));
+
+        let db = self
+            .db
+            .lock()
+            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
+        let read_txn = db
+            .begin_read()
+            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
+        let results = js_sys::Array::new_with_length(specs.len() as u32 / 18);
+        for i in (0..specs.len()).step_by(18) {
+            let result = js_sys::Array::new_with_length(2);
+            let key: [u8; 18] = specs[i..i + 18].try_into().expect("18 is not 18");
+
+            let last_attempt_table = read_txn.open_table(LAST_ATTEMPT).map_err(|e| {
+                JsValue::from_str(&format!("open last_attempts table error: {:?}", e))
+            })?;
+
+            if let Some(ts) = last_attempt_table
+                .get(key)
+                .map_err(|e| JsValue::from_str(&format!("get from last_attempts error: {:?}", e)))?
             {
-                array.set(i as u32, js_sys::Uint8Array::from(json.as_slice()).into());
+                result.set(0, ts.value().into());
             }
 
-            results.set(f, array.into());
+            let kind: u16 = u16::from_be_bytes(key[0..2].try_into().unwrap());
+            let author = &key[2..10];
+            let dtaghash = &key[10..18];
+
+            let mut query_key = vec![0u8; 24];
+            query_key[0..8].copy_from_slice(author);
+            query_key[8..16].copy_from_slice(dtaghash);
+            query_key[16..20].copy_from_slice(&MAX_U32_BYTES);
+            query_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+
+            let mut plan = Plan {
+                since: 0,
+                extra_kinds: vec![kind],
+                extra_authors: None,
+                extra_tags: None,
+                queries: vec![Query {
+                    table_name: "index_pubkey_dtag",
+                    results: Vec::with_capacity(1),
+                    exhausted: false,
+                    curr_key: query_key,
+                }],
+            };
+
+            let events = execute(&read_txn, &mut plan, 1, 1)?;
+            if let Some(QueryResultEvent {
+                json,
+                timestamp: _,
+                serial: _,
+            }) = events.first()
+            {
+                result.set(1, js_sys::Uint8Array::from(json.as_slice()).into());
+            }
+
+            results.set(i as u32, result.into());
         }
 
         Ok(results.into())
@@ -194,12 +268,12 @@ impl Redstore {
         txn: &ReadTransaction,
         mut spec: Querier,
     ) -> Result<Vec<QueryResultEvent>> {
-        let events_table = txn
-            .open_table(EVENTS)
-            .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
-
         // special id query, just get the ids in whatever order and return
         if let Some(ids) = spec.ids {
+            let events_table = txn
+                .open_table(EVENTS)
+                .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
+
             let mut results: Vec<QueryResultEvent> = Vec::with_capacity(ids.len());
 
             for id in ids {
@@ -257,247 +331,18 @@ impl Redstore {
             }
         }
 
-        let mut plan = prepare_queries(&mut spec)?;
-
-        // execute queries and merge results
-        let mut remaining_unexhausted = plan.queries.len();
-
-        for query in &mut plan.queries {
-            let has_more = query.pull_results(&txn, std::cmp::min(20, spec.limit), plan.since)?;
-            if !has_more {
-                remaining_unexhausted -= 1;
-            }
-        }
-
-        // will merge results from all queries
-        let mut merged_results: Vec<QueryResultEvent> = Vec::new();
-        let mut emitted_count = 0;
-        let mut batch = Vec::with_capacity(std::cmp::min(20, spec.limit) * plan.queries.len());
-
-        while emitted_count < spec.limit {
-            let last_run = remaining_unexhausted == 0;
-
-            #[cfg(debug_assertions)]
-            web_sys::console::log_7(
-                &js_sys::JsString::from("loop"),
-                &js_sys::JsString::from("last run?"),
-                &js_sys::Boolean::from(last_run),
-                &js_sys::JsString::from("remaining?"),
-                &js_sys::Number::from(remaining_unexhausted as u32),
-                &js_sys::JsString::from("batch?"),
-                &js_sys::Number::from(batch.len() as u32),
-            );
-
-            // collect all events with this timestamp from all queries
-            // and find the query with the highest timestamp
-            let mut top_query_idx = None;
-            let mut top_query_timestamp = 0;
-            for (idx, query) in plan.queries.iter_mut().enumerate() {
-                if let Some((timestamp, _)) = query.results.iter().last() {
-                    if *timestamp > top_query_timestamp {
-                        top_query_timestamp = *timestamp;
-                        top_query_idx = Some(idx);
-                    }
-                }
-                batch.append(&mut query.results);
-            }
-
-            // sort by timestamp (newest last so we can pop)
-            batch.sort_by(|(a, _), (b, _)| a.cmp(&b));
-
-            while !batch.is_empty() {
-                if emitted_count >= spec.limit {
-                    break;
-                }
-
-                if let Some((ts, serial)) = batch.pop() {
-                    if ts < top_query_timestamp {
-                        // return it to the end of the batch and exit here for now
-                        batch.push((ts, serial));
-                        break;
-                    }
-
-                    // go on the EVENTS table and fetch the event JSON using the serial
-                    if let Some(event_j) = events_table
-                        .get(serial)
-                        .map_err(|e| JsValue::from_str(&format!("get event error: {:?}", e)))?
-                    {
-                        let event_json = event_j.value();
-
-                        // extra filters
-                        if let Some(authors_bf) = &plan.extra_authors {
-                            let author_hex = &event_json[11..75]; // saved events always have the pubkey at this pos
-                            if !authors_bf.contains(author_hex) {
-                                #[cfg(debug_assertions)]
-                                web_sys::console::log_1(&js_sys::JsString::from(format!(
-                                    "prevented on extra_authors ({}): {}",
-                                    String::from_utf8_lossy(author_hex),
-                                    String::from_utf8_lossy(&event_json),
-                                )));
-                                continue;
-                            }
-                        }
-                        if !plan.extra_kinds.is_empty() {
-                            let mut kind = (event_json[156] - 48) as u16; // the first char is always a number
-                            for c in &event_json[157..161] {
-                                // then the next 4 may or may not be
-                                if (*c >= 48/* '0' */) && (*c <= 57/* '9' */) {
-                                    kind = kind * 10 + ((*c - 48) as u16)
-                                } else {
-                                    break;
-                                }
-                            }
-                            if !plan.extra_kinds.contains(&kind) {
-                                #[cfg(debug_assertions)]
-                                web_sys::console::log_1(&js_sys::JsString::from(format!(
-                                    "prevented on extra_kind ({} & {:?}): {}",
-                                    &kind,
-                                    &plan.extra_kinds,
-                                    String::from_utf8_lossy(&event_json),
-                                )));
-                                continue;
-                            }
-                        }
-                        if let Some((bf_letters, tags_bf)) = &plan.extra_tags {
-                            if let Some(tags_start) = event_json[310..]
-                                .iter()
-                                .position(|c| *c == 34 /* '"' */)
-                                .map(|pos| pos + 310 + 9)
-                            {
-                                if let Some(tags_end) = event_json[tags_start..]
-                                    .iter()
-                                    .enumerate()
-                                    .position(|(i, c)| {
-                                        // search for '],"'
-                                        *c == 34 // '"'
-                                            && event_json[tags_start + i - 1] == 44 // ','
-                                            && event_json[tags_start + i - 2] == 93 // ']'
-                                    })
-                                    .map(|pos| pos + tags_start - 1)
-                                {
-                                    if let Ok(tags) = serde_json::from_slice::<Vec<Vec<String>>>(
-                                        &event_json[tags_start..tags_end],
-                                    ) {
-                                        // must contain all tags that are being filtered;
-                                        // and for all the tags at least one must be present in the bloom filter
-                                        if !bf_letters.iter().all(|letter| {
-                                            tags.iter().any(|tag| {
-                                                tag.len() >= 2
-                                                    && tag[0].len() == 1
-                                                    && tag[0].chars().next().unwrap_or('-') as u8
-                                                        == *letter
-                                                    && tags_bf.contains(&format!(
-                                                        "{}=>{}",
-                                                        &tag[0], &tag[1]
-                                                    ))
-                                            })
-                                        }) {
-                                            #[cfg(debug_assertions)]
-                                            web_sys::console::log_1(&js_sys::JsString::from(
-                                                format!(
-                                                    "prevented on extra_tags ({:?}): {}",
-                                                    tags,
-                                                    String::from_utf8_lossy(&event_json),
-                                                ),
-                                            ));
-
-                                            for tag in tags {
-                                                if tag[0] == "e" {
-                                                    #[cfg(debug_assertions)]
-                                                    web_sys::console::log_1(
-                                                        &js_sys::JsString::from(format!(
-                                                            "bf: {} << {}",
-                                                            &format!("{}=>{}", &tag[0], &tag[1]),
-                                                            tags_bf.contains(&format!(
-                                                                "{}=>{}",
-                                                                &tag[0], &tag[1]
-                                                            ))
-                                                        )),
-                                                    );
-                                                }
-                                            }
-
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        #[cfg(debug_assertions)]
-                        web_sys::console::log_1(&js_sys::JsString::from(format!(
-                            "emitted {} skipping extras {} {:?} {}",
-                            String::from_utf8_lossy(&event_json),
-                            plan.extra_authors.is_some(),
-                            plan.extra_kinds,
-                            plan.extra_tags.is_some(),
-                        )));
-
-                        merged_results.push(QueryResultEvent {
-                            json: event_json.to_owned(),
-                            timestamp: Some(ts),
-                            serial,
-                        });
-
-                        emitted_count += 1;
-                        if emitted_count == spec.limit {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if emitted_count >= spec.limit {
-                break;
-            }
-
-            // pull more data from the best query
-            #[cfg(debug_assertions)]
-            web_sys::console::log_1(&js_sys::JsString::from("pulling more"));
-            if let Some(top_idx) = top_query_idx
-                && !plan.queries[top_idx].exhausted
-            {
-                // fetch from the top query
-                let has_more = plan.queries[top_idx].pull_results(
-                    &txn,
-                    std::cmp::min(20, spec.limit),
-                    plan.since,
-                )?;
-                if !has_more {
-                    remaining_unexhausted -= 1;
-                }
-            } else {
-                // fetch from all the other queries
-                for query in &mut plan.queries {
-                    if !query.exhausted {
-                        let has_more =
-                            query.pull_results(&txn, std::cmp::min(20, spec.limit), plan.since)?;
-                        if !has_more {
-                            remaining_unexhausted -= 1;
-                        }
-                    }
-                }
-            }
-
-            if last_run {
-                break;
-            }
-        }
-
-        #[cfg(debug_assertions)]
-        web_sys::console::log_1(&js_sys::JsString::from("done"));
-
-        Ok(merged_results)
+        let mut plan = prepare(&mut spec)?;
+        execute(&txn, &mut plan, spec.limit, std::cmp::min(20, spec.limit))
     }
 
-    // takes { indexableEvents: [], followedBys: [], rawEvents: [] }, returns [bool, ...]
-    // indexableEvents are objects with only the data needed for indexing;
+    // takes { last_attempts: [], followedBys: [], rawEvents: [] }, returns [bool, ...]
+    // last_attempts timestamps used by replaceable loaders only, otherwise should be zero;
     // followedBys are arrays of pubkeys;
-    // rawEvents are JSON-encoded raw events, as Uint8Arrays.
+    // rawEvents are JSON-encoded raw events, as Uint8Arrays (they can be empty so we'll only store the last_attempt);
     // on the return: true means it was saved, false it wasn't because we already had it or something newer than it)
     pub fn save_events(
         &self,
-        indexable_events_arr: js_sys::Array,
+        last_attempts: js_sys::Array,
         followedbys_arr: js_sys::Array,
         raw_events_arr: js_sys::Array,
     ) -> Result<JsValue> {
@@ -530,17 +375,60 @@ impl Redstore {
         #[cfg(debug_assertions)]
         web_sys::console::log_2(
             &js_sys::JsString::from_str("save_events").unwrap(),
-            &indexable_events_arr,
+            &raw_events_arr,
         );
 
-        let result = js_sys::Array::new_with_length(indexable_events_arr.length());
+        let result = js_sys::Array::new_with_length(raw_events_arr.length());
 
         let mut current_serial = last_serial + 1;
 
-        for i in 0..indexable_events_arr.length() {
-            let indexable_event: IndexableEvent =
-                (&js_sys::Array::from(&indexable_events_arr.get(i))).into();
-            let raw_event = (&js_sys::Uint8Array::from(raw_events_arr.get(i))).to_vec();
+        for i in 0..raw_events_arr.length() {
+            let last_attempt = last_attempts
+                .get(i)
+                .as_f64()
+                .expect("last_attempt must be number") as u32;
+
+            let raw_event = &js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec();
+            let indexable_event = IndexableEvent::from_json_event(&raw_event)?;
+
+            #[cfg(debug_assertions)]
+            web_sys::console::log_1(&js_sys::JsString::from(format!(
+                "raw: {}, indexable: {:?}",
+                String::from_utf8_lossy(&raw_event),
+                &indexable_event
+            )));
+
+            if last_attempt > 0 {
+                // store last attempt if it came
+                let mut last_attempts_table = write_txn.open_table(LAST_ATTEMPT).map_err(|e| {
+                    JsValue::from_str(&format!("last_attempt insert table error: {:?}", e))
+                })?;
+
+                let mut key = [0u8; 18];
+                key[0..2].copy_from_slice(&indexable_event.kind.to_be_bytes());
+                parse_hex_into(&indexable_event.pubkey[48..64], &mut key[2..10]).map_err(|e| {
+                    JsValue::from_str(&format!("invalid pubkey on last_attempt store: {:?}", e))
+                })?;
+
+                if let Some(dtag) = &indexable_event.dtag {
+                    let mut hasher = Sha256::new();
+                    hasher.update(dtag);
+                    let hash = hasher.finalize();
+                    key[10..18].copy_from_slice(&hash);
+                }
+
+                last_attempts_table.insert(key, last_attempt).map_err(|e| {
+                    JsValue::from_str(&format!("failed to insert last_attempt: {:?}", e))
+                })?;
+            }
+
+            if indexable_event.id
+                == "0000000000000000000000000000000000000000000000000000000000000000"
+            {
+                // don't store the event if it didn't come
+                continue;
+            }
+
             let followed_bys = js_sys::Array::from(&followedbys_arr.get(i));
 
             // check if event has be replaced
@@ -580,10 +468,9 @@ impl Redstore {
                     json,
                     timestamp,
                     serial,
-                } in self
-                    .query_internal(&read_txn, rq)
-                    .map_err(|e| JsValue::from_str(&format!("pre-save id query error: {:?}", e)))?
-                {
+                } in self.query_internal(&read_txn, rq).map_err(|e| {
+                    JsValue::from_str(&format!("pre-replacement query error: {:?}", e))
+                })? {
                     if timestamp.expect("query result without ids should always have timestamp")
                         < indexable_event.timestamp
                     {
@@ -888,7 +775,7 @@ impl Redstore {
             events_table
                 .remove(serial)
                 .map_err(|e| JsValue::from_str(&format!("remove event error: {:?}", e)))?
-                .map(|item| String::from_utf8_lossy(&item.value()[83..147]).to_string())
+                .map(|item| extract_id(item.value()))
         };
 
         // delete from index tables
@@ -1136,11 +1023,10 @@ impl Redstore {
 
                     // extract author hex from position 11..75
                     if event_bytes.len() >= 75 {
-                        let author_hex = &event_bytes[11..75];
-                        let author_str = String::from_utf8_lossy(author_hex);
+                        let author_str = extract_pubkey(event_bytes);
 
                         // delete if author is not in except list
-                        if !excepted_authors.contains(author_str.as_ref()) {
+                        if !excepted_authors.contains(&author_str) {
                             should_delete = true;
                         }
                     }

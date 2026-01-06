@@ -3,8 +3,11 @@ use redb::ReadTransaction;
 use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 
-use crate::indexes::*;
-use crate::utils::{MAX_U32_BYTES, Querier, Result, parse_hex_into};
+use crate::utils::{
+    MAX_U32_BYTES, Querier, Result, extract_kind, extract_pubkey_bytes, extract_tags,
+    parse_hex_into,
+};
+use crate::{QueryResultEvent, indexes::*};
 
 #[derive(Debug)]
 pub struct Plan {
@@ -135,7 +138,8 @@ impl Query {
     }
 }
 
-pub fn prepare_queries(spec: &mut Querier) -> Result<Plan> {
+#[inline]
+pub fn prepare(spec: &mut Querier) -> Result<Plan> {
     let mut queries = Vec::new();
 
     if let Some(followed_by) = &spec.followed_by {
@@ -333,4 +337,187 @@ pub fn prepare_queries(spec: &mut Querier) -> Result<Plan> {
         extra_authors,
         extra_tags,
     })
+}
+
+#[inline]
+pub fn execute(
+    txn: &ReadTransaction,
+    plan: &mut Plan,
+    limit: usize,
+    batch_size: usize,
+) -> Result<Vec<QueryResultEvent>> {
+    let events_table = txn
+        .open_table(EVENTS)
+        .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
+
+    // execute queries and merge results
+    let mut remaining_unexhausted = plan.queries.len();
+
+    for query in &mut plan.queries {
+        let has_more = query.pull_results(&txn, batch_size, plan.since)?;
+        if !has_more {
+            remaining_unexhausted -= 1;
+        }
+    }
+
+    // will merge results from all queries
+    let mut merged_results: Vec<QueryResultEvent> = Vec::new();
+    let mut emitted_count = 0;
+    let mut batch = Vec::with_capacity(batch_size * plan.queries.len());
+
+    while emitted_count < limit {
+        let last_run = remaining_unexhausted == 0;
+
+        #[cfg(debug_assertions)]
+        web_sys::console::log_7(
+            &js_sys::JsString::from("loop"),
+            &js_sys::JsString::from("last run?"),
+            &js_sys::Boolean::from(last_run),
+            &js_sys::JsString::from("remaining?"),
+            &js_sys::Number::from(remaining_unexhausted as u32),
+            &js_sys::JsString::from("batch?"),
+            &js_sys::Number::from(batch.len() as u32),
+        );
+
+        // collect all events with this timestamp from all queries
+        // and find the query with the highest timestamp
+        let mut top_query_idx = None;
+        let mut top_query_timestamp = 0;
+        for (idx, query) in plan.queries.iter_mut().enumerate() {
+            if let Some((timestamp, _)) = query.results.iter().last() {
+                if *timestamp > top_query_timestamp {
+                    top_query_timestamp = *timestamp;
+                    top_query_idx = Some(idx);
+                }
+            }
+            batch.append(&mut query.results);
+        }
+
+        // sort by timestamp (newest last so we can pop)
+        batch.sort_by(|(a, _), (b, _)| a.cmp(&b));
+
+        while !batch.is_empty() {
+            if emitted_count >= limit {
+                break;
+            }
+
+            if let Some((ts, serial)) = batch.pop() {
+                if ts < top_query_timestamp {
+                    // return it to the end of the batch and exit here for now
+                    batch.push((ts, serial));
+                    break;
+                }
+
+                // go on the EVENTS table and fetch the event JSON using the serial
+                if let Some(event_j) = events_table
+                    .get(serial)
+                    .map_err(|e| JsValue::from_str(&format!("get event error: {:?}", e)))?
+                {
+                    let event_json = event_j.value();
+
+                    // extra filters
+                    if let Some(authors_bf) = &plan.extra_authors {
+                        let author_hex = extract_pubkey_bytes(event_json);
+                        if !authors_bf.contains(author_hex) {
+                            #[cfg(debug_assertions)]
+                            web_sys::console::log_1(&js_sys::JsString::from(format!(
+                                "prevented on extra_authors ({}): {}",
+                                String::from_utf8_lossy(author_hex),
+                                String::from_utf8_lossy(&event_json),
+                            )));
+                            continue;
+                        }
+                    }
+                    if !plan.extra_kinds.is_empty() {
+                        let kind = extract_kind(event_json);
+                        if !plan.extra_kinds.contains(&kind) {
+                            #[cfg(debug_assertions)]
+                            web_sys::console::log_1(&js_sys::JsString::from(format!(
+                                "prevented on extra_kind ({} & {:?}): {}",
+                                &kind,
+                                &plan.extra_kinds,
+                                String::from_utf8_lossy(&event_json),
+                            )));
+                            continue;
+                        }
+                    }
+                    if let Some((bf_letters, tags_bf)) = &plan.extra_tags {
+                        if let Ok(tags) = extract_tags(event_json) {
+                            // must contain all tags that are being filtered;
+                            // and for all the tags at least one must be present in the bloom filter
+                            if !bf_letters.iter().all(|letter| {
+                                tags.iter().any(|tag| {
+                                    tag.len() >= 2
+                                        && tag[0].len() == 1
+                                        && tag[0].chars().next().unwrap_or('-') as u8 == *letter
+                                        && tags_bf.contains(&format!("{}=>{}", &tag[0], &tag[1]))
+                                })
+                            }) {
+                                #[cfg(debug_assertions)]
+                                web_sys::console::log_1(&js_sys::JsString::from(format!(
+                                    "prevented on extra_tags ({:?}): {}",
+                                    tags,
+                                    String::from_utf8_lossy(&event_json),
+                                )));
+                                continue;
+                            }
+                        }
+                    }
+
+                    #[cfg(debug_assertions)]
+                    web_sys::console::log_1(&js_sys::JsString::from(format!(
+                        "emitted {} skipping extras {} {:?} {}",
+                        String::from_utf8_lossy(&event_json),
+                        plan.extra_authors.is_some(),
+                        plan.extra_kinds,
+                        plan.extra_tags.is_some(),
+                    )));
+
+                    merged_results.push(QueryResultEvent {
+                        json: event_json.to_owned(),
+                        timestamp: Some(ts),
+                        serial,
+                    });
+
+                    emitted_count += 1;
+                    if emitted_count == limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if emitted_count >= limit {
+            break;
+        }
+
+        // pull more data from the best query
+        #[cfg(debug_assertions)]
+        web_sys::console::log_1(&js_sys::JsString::from("pulling more"));
+        if let Some(top_idx) = top_query_idx
+            && !plan.queries[top_idx].exhausted
+        {
+            // fetch from the top query
+            let has_more = plan.queries[top_idx].pull_results(&txn, batch_size, plan.since)?;
+            if !has_more {
+                remaining_unexhausted -= 1;
+            }
+        } else {
+            // fetch from all the other queries
+            for query in &mut plan.queries {
+                if !query.exhausted {
+                    let has_more = query.pull_results(&txn, batch_size, plan.since)?;
+                    if !has_more {
+                        remaining_unexhausted -= 1;
+                    }
+                }
+            }
+        }
+
+        if last_run {
+            break;
+        }
+    }
+
+    Ok(merged_results)
 }
