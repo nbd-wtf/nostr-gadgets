@@ -6,56 +6,64 @@ const pendingRequests: Map<number, { resolve: Function; reject: Function }> = ne
 var serial = 1
 const random = Math.round(Math.random() * 1000000)
 
-self.addEventListener('message', async event => {
-  const { id, method } = event.data
+const bc = new BroadcastChannel('calls')
+function broadcast(msg: any) {
+  console.debug('&> bc', msg)
+  bc.postMessage(msg)
+}
+bc.addEventListener('message', async event => {
+  console.debug('&< bc', event.data)
+  const [type, proxyId, ...re] = event.data
 
-  console.debug('~ worker message', event.data)
-  const bc = new BroadcastChannel('calls')
-  bc.addEventListener('message', async event => {
-    console.debug('& bc message', event.data)
-    switch (event.data.type) {
-      case 'call': {
-        // handle if we're the main worker
-        if (!db) {
-          bc.postMessage({ type: 'response', response: { id, success: false, error: 'not main' } })
-          return
-        }
+  switch (type) {
+    case 'call': {
+      // handle only if we're the main worker
+      if (!db) return
 
-        const result = command(event.data.request.method, event.data.request)
-        bc.postMessage({ type: 'response', response: { id, success: true, result } })
+      const result = command(re[0], re[1])
+      broadcast(['response', proxyId, true, result])
 
-        break
-      }
-      case 'response': {
-        const pending = pendingRequests.get(event.data.response.id)
-        if (pending) {
-          if (event.data.response.success) {
-            pending.resolve(event.data.response.result)
-          } else {
-            pending.reject(new Error(event.data.response.error))
-          }
-          pendingRequests.delete(event.data.response.id)
-        }
-        break
-      }
+      break
     }
-  })
+    case 'response': {
+      const pending = pendingRequests.get(proxyId)
+      if (pending) {
+        if (re[0]) {
+          pending.resolve(re[1])
+        } else {
+          pending.reject(new Error(re[1]))
+        }
+        pendingRequests.delete(proxyId)
+      }
+      break
+    }
+  }
+})
+
+function sendToPage(msg: any) {
+  console.debug('~> page', msg)
+  self.postMessage(msg)
+}
+
+self.addEventListener('message', async event => {
+  console.debug('~< page', event.data)
+  const [id, method, data] = event.data
 
   if (method === 'init') {
     try {
       await init()
       const opfsRoot = await navigator.storage.getDirectory()
-      const fileHandle = await opfsRoot.getFileHandle(event.data.fileName, { create: true })
+      const fileHandle = await opfsRoot.getFileHandle(data.fileName, { create: true })
 
       // @ts-ignore
       syncHandle = await fileHandle.createSyncAccessHandle()
       db = new Redstore(syncHandle)
-      self.postMessage({ id, success: true, result: true })
+      sendToPage([id, true, true])
     } catch (error) {
       // someone else already has the file
       // ...
-      console.debug("~ worker: we didn't get the file")
-      self.postMessage({ id, success: true, result: false })
+      console.debug("~ we didn't get the file")
+      sendToPage([id, true, false])
     }
   } else {
     try {
@@ -63,24 +71,24 @@ self.addEventListener('message', async event => {
         // handle directly if we're the main worker
         if (method === 'close') {
           syncHandle.close()
-          self.postMessage({ id, success: true, result: true })
-          bc.postMessage({ type: 'close' })
+          sendToPage([id, true, true])
+          broadcast(['close'])
           bc.close()
         } else {
-          const result = command(method, event.data)
-          self.postMessage({ id, success: true, result })
+          const result = command(method, data)
+          sendToPage([id, true, result])
         }
       } else {
         // forward to main worker
         const result = await new Promise((resolve, reject) => {
-          const id = serial++ + random
-          pendingRequests[id] = { resolve, reject }
-          bc.postMessage({ id, type: 'call', request: event.data })
+          const proxyId = serial++ + random
+          pendingRequests.set(proxyId, { resolve, reject })
+          broadcast(['call', proxyId, method, data])
         })
-        self.postMessage({ id, success: true, result })
+        sendToPage([id, true, result])
       }
     } catch (error) {
-      self.postMessage({ id, success: false, error: String(error) })
+      sendToPage([id, false, String(error)])
     }
   }
 })
