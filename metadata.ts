@@ -111,9 +111,9 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
 
       // try to get from redstore first -- also set up the results array with defaults
       await eventStore.init()
-      const cached = await eventStore.loadReplaceables(requests.map(r => [0, r.pubkey] as [number, string]))
+      const stored = await eventStore.loadReplaceables(requests.map(r => [0, r.pubkey] as [number, string]))
 
-      let results: Array<NostrUser | Error> = cached.map(([lastAttempt, cachedEvent], i): NostrUser => {
+      let results: Array<NostrUser | Error> = stored.map(([lastAttempt, storedEvent], i): NostrUser => {
         const req = requests[i]
 
         if (typeof req.refreshStyle === 'object') {
@@ -122,7 +122,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
           enhanceNostrUserWithEvent(nu, req.refreshStyle)
           eventStore.saveEvent(req.refreshStyle, { lastAttempt: now })
           return nu
-        } else if (!cachedEvent) {
+        } else if (!storedEvent) {
           if (req.refreshStyle !== false) toFetch.push(req)
           // we don't have anything for this key, fill in with a placeholder
           let nu = bareNostrUser(req.pubkey)
@@ -131,11 +131,11 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
           if (req.refreshStyle !== false) toFetch.push(req)
           // we have something but it's old (2 days), so we will use it but still try to fetch a new version
           let nu = bareNostrUser(req.pubkey)
-          enhanceNostrUserWithEvent(nu, cachedEvent)
+          enhanceNostrUserWithEvent(nu, storedEvent)
           return nu
         } else {
           const nu = bareNostrUser(req.pubkey)
-          enhanceNostrUserWithEvent(nu, cachedEvent)
+          enhanceNostrUserWithEvent(nu, storedEvent)
           if (lastAttempt < now - 60 * 60 && !nu.metadata.name && !nu.metadata.picture && !nu.metadata.about) {
             if (req.refreshStyle !== false) toFetch.push(req)
             // we have something but and it's not so old (1 hour), but it's empty, so we will try again
@@ -229,7 +229,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
                     id: '0'.repeat(64),
                     pubkey: req.pubkey,
                     kind: 0,
-                    sig: '',
+                    sig: '0'.repeat(128),
                     tags: [],
                     created_at: 0,
                     content: '',

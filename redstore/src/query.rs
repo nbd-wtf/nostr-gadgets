@@ -492,8 +492,6 @@ pub fn execute(
         }
 
         // pull more data from the best query
-        #[cfg(debug_assertions)]
-        web_sys::console::log_1(&js_sys::JsString::from("pulling more"));
         if let Some(top_idx) = top_query_idx
             && !plan.queries[top_idx].exhausted
         {

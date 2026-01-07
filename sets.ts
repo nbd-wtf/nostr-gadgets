@@ -90,17 +90,17 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           requests.map(r => [kind, r.target, ''] as [number, string, string]),
         )
 
-        // get all cached events
-        const cachedEventsArrays = await Promise.all(
+        // get all stored events
+        const storedEventsArrays = await Promise.all(
           requests.map(r => eventStore.queryEvents({ kinds: [kind], authors: [r.target], limit: 100 })),
         )
 
-        let results = cachedEventsArrays.map((events, i) => {
+        let results = storedEventsArrays.map((events, i) => {
           const req = requests[i] as Request & { index: number }
           req.index = i
           const lastAttempt = markers[i][0] || 0
 
-          // build SetResult from cached events (excluding marker events with created_at: 0)
+          // build SetResult from stored events (excluding marker events with created_at: 0)
           const result: SetResult<I> = {}
           for (const evt of events) {
             if (evt.created_at === 0) continue // skip marker events
@@ -193,7 +193,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
                       id: '0'.repeat(64),
                       pubkey: req.target,
                       kind: kind,
-                      sig: '',
+                      sig: '0'.repeat(128),
                       tags: [['d', '']],
                       created_at: 0,
                       content: '',
