@@ -22,7 +22,7 @@ export const hints: MemoryHints = new MemoryHints()
 /**
  * eventStore is a global RedEventStore used for caching Nostr events.
  */
-export let eventStore: RedEventStore = new RedEventStore('@gadgets-replaceables')
+export let eventStore: RedEventStore = new RedEventStore('@gadgets')
 
 /**
  * setEventStore sets the global RedEventStore -- do not use unless you know what you're doing.

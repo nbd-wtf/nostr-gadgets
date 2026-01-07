@@ -391,7 +391,7 @@ impl Redstore {
             s
         };
 
-        if last_serial % 4 != 0 {
+        if last_serial % 4 == 0 {
             let _ = write_txn.set_durability(redb::Durability::None);
         }
 
@@ -694,8 +694,6 @@ impl Redstore {
         let mut write_txn = db
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
-
-        let _ = write_txn.set_durability(redb::Durability::None);
 
         let read_txn = db
             .begin_read()
@@ -1138,11 +1136,9 @@ impl Redstore {
             .db
             .lock()
             .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
-        let mut write_txn = db
+        let write_txn = db
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("write transaction error: {:?}", e)))?;
-
-        let _ = write_txn.set_durability(redb::Durability::None);
 
         let mut bounds_table = write_txn
             .open_table(OUTBOX_BOUNDS)
