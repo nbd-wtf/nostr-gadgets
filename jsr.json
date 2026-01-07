@@ -10,7 +10,16 @@
     "./wot": "./wot.ts",
     "./utils": "./utils.ts",
     "./outbox": "./outbox.ts",
+    "./defaults": "./defaults.ts",
     "./store": "./redstore/index.ts",
     "./defaults": "./defaults.ts"
+  },
+  "publish": {
+    "exclude": [
+      "!redstore/pkg/gadgets_redstore_bg.wasm",
+      "!redstore/pkg/gadgets_redstore_bg.wasm.d.ts",
+      "!redstore/pkg/gadgets_redstore.d.ts",
+      "!redstore/pkg/gadgets_redstore.js"
+    ]
   }
 }

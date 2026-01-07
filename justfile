@@ -1,7 +1,7 @@
 nothing:
     @just --list
 
-publish:
+publish: build-redstore-prod
     jsr publish
 
 build-redstore:
