@@ -5,7 +5,7 @@ import { EventDeletion } from '@nostr/tools/kinds'
 
 import { loadRelayList } from './lists.ts'
 import { RedEventStore } from './redstore/index.ts'
-import { pool } from './global.ts'
+import { eventStore, pool } from './global.ts'
 import { shuffle } from './utils.ts'
 import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
 
@@ -50,7 +50,7 @@ export class OutboxManager {
     },
   ) {
     this.baseFilters = baseFilters
-    this.store = opts?.store || new RedEventStore()
+    this.store = opts?.store || eventStore
     this.bounds = {}
     this.boundsPromise = this.getBounds()
     this.pool = opts?.pool || pool
