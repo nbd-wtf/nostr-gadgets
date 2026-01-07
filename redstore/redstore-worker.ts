@@ -62,7 +62,7 @@ self.addEventListener('message', async event => {
     } catch (error) {
       // someone else already has the file
       // ...
-      console.debug("~ we didn't get the file")
+      console.log("~ we didn't get the file:", error)
       sendToPage([id, true, false])
     }
   } else {
