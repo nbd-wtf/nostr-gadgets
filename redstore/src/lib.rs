@@ -193,7 +193,7 @@ impl Redstore {
 
     // takes a single Uint8Array in the form [kind_u16][pubkey-8bytes][d-tag-hash-8-bytes-or-zeroes][...repeat],
     // returns an array of [last_attempt_timestamp, event_json_as_uint8array]
-    pub fn load_replaceables(&self, specs: &[u8]) -> Result<JsValue> {
+    pub fn load_replaceables(&self, specs: &[u8]) -> Result<js_sys::Array> {
         #[cfg(debug_assertions)]
         web_sys::console::log_1(&js_sys::JsString::from(format!(
             "load_replaceables {:?}",
@@ -209,6 +209,7 @@ impl Redstore {
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
         let results = js_sys::Array::new_with_length(specs.len() as u32 / 18);
+        let mut r = 0;
         for i in (0..specs.len()).step_by(18) {
             let result = js_sys::Array::new_with_length(2);
             let key: [u8; 18] = specs[i..i + 18].try_into().expect("18 is not 18");
@@ -228,23 +229,45 @@ impl Redstore {
             let author = &key[2..10];
             let dtaghash = &key[10..18];
 
-            let mut query_key = vec![0u8; 24];
-            query_key[0..8].copy_from_slice(author);
-            query_key[8..16].copy_from_slice(dtaghash);
-            query_key[16..20].copy_from_slice(&MAX_U32_BYTES);
-            query_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+            let mut plan = if dtaghash == [0, 0, 0, 0, 0, 0, 0, 0] {
+                // no d-tag
+                let mut query_key = vec![0u8; 18];
+                query_key[0..8].copy_from_slice(author);
+                query_key[8..10].copy_from_slice(&key[0..2]);
+                query_key[10..14].copy_from_slice(&MAX_U32_BYTES);
+                query_key[14..18].copy_from_slice(&MAX_U32_BYTES);
 
-            let mut plan = Plan {
-                since: 0,
-                extra_kinds: vec![kind],
-                extra_authors: None,
-                extra_tags: None,
-                queries: vec![Query {
-                    table_name: "index_pubkey_dtag",
-                    results: Vec::with_capacity(1),
-                    exhausted: false,
-                    curr_key: query_key,
-                }],
+                Plan {
+                    since: 0,
+                    extra_kinds: Vec::new(),
+                    extra_authors: None,
+                    extra_tags: None,
+                    queries: vec![Query {
+                        table_name: "index_pubkey_kind",
+                        results: Vec::with_capacity(1),
+                        exhausted: false,
+                        curr_key: query_key,
+                    }],
+                }
+            } else {
+                let mut query_key = vec![0u8; 24];
+                query_key[0..8].copy_from_slice(author);
+                query_key[8..16].copy_from_slice(dtaghash);
+                query_key[16..20].copy_from_slice(&MAX_U32_BYTES);
+                query_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+
+                Plan {
+                    since: 0,
+                    extra_kinds: vec![kind],
+                    extra_authors: None,
+                    extra_tags: None,
+                    queries: vec![Query {
+                        table_name: "index_pubkey_dtag",
+                        results: Vec::with_capacity(1),
+                        exhausted: false,
+                        curr_key: query_key,
+                    }],
+                }
             };
 
             let events = execute(&read_txn, &mut plan, 1, 1)?;
@@ -257,10 +280,11 @@ impl Redstore {
                 result.set(1, js_sys::Uint8Array::from(json.as_slice()).into());
             }
 
-            results.set(i as u32, result.into());
+            results.set(r, result.into());
+            r += 1;
         }
 
-        Ok(results.into())
+        Ok(results)
     }
 
     fn query_internal(
@@ -291,13 +315,6 @@ impl Redstore {
                     .map_err(|e| JsValue::from_str(&format!("get from index_id error: {:?}", e)))?
                 {
                     let serial = s.value();
-
-                    #[cfg(debug_assertions)]
-                    web_sys::console::log_2(
-                        &js_sys::JsString::from("serial"),
-                        &js_sys::Number::from(serial as u32),
-                    );
-
                     if let Some(event_json) = events_table.get(serial).map_err(|e| {
                         JsValue::from_str(&format!("get from events error: {:?}", e))
                     })? {
@@ -376,10 +393,12 @@ impl Redstore {
         web_sys::console::log_1(
             &js_sys::JsString::from_str(&format!(
                 "save_events {:?}",
-                (0..raw_events_arr.length()).map(|i| {
-                    String::from_utf8(js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec())
-                        .unwrap()
-                })
+                (0..raw_events_arr.length())
+                    .map(|i| {
+                        String::from_utf8(js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec())
+                            .unwrap()
+                    })
+                    .collect::<Vec<String>>()
             ))
             .unwrap(),
         );
@@ -412,7 +431,7 @@ impl Redstore {
                     let mut hasher = Sha256::new();
                     hasher.update(dtag);
                     let hash = hasher.finalize();
-                    key[10..18].copy_from_slice(&hash);
+                    key[10..18].copy_from_slice(&hash[0..8]);
                 }
 
                 last_attempts_table.insert(key, last_attempt).map_err(|e| {

@@ -253,9 +253,9 @@ export function makeListFetcher<I>(
 
         // try to get from redstore first -- also set up the results array with defaults
         await eventStore.init()
-        const cached = await eventStore.loadReplaceables(requests.map(r => [kind, r.target] as [number, string]))
+        const stored = await eventStore.loadReplaceables(requests.map(r => [kind, r.target] as [number, string]))
 
-        let results: ListResult<I>[] = cached.map<ListResult<I>>(([lastAttempt, cachedEvent], i) => {
+        let results: ListResult<I>[] = stored.map<ListResult<I>>(([lastAttempt, storedEvent], i) => {
           const req = requests[i] as Request & { index: number }
           req.index = i
 
@@ -264,17 +264,17 @@ export function makeListFetcher<I>(
             const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
             eventStore.saveEvent(req.refreshStyle, { lastAttempt: now })
             return final
-          } else if (!cachedEvent) {
+          } else if (!storedEvent) {
             if (req.refreshStyle !== false) remainingRequests.push(req)
             // we don't have anything for this key, fill in with a placeholder
             return { items: req.defaultItems || [], event: null, [isFresh]: false }
           } else if (req.refreshStyle === true || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
             if (req.refreshStyle !== false) remainingRequests.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-            return { event: cachedEvent, items: process(cachedEvent), [isFresh]: false }
+            return { event: storedEvent, items: process(storedEvent), [isFresh]: false }
           } else {
             // this one is so good we won't try to fetch it again
-            return { event: cachedEvent, items: process(cachedEvent), [isFresh]: false }
+            return { event: storedEvent, items: process(storedEvent), [isFresh]: false }
           }
         })
 
@@ -336,7 +336,7 @@ export function makeListFetcher<I>(
                         id: '0'.repeat(64),
                         pubkey: req.target,
                         kind: kind,
-                        sig: '',
+                        sig: '0'.repeat(128),
                         tags: [],
                         created_at: 0,
                         content: '',

@@ -4,8 +4,17 @@ nothing:
 publish:
     jsr publish
 
-test:
-    ./node_modules/.bin/vitest --exclude redstore
+build-redstore:
+    cd redstore && ../node_modules/.bin/wasm-pack build --target web --out-dir pkg --dev
 
-test-only testName:
-    ./node_modules/.bin/vitest -t {{testName}} --exclude redstore
+build-redstore-prod:
+    cd redstore && ../node_modules/.bin/wasm-pack build --target web --out-dir pkg --release
+
+example: build-redstore
+    cd redstore/example && ../../node_modules/.bin/vite dev
+
+test: build-redstore
+    ./node_modules/.bin/vitest
+
+test-only testName: build-redstore
+    ./node_modules/.bin/vitest -t {{testName}}

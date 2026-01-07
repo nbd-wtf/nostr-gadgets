@@ -13,7 +13,7 @@ export class DatabaseError extends Error {
 export class RedEventStore {
   initialized = false
   private worker: Worker
-  private dbName: string
+  private name: string
   private requests: Record<string, any> = {}
   private serial = 1
 
@@ -22,7 +22,7 @@ export class RedEventStore {
    * @param dbName - name of the indexedDB database (default: '@nostr/gadgets/events')
    */
   constructor(dbName: string = '@gadgets-redstore') {
-    this.dbName = dbName
+    this.name = dbName
     this.worker = new Worker(new URL('./redstore-worker.js', import.meta.url), {
       type: 'module',
     })
@@ -51,7 +51,7 @@ export class RedEventStore {
    */
   async init(): Promise<true> {
     this.initialized = true
-    return this.call('init', { fileName: this.dbName })
+    return this.call('init', { fileName: this.name })
   }
 
   /**
@@ -193,8 +193,9 @@ export class RedEventStore {
 
     const binQuery = new Uint8Array(18 * specs.length)
     for (let i = 0; i < specs.length; i++) {
-      binQuery[0] = specs[i][0] & 0xff
-      binQuery[1] = (specs[i][0] >> 8) & 0xff
+      // big-endian u16
+      binQuery[0] = (specs[i][0] >> 8) & 0xff
+      binQuery[1] = specs[i][0] & 0xff
       binQuery.set(hexToBytes(specs[i][1].slice(48, 64)), i * 18 + 2)
       if (specs[i][2]) {
         const hash = sha256(specs[i][2]!)
