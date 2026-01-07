@@ -4,7 +4,9 @@ use std::io::{self};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use redb::{Database, ReadTransaction, ReadableTable, StorageBackend, WriteTransaction};
+use redb::{
+    Database, ReadTransaction, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
+};
 use serde_json;
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
@@ -46,22 +48,21 @@ impl StorageBackend for WasmBackend {
         Ok(size as u64)
     }
 
-    fn read(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
-        let mut buffer = vec![0u8; len];
+    fn read(&self, offset: u64, out: &mut [u8]) -> std::result::Result<(), io::Error> {
         let mut bytes_read = 0;
         let options = web_sys::FileSystemReadWriteOptions::new();
 
-        while bytes_read != len {
+        while bytes_read != out.len() {
             options.set_at((offset + bytes_read as u64) as f64);
 
             let read_result = self
                 .sync_handle
-                .read_with_u8_array_and_options(&mut buffer[bytes_read..], &options)
+                .read_with_u8_array_and_options(&mut out[bytes_read..], &options)
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
 
             bytes_read += read_result as usize;
         }
-        Ok(buffer)
+        Ok(())
     }
 
     fn set_len(&self, len: u64) -> io::Result<()> {
@@ -71,7 +72,7 @@ impl StorageBackend for WasmBackend {
         Ok(())
     }
 
-    fn sync_data(&self, _eventual: bool) -> io::Result<()> {
+    fn sync_data(&self) -> io::Result<()> {
         self.sync_handle
             .flush()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
@@ -370,6 +371,7 @@ impl Redstore {
         let mut write_txn = db
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
         let read_txn = db
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
@@ -388,6 +390,10 @@ impl Redstore {
 
             s
         };
+
+        if last_serial % 4 != 0 {
+            let _ = write_txn.set_durability(redb::Durability::None);
+        }
 
         #[cfg(debug_assertions)]
         web_sys::console::log_1(
@@ -688,6 +694,9 @@ impl Redstore {
         let mut write_txn = db
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
+
+        let _ = write_txn.set_durability(redb::Durability::None);
+
         let read_txn = db
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
@@ -1129,9 +1138,11 @@ impl Redstore {
             .db
             .lock()
             .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
-        let write_txn = db
+        let mut write_txn = db
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("write transaction error: {:?}", e)))?;
+
+        let _ = write_txn.set_durability(redb::Durability::None);
 
         let mut bounds_table = write_txn
             .open_table(OUTBOX_BOUNDS)
