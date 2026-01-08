@@ -466,7 +466,8 @@ pub fn execute(
 
                     #[cfg(debug_assertions)]
                     web_sys::console::log_1(&js_sys::JsString::from(format!(
-                        "emitted {} skipping extras {} {:?} {}",
+                        "emitted {}/{} skipping extras {} {:?} {}",
+                        serial,
                         String::from_utf8_lossy(&event_json),
                         plan.extra_authors.is_some(),
                         plan.extra_kinds,
