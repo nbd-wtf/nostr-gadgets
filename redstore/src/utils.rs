@@ -202,14 +202,13 @@ impl<'de> Deserialize<'de> for IndexableEvent {
             if tag.len() >= 2 {
                 let name = &tag[0];
                 if name.len() == 1 {
-                    if name.as_str() == "d" {
-                        let value = tag.swap_remove(1);
-                        dtag = Some(value);
-                    } else {
-                        let letter = name.bytes().next().unwrap();
-                        let value = tag.swap_remove(1);
-                        tags.push((letter, value));
+                    let letter = name.bytes().next().unwrap();
+                    let value = tag.swap_remove(1);
+                    if letter == 100 {
+                        // 'd' tag
+                        dtag = Some(value.clone());
                     }
+                    tags.push((letter, value));
                 }
             }
         }

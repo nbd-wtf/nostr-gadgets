@@ -462,6 +462,7 @@ impl Redstore {
                 // replaceable
                 Some(Querier {
                     authors: Some(vec![indexable_event.pubkey.clone()]),
+                    kinds: Some(vec![indexable_event.kind]),
                     limit: 10,
                     ..Default::default()
                 })
@@ -478,6 +479,7 @@ impl Redstore {
 
                 dtag.map(|d| Querier {
                     authors: Some(vec![indexable_event.pubkey.clone()]),
+                    kinds: Some(vec![indexable_event.kind]),
                     dtags: Some(vec![d]),
                     limit: 10,
                     ..Default::default()
@@ -486,7 +488,7 @@ impl Redstore {
                 None
             };
             if let Some(rq) = replacement_query {
-                let mut should_store = true;
+                let mut has_better_previous = None;
                 for QueryResultEvent {
                     json,
                     timestamp,
@@ -514,17 +516,18 @@ impl Redstore {
                             })?;
                     } else {
                         // we have something newer (or of the same ts) stored already, so let's not store this event
-                        should_store = false;
+                        has_better_previous = Some(serial);
                     }
                 }
-                if !should_store {
+                if let Some(previous_serial) = has_better_previous {
+                    // in this case we won't store the event we just received
                     result.set(i, js_sys::Boolean::from(false).into());
 
                     // even when not storing we still update the followed_bys
                     self.insert_followedby_indexes(
                         &mut write_txn,
                         &indexable_event,
-                        current_serial,
+                        previous_serial,
                         &followed_bys,
                     )?;
 
@@ -547,18 +550,20 @@ impl Redstore {
             // normal indexes (if new)
             if is_new {
                 self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
+
+                // followed_by indexes (only when event is stored)
+                self.insert_followedby_indexes(
+                    &mut write_txn,
+                    &indexable_event,
+                    current_serial,
+                    &followed_bys,
+                )?;
+
+                current_serial += 1;
+                result.set(i, js_sys::Boolean::from(true).into());
+            } else {
+                result.set(i, js_sys::Boolean::from(false).into());
             }
-
-            // followed_by indexes (always)
-            self.insert_followedby_indexes(
-                &mut write_txn,
-                &indexable_event,
-                current_serial,
-                &followed_bys,
-            )?;
-
-            current_serial += 1;
-            result.set(i, js_sys::Boolean::from(true).into());
         }
 
         write_txn
