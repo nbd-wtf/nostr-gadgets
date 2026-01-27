@@ -197,8 +197,8 @@ impl Redstore {
     pub fn load_replaceables(&self, specs: &[u8]) -> Result<js_sys::Array> {
         #[cfg(debug_assertions)]
         web_sys::console::log_1(&js_sys::JsString::from(format!(
-            "load_replaceables {:?}",
-            specs
+            "load_replaceables received request for {} replaceable events",
+            specs.len() / 18
         )));
 
         let db = self
@@ -214,6 +214,14 @@ impl Redstore {
         for i in (0..specs.len()).step_by(18) {
             let result = js_sys::Array::new_with_length(2);
             let key: [u8; 18] = specs[i..i + 18].try_into().expect("18 is not 18");
+
+            #[cfg(debug_assertions)]
+            web_sys::console::log_1(&js_sys::JsString::from(format!(
+                "querying replaceable event: kind={}, author={:?}, dtaghash={:?}",
+                u16::from_be_bytes(key[0..2].try_into().unwrap()),
+                &key[2..10],
+                &key[10..18]
+            )));
 
             let last_attempt_table = read_txn.open_table(LAST_ATTEMPT).map_err(|e| {
                 JsValue::from_str(&format!("open last_attempts table error: {:?}", e))
@@ -278,7 +286,19 @@ impl Redstore {
                 serial: _,
             }) = events.first()
             {
+                #[cfg(debug_assertions)]
+                web_sys::console::log_1(&js_sys::JsString::from(format!(
+                    "found replaceable event for kind={}: {:?}",
+                    kind,
+                    String::from_utf8_lossy(json)
+                )));
                 result.set(1, js_sys::Uint8Array::from(json.as_slice()).into());
+            } else {
+                #[cfg(debug_assertions)]
+                web_sys::console::log_1(&js_sys::JsString::from(format!(
+                    "no replaceable event found for kind={}",
+                    kind
+                )));
             }
 
             results.set(r, result.into());
@@ -488,6 +508,12 @@ impl Redstore {
                 None
             };
             if let Some(rq) = replacement_query {
+                #[cfg(debug_assertions)]
+                web_sys::console::log_1(&js_sys::JsString::from(format!(
+                    "storing replaceable event: kind={}, pubkey={}",
+                    indexable_event.kind, indexable_event.pubkey
+                )));
+
                 let mut has_better_previous = None;
                 for QueryResultEvent {
                     json,
@@ -500,6 +526,11 @@ impl Redstore {
                         < indexable_event.timestamp
                     {
                         // we have something older stored, delete it
+                        #[cfg(debug_assertions)]
+                        web_sys::console::log_1(&js_sys::JsString::from(format!(
+                            "deleting older replaceable event with timestamp {}",
+                            timestamp.unwrap()
+                        )));
                         let deletable: IndexableEvent =
                             serde_json::from_slice(&json).map_err(|e| {
                                 JsValue::from_str(&format!(
@@ -516,11 +547,20 @@ impl Redstore {
                             })?;
                     } else {
                         // we have something newer (or of the same ts) stored already, so let's not store this event
+                        #[cfg(debug_assertions)]
+                        web_sys::console::log_1(&js_sys::JsString::from(format!(
+                            "skipping replaceable event: found newer event with timestamp {}",
+                            timestamp.unwrap()
+                        )));
                         has_better_previous = Some(serial);
                     }
                 }
                 if let Some(previous_serial) = has_better_previous {
                     // in this case we won't store the event we just received
+                    #[cfg(debug_assertions)]
+                    web_sys::console::log_1(&js_sys::JsString::from(format!(
+                        "replaceable event not stored: newer event exists"
+                    )));
                     result.set(i, js_sys::Boolean::from(false).into());
 
                     // even when not storing we still update the followed_bys
@@ -549,6 +589,11 @@ impl Redstore {
 
             // normal indexes (if new)
             if is_new {
+                #[cfg(debug_assertions)]
+                web_sys::console::log_1(&js_sys::JsString::from(format!(
+                    "successfully stored replaceable event: kind={}, id={}",
+                    indexable_event.kind, indexable_event.id
+                )));
                 self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
 
                 // followed_by indexes (only when event is stored)
@@ -562,6 +607,10 @@ impl Redstore {
                 current_serial += 1;
                 result.set(i, js_sys::Boolean::from(true).into());
             } else {
+                #[cfg(debug_assertions)]
+                web_sys::console::log_1(&js_sys::JsString::from(format!(
+                    "replaceable event not stored: event already exists with same id"
+                )));
                 result.set(i, js_sys::Boolean::from(false).into());
             }
         }
@@ -1156,10 +1205,9 @@ impl Redstore {
                         .as_string()
                         .expect("set_outbox_bound pubkey param must be string"),
                     (
-                        bound_start
-                            .as_f64()
-                            .expect("set_outbox_bound bound_start param must be a numeric timestamp")
-                            as u32,
+                        bound_start.as_f64().expect(
+                            "set_outbox_bound bound_start param must be a numeric timestamp",
+                        ) as u32,
                         bound_end
                             .as_f64()
                             .expect("set_outbox_bound bound_end param must be a numeric timestamp")
