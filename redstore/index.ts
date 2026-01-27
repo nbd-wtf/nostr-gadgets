@@ -193,13 +193,14 @@ export class RedEventStore {
 
     const binQuery = new Uint8Array(18 * specs.length)
     for (let i = 0; i < specs.length; i++) {
+      const offset = i * 18
       // big-endian u16
-      binQuery[0] = (specs[i][0] >> 8) & 0xff
-      binQuery[1] = specs[i][0] & 0xff
-      binQuery.set(hexToBytes(specs[i][1].slice(48, 64)), i * 18 + 2)
+      binQuery[offset] = (specs[i][0] >> 8) & 0xff
+      binQuery[offset + 1] = specs[i][0] & 0xff
+      binQuery.set(hexToBytes(specs[i][1].slice(48, 64)), offset + 2)
       if (specs[i][2]) {
         const hash = sha256(specs[i][2]!)
-        binQuery.set(hash, i * 18 + 2 + 8)
+        binQuery.set(hash.slice(0, 8), offset + 10)
       }
     }
 

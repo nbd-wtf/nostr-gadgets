@@ -205,8 +205,10 @@ impl<'de> Deserialize<'de> for IndexableEvent {
                     let letter = name.bytes().next().unwrap();
                     let value = tag.swap_remove(1);
                     if letter == 100 {
-                        // 'd' tag
-                        dtag = Some(value.clone());
+                        // 'd' tag - only extract for addressable events (kind 30000-40000)
+                        if temp.kind >= 30000 && temp.kind < 40000 {
+                            dtag = Some(value.clone());
+                        }
                     }
                     tags.push((letter, value));
                 }

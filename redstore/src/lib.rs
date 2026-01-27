@@ -1145,27 +1145,33 @@ impl Redstore {
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("write transaction error: {:?}", e)))?;
 
-        let mut bounds_table = write_txn
-            .open_table(OUTBOX_BOUNDS)
-            .map_err(|e| JsValue::from_str(&format!("open bounds table error: {:?}", e)))?;
+        {
+            let mut bounds_table = write_txn
+                .open_table(OUTBOX_BOUNDS)
+                .map_err(|e| JsValue::from_str(&format!("open bounds table error: {:?}", e)))?;
 
-        bounds_table
-            .insert(
-                pubkey
-                    .as_string()
-                    .expect("set_outbox_bound pubkey param must be string"),
-                (
-                    bound_start
-                        .as_f64()
-                        .expect("set_outbox_bound bound_start param must be a numeric timestamp")
-                        as u32,
-                    bound_end
-                        .as_f64()
-                        .expect("set_outbox_bound bound_end param must be a numeric timestamp")
-                        as u32,
-                ),
-            )
-            .map_err(|e| JsValue::from_str(&format!("bounds set error: {:?}", e)))?;
+            bounds_table
+                .insert(
+                    pubkey
+                        .as_string()
+                        .expect("set_outbox_bound pubkey param must be string"),
+                    (
+                        bound_start
+                            .as_f64()
+                            .expect("set_outbox_bound bound_start param must be a numeric timestamp")
+                            as u32,
+                        bound_end
+                            .as_f64()
+                            .expect("set_outbox_bound bound_end param must be a numeric timestamp")
+                            as u32,
+                    ),
+                )
+                .map_err(|e| JsValue::from_str(&format!("bounds set error: {:?}", e)))?;
+        }
+
+        write_txn
+            .commit()
+            .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
         Ok(())
     }
