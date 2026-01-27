@@ -12,7 +12,7 @@ export class DatabaseError extends Error {
 
 export class RedEventStore {
   #initialized: undefined | Promise<boolean>
-  #fullyInitialized: boolean
+  #fullyInitialized: boolean = false
   private worker: Worker
   private name: string
   private requests: Record<string, any> = {}
@@ -73,7 +73,8 @@ export class RedEventStore {
 
   private saveBatch:
     | null
-    | [ids: string[], lastAttempts: number[], followedBys: string[][], rawEvents: Uint8Array[], tasks: SaveTask[]]
+    | [ids: string[], lastAttempts: number[], followedBys: string[][], rawEvents: Uint8Array[], tasks: SaveTask[]] =
+    null
   /**
    * saves (or replaces) a nostr event to the store with automatic batching for performance.
    * (if you want the batching to work you can't `await` it immediately upon calling it)

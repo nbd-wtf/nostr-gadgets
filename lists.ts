@@ -252,7 +252,6 @@ export function makeListFetcher<I>(
         let now = Math.round(Date.now() / 1000)
 
         // try to get from redstore first -- also set up the results array with defaults
-        if (!eventStore.initialized) await eventStore.init()
         const stored = await eventStore.loadReplaceables(requests.map(r => [kind, r.target] as [number, string]))
 
         let results: ListResult<I>[] = stored.map<ListResult<I>>(([lastAttempt, storedEvent], i) => {

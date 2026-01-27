@@ -83,8 +83,6 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         let now = Math.round(Date.now() / 1000)
 
         // try to get from redstore first -- also set up the results array with defaults
-        await eventStore.init()
-
         // get lastAttempt markers (using empty d-tag as marker)
         const markers = await eventStore.loadReplaceables(
           requests.map(r => [kind, r.target, ''] as [number, string, string]),

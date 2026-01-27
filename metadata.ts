@@ -110,7 +110,6 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
       let now = Math.round(Date.now() / 1000)
 
       // try to get from redstore first -- also set up the results array with defaults
-      if (!eventStore.initialized) await eventStore.init()
       const stored = await eventStore.loadReplaceables(requests.map(r => [0, r.pubkey] as [number, string]))
 
       let results: Array<NostrUser | Error> = stored.map(([lastAttempt, storedEvent], i): NostrUser => {
