@@ -22,9 +22,9 @@ export class RedEventStore {
    * creates a new event store instance.
    * @param dbName - name of the indexedDB database (default: '@nostr/gadgets/events')
    */
-  constructor(dbName: string = '@gadgets-redstore') {
+  constructor(dbName: string = '@gadgets-redstore', basePath: string = './') {
     this.name = dbName
-    this.worker = new Worker(new URL('./redstore-worker.js', import.meta.url), {
+    this.worker = new Worker(new URL(basePath + 'redstore-worker.js', import.meta.url), {
       type: 'module',
     })
 
