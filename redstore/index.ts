@@ -1,4 +1,4 @@
-import { sha256 } from '@noble/hashes/sha256'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
 import { hexToBytes, utf8Decoder, utf8Encoder } from '@nostr/tools/utils'
@@ -207,7 +207,7 @@ export class RedEventStore {
       binQuery[offset + 1] = specs[i][0] & 0xff
       binQuery.set(hexToBytes(specs[i][1].slice(48, 64)), offset + 2)
       if (specs[i][2]) {
-        const hash = sha256(specs[i][2]!)
+        const hash = sha256(utf8Encoder.encode(specs[i][2]!))
         binQuery.set(hash.slice(0, 8), offset + 10)
       }
     }
