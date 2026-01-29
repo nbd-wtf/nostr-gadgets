@@ -8,7 +8,7 @@ import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
 
-import { pool, eventStore } from './global'
+import { pool, replaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
@@ -251,8 +251,9 @@ export function makeListFetcher<I>(
         let remainingRequests: (Request & { index: number })[] = []
         let now = Math.round(Date.now() / 1000)
 
-        // try to get from redstore first -- also set up the results array with defaults
-        const stored = await eventStore.loadReplaceables(requests.map(r => [kind, r.target] as [number, string]))
+        // try to get from store first -- also set up the results array with defaults
+        // use 3-tuple with empty dtag to get single event return type
+        const stored = await replaceableStore.loadReplaceables(requests.map(r => [kind, r.target, ''] as [number, string, string]))
 
         let results: ListResult<I>[] = stored.map<ListResult<I>>(([lastAttempt, storedEvent], i) => {
           const req = requests[i] as Request & { index: number }
@@ -261,7 +262,7 @@ export function makeListFetcher<I>(
           if (typeof req.refreshStyle === 'object') {
             // we have the event right here, so just use it
             const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
-            eventStore.saveEvent(req.refreshStyle, { lastAttempt: now })
+            replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now })
             return final
           } else if (!storedEvent) {
             if (req.refreshStyle !== false) remainingRequests.push(req)
@@ -316,7 +317,7 @@ export function makeListFetcher<I>(
                     if ((previous?.created_at || 0) > evt.created_at) return
                     results[req.index] = { event: evt, items: process(evt), [isFresh]: true }
                     eventsReceived.add(evt.pubkey)
-                    eventStore.saveEvent(evt, { lastAttempt: now })
+                    replaceableStore.saveEvent(evt, { lastAttempt: now })
                     return
                   }
                 }
@@ -330,7 +331,7 @@ export function makeListFetcher<I>(
                 // save blank events for pubkeys that didn't receive any events (they won't be really saved)
                 for (const req of remainingRequests) {
                   if (!eventsReceived.has(req.target)) {
-                    eventStore.saveEvent(
+                    replaceableStore.saveEvent(
                       {
                         id: '0'.repeat(64),
                         pubkey: req.target,
@@ -368,8 +369,7 @@ export function makeListFetcher<I>(
   ): Promise<ListResult<I>> {
     if (refreshStyle === null) {
       // refreshStyle === null: reset cache and return empty
-      await eventStore.init()
-      await eventStore.deleteEventsFilters([{ kinds: [kind], authors: [pubkey] }])
+      await replaceableStore.deleteReplaceable(kind, pubkey)
       dataloader._cacheMap.delete(pubkey)
       return { items: defaultItems || [], event: null, [isFresh]: true }
     }

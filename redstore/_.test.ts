@@ -2,9 +2,10 @@ import { expect, test, beforeAll, describe } from 'vitest'
 import { hexToBytes } from '@nostr/tools/utils'
 import { finalizeEvent } from '@nostr/tools/pure'
 
-import { RedEventStore } from './index.ts'
-import { matchFilter } from '@nostr/tools'
+import { matchFilter } from '@nostr/tools/filter'
 import { NostrEvent, getPublicKey } from '@nostr/tools/pure'
+
+import { RedEventStore } from './index.ts'
 
 const TEST_DB = '_.test.db'
 
@@ -24,7 +25,7 @@ const sk5 = hexToBytes('4e91489c0cc70387fa217ec7b40e47af6e52abe7ba2d5e784d11dadd
 
 describe('redstore', () => {
   test('basic', async () => {
-    const store = new RedEventStore(TEST_DB)
+    const store = new RedEventStore(null, TEST_DB)
     await store.init()
 
     // try just these two events to start things up
@@ -110,7 +111,7 @@ describe('redstore', () => {
   })
 
   test('more', async () => {
-    const store = new RedEventStore(TEST_DB)
+    const store = new RedEventStore(null, TEST_DB)
     await store.init()
 
     // add a ton of events and query them in weird ways
@@ -287,7 +288,7 @@ describe('redstore', () => {
   })
 
   test('replacing', async () => {
-    const store = new RedEventStore(TEST_DB)
+    const store = new RedEventStore(null, TEST_DB)
     await store.init()
 
     // test replacing
@@ -419,7 +420,7 @@ describe('redstore', () => {
   })
 
   test('following', async () => {
-    const store = new RedEventStore(TEST_DB)
+    const store = new RedEventStore(null, TEST_DB)
     await store.init()
 
     const skA = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
@@ -559,7 +560,7 @@ describe('redstore', () => {
   })
 
   test('deletion', async () => {
-    const store = new RedEventStore(TEST_DB)
+    const store = new RedEventStore(null, TEST_DB)
     await store.init()
 
     const skA = hexToBytes('8343c1ff3cc685cf9cd9faf4b7d5f2fa6ee061e48cfe97708428f6b7cd9c9fa4')

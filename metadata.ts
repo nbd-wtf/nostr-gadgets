@@ -7,7 +7,7 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 
-import { pool, eventStore } from './global'
+import { pool, replaceableStore } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
 
@@ -86,7 +86,7 @@ export async function loadNostrUser(request: NostrUserRequest | string): Promise
   } else {
     if (request.refreshStyle === null) {
       // refreshStyle === null: reset cache and return empty
-      await eventStore.deleteEventsFilters([{ kinds: [0], authors: [request.pubkey] }])
+      await replaceableStore.deleteReplaceable(0, request.pubkey)
       metadataLoader._cacheMap.delete(request.pubkey)
       return bareNostrUser(request.pubkey)
     } else if (request.refreshStyle) {
@@ -109,8 +109,9 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
       const toFetch: NostrUserRequest[] = []
       let now = Math.round(Date.now() / 1000)
 
-      // try to get from redstore first -- also set up the results array with defaults
-      const stored = await eventStore.loadReplaceables(requests.map(r => [0, r.pubkey] as [number, string]))
+      // try to get from store first -- also set up the results array with defaults
+      // use 3-tuple with empty dtag to get single event return type
+      const stored = await replaceableStore.loadReplaceables(requests.map(r => [0, r.pubkey, ''] as [number, string, string]))
 
       let results: Array<NostrUser | Error> = stored.map(([lastAttempt, storedEvent], i): NostrUser => {
         const req = requests[i]
@@ -119,7 +120,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
           // we have the event right here, so just use it
           let nu = bareNostrUser(req.pubkey)
           enhanceNostrUserWithEvent(nu, req.refreshStyle)
-          eventStore.saveEvent(req.refreshStyle, { lastAttempt: now })
+          replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now })
           return nu
         } else if (!storedEvent) {
           if (req.refreshStyle !== false) toFetch.push(req)
@@ -209,7 +210,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
 
                 enhanceNostrUserWithEvent(nu, evt)
                 eventsReceived.add(evt.pubkey)
-                eventStore.saveEvent(evt, { lastAttempt: now })
+                replaceableStore.saveEvent(evt, { lastAttempt: now })
 
                 return
               }
@@ -223,7 +224,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
             // save blank events for pubkeys that didn't receive any events (they won't be really saved)
             for (const req of toFetch) {
               if (!eventsReceived.has(req.pubkey)) {
-                eventStore.saveEvent(
+                replaceableStore.saveEvent(
                   {
                     id: '0'.repeat(64),
                     pubkey: req.pubkey,

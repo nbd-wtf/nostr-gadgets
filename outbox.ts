@@ -5,7 +5,6 @@ import { EventDeletion } from '@nostr/tools/kinds'
 
 import { loadRelayList } from './lists.ts'
 import { RedEventStore } from './redstore/index.ts'
-import { eventStore, pool } from './global.ts'
 import { shuffle } from './utils.ts'
 import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
 

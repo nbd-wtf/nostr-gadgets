@@ -279,8 +279,26 @@ impl Redstore {
                 }
             };
 
-            let events = execute(&read_txn, &mut plan, 1, 1)?;
-            if let Some(QueryResultEvent {
+            // for 3xxxx kinds with empty dtaghash, query up to 50 events and return as array
+            let is_addressable_bundle = kind >= 30000 && kind < 40000 && dtaghash == [0, 0, 0, 0, 0, 0, 0, 0];
+            let limit = if is_addressable_bundle { 50 } else { 1 };
+
+            let events = execute(&read_txn, &mut plan, limit, limit)?;
+
+            if is_addressable_bundle {
+                // return array of events for 3xxxx kinds with no dtag
+                let events_array = js_sys::Array::new_with_length(events.len() as u32);
+                for (i, QueryResultEvent { json, timestamp: _, serial: _ }) in events.iter().enumerate() {
+                    events_array.set(i as u32, js_sys::Uint8Array::from(json.as_slice()).into());
+                }
+                #[cfg(debug_assertions)]
+                web_sys::console::log_1(&js_sys::JsString::from(format!(
+                    "found {} addressable events for kind={}",
+                    events.len(),
+                    kind
+                )));
+                result.set(1, events_array.into());
+            } else if let Some(QueryResultEvent {
                 json,
                 timestamp: _,
                 serial: _,

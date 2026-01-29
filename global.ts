@@ -1,6 +1,8 @@
 import { SimplePool } from '@nostr/tools/pool'
 import { MemoryHints } from './hints'
-import { RedEventStore } from './redstore/index'
+import { type ReplaceableStore, defaultReplaceableStore } from './replaceable-store'
+
+export type { ReplaceableStore }
 
 /**
  * pool is a global used by all other functions in this library. Feel free to use it directly in your app.
@@ -20,13 +22,14 @@ export function setPool(p: SimplePool) {
 export const hints: MemoryHints = new MemoryHints()
 
 /**
- * eventStore is a global RedEventStore used for caching Nostr events.
+ * replaceableStore is a global store used for caching replaceable Nostr events.
+ * By default, it uses localStorage.
  */
-export let eventStore: RedEventStore = new RedEventStore('@gadgets', './redstore/')
+export let replaceableStore: ReplaceableStore = defaultReplaceableStore
 
 /**
- * setEventStore sets the global RedEventStore -- do not use unless you know what you're doing.
+ * setReplaceableStore sets the global replaceable store.
  */
-export function setEventStore(es: RedEventStore) {
-  eventStore = es
+export function setReplaceableStore(store: ReplaceableStore) {
+  replaceableStore = store
 }

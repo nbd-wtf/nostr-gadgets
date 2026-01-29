@@ -11,7 +11,7 @@
     "./utils": "./utils.ts",
     "./outbox": "./outbox.ts",
     "./defaults": "./defaults.ts",
-    "./store": "./redstore/index.ts",
+    "./redstore": "./redstore/index.ts",
     "./defaults": "./defaults.ts"
   },
   "publish": {

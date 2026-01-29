@@ -22,11 +22,13 @@ export class RedEventStore {
    * creates a new event store instance.
    * @param dbName - name of the indexedDB database (default: '@nostr/gadgets/events')
    */
-  constructor(dbName: string = '@gadgets-redstore', basePath: string = './') {
+  constructor(worker: Worker | null, dbName: string = '@gadgets-redstore') {
     this.name = dbName
-    this.worker = new Worker(new URL(basePath + 'redstore-worker.js', import.meta.url), {
-      type: 'module',
-    })
+    this.worker =
+      worker ||
+      new Worker(new URL('./redstore-worker.js', import.meta.url), {
+        type: 'module',
+      })
 
     this.worker!.addEventListener('message', (ev: MessageEvent) => {
       const [id, success, result] = ev.data
@@ -168,6 +170,11 @@ export class RedEventStore {
     return this.call('deleteEvents', [{ ids }])
   }
 
+  async deleteReplaceable(kind: number, author: string) {
+    if (!this.#fullyInitialized) await this.init()
+    await this.call('deleteEvents', [{ kinds: [kind], authors: [author] }])
+  }
+
   async deleteEventsFilters(filters: Filter[]): Promise<string[]> {
     if (!this.#fullyInitialized) await this.init()
     return this.call('deleteEvents', filters)
@@ -196,7 +203,12 @@ export class RedEventStore {
 
   async loadReplaceables(
     specs: [kind: number, pubkey: string, dtag?: string][],
-  ): Promise<[last_attempt: number | undefined, event: NostrEvent | undefined][]> {
+  ): Promise<
+    (
+      | [last_attempt: number | undefined, events: NostrEvent[]]
+      | [last_attempt: number | undefined, event: NostrEvent | undefined]
+    )[]
+  > {
     if (!this.#fullyInitialized) await this.init()
 
     const binQuery = new Uint8Array(18 * specs.length)
@@ -207,22 +219,42 @@ export class RedEventStore {
       binQuery[offset + 1] = specs[i][0] & 0xff
       binQuery.set(hexToBytes(specs[i][1].slice(48, 64)), offset + 2)
       if (specs[i][2]) {
-        const hash = sha256(utf8Encoder.encode(specs[i][2]!))
-        binQuery.set(hash.slice(0, 8), offset + 10)
+        const dtaghash = sha256(utf8Encoder.encode(specs[i][2]!))
+        binQuery.set(dtaghash.slice(0, 8), offset + 10)
       }
     }
 
-    return ((await this.call('loadReplaceables', binQuery)) as [number | undefined, Uint8Array | undefined][]).map(
-      b => {
-        if (!b[1]) return b
+    return (
+      (await this.call('loadReplaceables', binQuery)) as [number | undefined, Uint8Array | Uint8Array[] | undefined][]
+    ).map((b, i) => {
+      // check if this is a 3xxxx kind with no dtag (returns array of events)
+      const kind = specs[i][0]
+      const hasDtag = specs[i][2] !== undefined
+      const isAddressableBundle = kind >= 30000 && kind < 40000 && !hasDtag
 
-        const event = JSON.parse(utf8Decoder.decode(b[1]))
+      if (isAddressableBundle) {
+        // bundle: return array of events
+        if (!b[1]) return [b[0], []]
+        // b[1] is an array of Uint8Arrays
+        const events = (b[1] as Uint8Array[]).map(eventBytes => {
+          const event = JSON.parse(utf8Decoder.decode(eventBytes))
+          event[isLocalSymbol] = true
+          event[seenOnSymbol] = event.seen_on
+          delete event.seen_on
+          return event
+        })
+        return [b[0], events]
+      } else {
+        // single event: return event or undefined
+        if (!b[1]) return [b[0], undefined]
+        // b[1] is a single Uint8Array
+        const event = JSON.parse(utf8Decoder.decode(b[1] as Uint8Array))
         event[isLocalSymbol] = true
         event[seenOnSymbol] = event.seen_on
         delete event.seen_on
         return [b[0], event]
-      },
-    )
+      }
+    })
   }
 
   /**

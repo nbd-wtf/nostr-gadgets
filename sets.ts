@@ -8,7 +8,7 @@ import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
 
-import { pool, eventStore } from './global'
+import { pool, replaceableStore } from './global'
 import { isHex32 } from './utils'
 import { Emoji, itemsFromTags, loadRelayList } from './lists'
 
@@ -82,26 +82,18 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         let remainingRequests: (Request & { index: number })[] = []
         let now = Math.round(Date.now() / 1000)
 
-        // try to get from redstore first -- also set up the results array with defaults
-        // get lastAttempt markers (using empty d-tag as marker)
-        const markers = await eventStore.loadReplaceables(
-          requests.map(r => [kind, r.target, ''] as [number, string, string]),
+        // try to get from store first -- 2-tuple returns all events for 3xxxx kinds as bundle
+        const stored = await replaceableStore.loadReplaceables(
+          requests.map(r => [kind, r.target] as [number, string]),
         )
 
-        // get all stored events
-        const storedEventsArrays = await Promise.all(
-          requests.map(r => eventStore.queryEvents({ kinds: [kind], authors: [r.target], limit: 100 })),
-        )
-
-        let results = storedEventsArrays.map((events, i) => {
+        let results = stored.map(([lastAttempt, events], i) => {
           const req = requests[i] as Request & { index: number }
           req.index = i
-          const lastAttempt = markers[i][0] || 0
 
-          // build SetResult from stored events (excluding marker events with created_at: 0)
+          // build SetResult from stored events
           const result: SetResult<I> = {}
           for (const evt of events) {
-            if (evt.created_at === 0) continue // skip marker events
             const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
             const existing = result[dTag]
             if (!existing || existing.event.created_at < evt.created_at) {
@@ -119,10 +111,10 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           } else if (req.forceUpdate || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
             remainingRequests.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch new versions
-            return { lastAttempt, result }
+            return { lastAttempt: lastAttempt || 0, result }
           } else {
             // this one is so good we won't try to fetch it again
-            return { lastAttempt, result }
+            return { lastAttempt: lastAttempt || 0, result }
           }
         })
 
@@ -179,25 +171,28 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
               async onclose() {
                 resolve(results.map(r => r.result))
 
-                // save fetched events to redstore
+                // save fetched events to store (this also updates lastAttempt on the bundle)
                 for (const evt of eventsToSave) {
-                  eventStore.saveEvent(evt)
+                  replaceableStore.saveEvent(evt, { lastAttempt: now })
                 }
 
-                // save marker events with lastAttempt for each request
+                // for pubkeys that didn't receive any events, update lastAttempt so we don't keep retrying
+                const pubkeysReceived = new Set(eventsToSave.map(e => e.pubkey))
                 for (const req of remainingRequests) {
-                  eventStore.saveEvent(
-                    {
-                      id: '0'.repeat(64),
-                      pubkey: req.target,
-                      kind: kind,
-                      sig: '0'.repeat(128),
-                      tags: [['d', '']],
-                      created_at: 0,
-                      content: '',
-                    },
-                    { lastAttempt: now },
-                  )
+                  if (!pubkeysReceived.has(req.target)) {
+                    replaceableStore.saveEvent(
+                      {
+                        id: '0'.repeat(64),
+                        pubkey: req.target,
+                        kind: kind,
+                        sig: '0'.repeat(128),
+                        tags: [],
+                        created_at: 0,
+                        content: '',
+                      },
+                      { lastAttempt: now },
+                    )
+                  }
                 }
               },
             },
