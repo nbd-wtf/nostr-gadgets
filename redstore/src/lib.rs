@@ -14,9 +14,7 @@ use web_sys::FileSystemSyncAccessHandle;
 
 use crate::indexes::*;
 use crate::query::{Plan, Query, execute, prepare};
-use crate::utils::{
-    IndexableEvent, MAX_U32_BYTES, Querier, Result, extract_id, extract_pubkey, parse_hex_into,
-};
+use crate::utils::{IndexableEvent, MAX_U32_BYTES, Querier, Result, extract_id, parse_hex_into};
 
 mod indexes;
 mod query;
@@ -143,9 +141,6 @@ impl Redstore {
         write_txn
             .open_table(INDEX_TAG)
             .map_err(|e| JsValue::from_str(&format!("initial open index_tag: {:?}", e)))?;
-        write_txn
-            .open_table(INDEX_FOLLOWED)
-            .map_err(|e| JsValue::from_str(&format!("initial open index_followed: {:?}", e)))?;
         write_txn
             .open_table(OUTBOX_BOUNDS)
             .map_err(|e| JsValue::from_str(&format!("initial open outbox_bounds: {:?}", e)))?;
@@ -280,7 +275,8 @@ impl Redstore {
             };
 
             // for 3xxxx kinds with empty dtaghash, query up to 50 events and return as array
-            let is_addressable_bundle = kind >= 30000 && kind < 40000 && dtaghash == [0, 0, 0, 0, 0, 0, 0, 0];
+            let is_addressable_bundle =
+                kind >= 30000 && kind < 40000 && dtaghash == [0, 0, 0, 0, 0, 0, 0, 0];
             let limit = if is_addressable_bundle { 50 } else { 1 };
 
             let events = execute(&read_txn, &mut plan, limit, limit)?;
@@ -288,7 +284,15 @@ impl Redstore {
             if is_addressable_bundle {
                 // return array of events for 3xxxx kinds with no dtag
                 let events_array = js_sys::Array::new_with_length(events.len() as u32);
-                for (i, QueryResultEvent { json, timestamp: _, serial: _ }) in events.iter().enumerate() {
+                for (
+                    i,
+                    QueryResultEvent {
+                        json,
+                        timestamp: _,
+                        serial: _,
+                    },
+                ) in events.iter().enumerate()
+                {
                     events_array.set(i as u32, js_sys::Uint8Array::from(json.as_slice()).into());
                 }
                 #[cfg(debug_assertions)]
@@ -391,15 +395,13 @@ impl Redstore {
         execute(&txn, &mut plan, spec.limit, std::cmp::min(20, spec.limit))
     }
 
-    // takes { last_attempts: [], followedBys: [], rawEvents: [] }, returns [bool, ...]
+    // takes { last_attempts: [], rawEvents: [] }, returns [bool, ...]
     // last_attempts timestamps used by replaceable loaders only, otherwise should be zero;
-    // followedBys are arrays of pubkeys;
     // rawEvents are JSON-encoded raw events, as Uint8Arrays (they can be empty so we'll only store the last_attempt);
     // on the return: true means it was saved, false it wasn't because we already had it or something newer than it)
     pub fn save_events(
         &self,
         last_attempts: js_sys::Array,
-        followedbys_arr: js_sys::Array,
         raw_events_arr: js_sys::Array,
     ) -> Result<JsValue> {
         let db = self
@@ -451,13 +453,30 @@ impl Redstore {
         let mut current_serial = last_serial + 1;
 
         for i in 0..raw_events_arr.length() {
+            let raw_event = &js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec();
+            let indexable_event = match IndexableEvent::from_json_event(&raw_event) {
+                Err(_) => IndexableEvent {
+                    id: "0".repeat(64),
+                    kind: 0,
+                    dtag: None,
+                    pubkey: "0".repeat(64),
+                    tags: vec![],
+                    timestamp: 0,
+                },
+                Ok(v) => v,
+            };
+
+            if indexable_event.id
+                == "0000000000000000000000000000000000000000000000000000000000000000"
+            {
+                // don't store the event if it didn't come
+                continue;
+            }
+
             let last_attempt = last_attempts
                 .get(i)
                 .as_f64()
                 .expect("last_attempt must be number") as u32;
-
-            let raw_event = &js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec();
-            let indexable_event = IndexableEvent::from_json_event(&raw_event)?;
 
             if last_attempt > 0 {
                 // store last attempt if it came
@@ -482,15 +501,6 @@ impl Redstore {
                     JsValue::from_str(&format!("failed to insert last_attempt: {:?}", e))
                 })?;
             }
-
-            if indexable_event.id
-                == "0000000000000000000000000000000000000000000000000000000000000000"
-            {
-                // don't store the event if it didn't come
-                continue;
-            }
-
-            let followed_bys = js_sys::Array::from(&followedbys_arr.get(i));
 
             // check if event has be replaced
             let replacement_query = if indexable_event.kind == 0
@@ -573,21 +583,14 @@ impl Redstore {
                         has_better_previous = Some(serial);
                     }
                 }
-                if let Some(previous_serial) = has_better_previous {
+
+                if let Some(_) = has_better_previous {
                     // in this case we won't store the event we just received
                     #[cfg(debug_assertions)]
                     web_sys::console::log_1(&js_sys::JsString::from(format!(
                         "replaceable event not stored: newer event exists"
                     )));
                     result.set(i, js_sys::Boolean::from(false).into());
-
-                    // even when not storing we still update the followed_bys
-                    self.insert_followedby_indexes(
-                        &mut write_txn,
-                        &indexable_event,
-                        previous_serial,
-                        &followed_bys,
-                    )?;
 
                     continue;
                 }
@@ -614,14 +617,6 @@ impl Redstore {
                 )));
                 self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
 
-                // followed_by indexes (only when event is stored)
-                self.insert_followedby_indexes(
-                    &mut write_txn,
-                    &indexable_event,
-                    current_serial,
-                    &followed_bys,
-                )?;
-
                 current_serial += 1;
                 result.set(i, js_sys::Boolean::from(true).into());
             } else {
@@ -638,44 +633,6 @@ impl Redstore {
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
         Ok(result.into())
-    }
-
-    fn insert_followedby_indexes(
-        &self,
-        write_txn: &mut WriteTransaction,
-        indexable_event: &IndexableEvent,
-        serial: u32,
-        followed_bys: &js_sys::Array,
-    ) -> Result<()> {
-        let mut followedby_table = write_txn
-            .open_table(INDEX_FOLLOWED)
-            .map_err(|e| JsValue::from_str(&format!("followed_by insert table error: {:?}", e)))?;
-
-        for i in 0..followed_bys.length() {
-            let follower_hex = followed_bys
-                .get(i)
-                .as_string()
-                .expect("followed_by must be hex pubkey");
-
-            let mut key = vec![0u8; 16];
-            parse_hex_into(&follower_hex[48..64], &mut key[0..8])
-                .map_err(|e| JsValue::from_str(&format!("followed_by hex error: {:?}", e)))?;
-            key[8..12].copy_from_slice(&indexable_event.timestamp.to_be_bytes());
-            key[12..16].copy_from_slice(&serial.to_be_bytes());
-
-            followedby_table
-                .insert(&key[..], ())
-                .map_err(|e| JsValue::from_str(&format!("followed_by insert error: {:?}", e)))?;
-
-            #[cfg(debug_assertions)]
-            web_sys::console::log_3(
-                &js_sys::JsString::from_str("inserting following").unwrap(),
-                &js_sys::JsString::from(follower_hex),
-                &js_sys::Uint8Array::from(&key[..]),
-            );
-        }
-
-        Ok(())
     }
 
     fn insert_indexes(
@@ -798,53 +755,6 @@ impl Redstore {
                         &js_sys::JsString::from_str(id.as_str())
                             .expect("js string from deleted id"),
                     );
-
-                    // scan the entire INDEX_FOLLOWED for the serial (the last 4 bytes) and delete those entries
-                    {
-                        let mut followed_table =
-                            write_txn.open_table(INDEX_FOLLOWED).map_err(|e| {
-                                JsValue::from_str(&format!("open index_followed error: {:?}", e))
-                            })?;
-
-                        let mut to_delete: Vec<[u8; 16]> = Vec::new();
-                        for item in followed_table.iter().map_err(|e| {
-                            JsValue::from_str(&format!("iter index_followed error: {:?}", e))
-                        })? {
-                            let (key, _) = item.map_err(|e| {
-                                JsValue::from_str(&format!(
-                                    "get index_followed item error: {:?}",
-                                    e
-                                ))
-                            })?;
-                            let key_bytes = key.value();
-
-                            // check if the last 4 bytes match our serial
-                            let stored_serial = u32::from_be_bytes([
-                                key_bytes[key_bytes.len() - 4],
-                                key_bytes[key_bytes.len() - 3],
-                                key_bytes[key_bytes.len() - 2],
-                                key_bytes[key_bytes.len() - 1],
-                            ]);
-
-                            if stored_serial == *serial {
-                                to_delete.push(
-                                    key_bytes
-                                        .try_into()
-                                        .expect("index_followed key should have 16 bytes"),
-                                );
-                            }
-                        }
-
-                        // delete the found entries
-                        for key in to_delete {
-                            followed_table.remove(&key[..]).map_err(|e| {
-                                JsValue::from_str(&format!(
-                                    "remove index_followed entry error: {:?}",
-                                    e
-                                ))
-                            })?;
-                        }
-                    }
                 }
             }
         }
@@ -942,225 +852,6 @@ impl Redstore {
         Ok(deleted)
     }
 
-    pub fn mark_follow(
-        &self,
-        follower: js_sys::JsString,
-        followed: js_sys::JsString,
-    ) -> Result<()> {
-        self.modify_follow_internal(follower, followed, ModifyFollow::Add)
-    }
-
-    pub fn mark_unfollow(
-        &self,
-        follower: js_sys::JsString,
-        followed: js_sys::JsString,
-    ) -> Result<()> {
-        self.modify_follow_internal(follower, followed, ModifyFollow::Remove)
-    }
-
-    fn modify_follow_internal(
-        &self,
-        follower: js_sys::JsString,
-        followed: js_sys::JsString,
-        action: ModifyFollow,
-    ) -> Result<()> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
-        let write_txn = db
-            .begin_write()
-            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
-        let read_txn = db
-            .begin_read()
-            .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
-
-        let follower_hex = follower.as_string().expect("follower must be hex pubkey");
-        let followed_hex = followed.as_string().expect("followed must be hex pubkey");
-
-        // query all events from the followed pubkey
-        let query = Querier {
-            authors: Some(vec![followed_hex]),
-            limit: 10000, // large limit to get all events
-            ..Default::default()
-        };
-
-        {
-            let mut followedby_table = write_txn
-                .open_table(INDEX_FOLLOWED)
-                .map_err(|e| JsValue::from_str(&format!("open index_followed error: {:?}", e)))?;
-
-            for QueryResultEvent {
-                json: _,
-                timestamp,
-                serial,
-            } in self
-                .query_internal(&read_txn, query)
-                .map_err(|e| JsValue::from_str(&format!("mark_unfollow query error: {:?}", e)))?
-            {
-                let ts = timestamp.expect("query result should have timestamp");
-
-                // create key: [follower[48..64]][timestamp][serial]
-                let mut key = [0u8; 16];
-                parse_hex_into(&follower_hex[48..64], &mut key[0..8])
-                    .map_err(|e| JsValue::from_str(&format!("follower hex error: {:?}", e)))?;
-                key[8..12].copy_from_slice(&ts.to_be_bytes());
-                key[12..16].copy_from_slice(&serial.to_be_bytes());
-
-                match action {
-                    ModifyFollow::Add => {
-                        followedby_table.insert(&key[..], ()).map_err(|e| {
-                            JsValue::from_str(&format!("mark_follow insert error: {:?}", e))
-                        })?;
-
-                        #[cfg(debug_assertions)]
-                        web_sys::console::log_3(
-                            &js_sys::JsString::from_str("new follower").unwrap(),
-                            &js_sys::JsString::from(follower_hex.clone()),
-                            &js_sys::Uint8Array::from(&key[..]),
-                        );
-                    }
-                    ModifyFollow::Remove => {
-                        followedby_table.remove(&key[..]).map_err(|e| {
-                            JsValue::from_str(&format!("mark_unfollow insert error: {:?}", e))
-                        })?;
-
-                        #[cfg(debug_assertions)]
-                        web_sys::console::log_3(
-                            &js_sys::JsString::from_str("unfollowed").unwrap(),
-                            &js_sys::JsString::from(follower_hex.clone()),
-                            &js_sys::Uint8Array::from(&key[..]),
-                        );
-                    }
-                }
-            }
-        }
-
-        write_txn
-            .commit()
-            .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
-
-        Ok(())
-    }
-
-    pub fn clean_followed(&self, follower: js_sys::JsString, except: js_sys::Array) -> Result<()> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| JsValue::from_str(&format!("lock error: {:?}", e)))?;
-        let write_txn = db
-            .begin_write()
-            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
-        let read_txn = db
-            .begin_read()
-            .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
-
-        // create a set of excepted authors for quick lookup
-        let mut excepted_authors = std::collections::HashSet::new();
-        for i in 0..except.length() {
-            if let Some(author) = except.get(i).as_string() {
-                excepted_authors.insert(author);
-            }
-        }
-
-        // get follower prefix for index lookup
-        let follower_hex = follower.as_string().expect("follower must be hex pubkey");
-        let mut start_key = [0u8; 16];
-        parse_hex_into(&follower_hex[48..64], &mut start_key[0..8]).map_err(|e| {
-            JsValue::from_str(&format!("clean_followed follower hex error: {:?}", e))
-        })?;
-
-        {
-            let mut followedby_table = write_txn.open_table(INDEX_FOLLOWED).map_err(|e| {
-                JsValue::from_str(&format!(
-                    "clean_followed open index_followed error: {:?}",
-                    e
-                ))
-            })?;
-            let events_table = read_txn.open_table(EVENTS).map_err(|e| {
-                JsValue::from_str(&format!("clean_followed open events table error: {:?}", e))
-            })?;
-
-            let mut to_delete: Vec<[u8; 16]> = Vec::new();
-
-            // iterate through all entries with this follower prefix
-            for item in followedby_table
-                .range(&start_key[..]..)
-                .map_err(|e| JsValue::from_str(&format!("clean_followed range error: {:?}", e)))?
-            {
-                let (key, _) = item.map_err(|e| {
-                    JsValue::from_str(&format!(
-                        "clean_followed get index_followed item error: {:?}",
-                        e
-                    ))
-                })?;
-                let key_bytes = key.value();
-
-                // stop when we leave our prefix
-                if key_bytes[0..8] != start_key[0..8] {
-                    break;
-                }
-
-                // extract serial from last 4 bytes
-                let serial = u32::from_be_bytes([
-                    key_bytes[key_bytes.len() - 4],
-                    key_bytes[key_bytes.len() - 3],
-                    key_bytes[key_bytes.len() - 2],
-                    key_bytes[key_bytes.len() - 1],
-                ]);
-
-                let mut should_delete = false;
-
-                // get the event to check the author
-                if let Some(event_json) = events_table.get(serial).map_err(|e| {
-                    JsValue::from_str(&format!("clean_followed get event error: {:?}", e))
-                })? {
-                    let event_bytes = event_json.value();
-
-                    // extract author hex from position 11..75
-                    if event_bytes.len() >= 75 {
-                        let author_str = extract_pubkey(event_bytes);
-
-                        // delete if author is not in except list
-                        if !excepted_authors.contains(&author_str) {
-                            should_delete = true;
-                        }
-                    }
-                } else {
-                    // event doesn't exist, delete the index entry
-                    should_delete = true;
-                };
-
-                if should_delete {
-                    to_delete.push(
-                        key_bytes
-                            .try_into()
-                            .expect("index_followed key should have 16 bytes"),
-                    );
-                }
-            }
-
-            // delete the marked entries
-            for key in to_delete {
-                followedby_table.remove(&key[..]).map_err(|e| {
-                    JsValue::from_str(&format!("remove index_followed entry error: {:?}", e))
-                })?;
-
-                #[cfg(debug_assertions)]
-                web_sys::console::log_2(
-                    &js_sys::JsString::from_str("clean_followed deleted").unwrap(),
-                    &js_sys::Uint8Array::from(&key[..]),
-                );
-            }
-        }
-
-        write_txn
-            .commit()
-            .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
-
-        Ok(())
-    }
-
     // returns a JSON like `{"<pubkey>": [<start>, <end>]} as an Uint8Array`
     pub fn get_outbox_bounds(&self) -> Result<js_sys::Uint8Array> {
         let db = self
@@ -1241,9 +932,4 @@ impl Redstore {
 
         Ok(())
     }
-}
-
-enum ModifyFollow {
-    Add,
-    Remove,
 }

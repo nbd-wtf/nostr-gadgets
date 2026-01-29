@@ -98,7 +98,7 @@ function command(method: string, data: any): any {
 
   switch (method) {
     case 'saveEvents':
-      result = db!.save_events(data.lastAttempts, data.followedBys, data.rawEvents)
+      result = db!.save_events(data.lastAttempts, data.rawEvents)
       break
     case 'deleteEvents':
       result = db!.delete_events(data)
@@ -108,15 +108,6 @@ function command(method: string, data: any): any {
       break
     case 'loadReplaceables':
       result = db!.load_replaceables(data)
-      break
-    case 'markFollow':
-      result = db!.mark_follow(data.follower, data.followed)
-      break
-    case 'markUnfollow':
-      result = db!.mark_unfollow(data.follower, data.followed)
-      break
-    case 'cleanFollowed':
-      result = db!.clean_followed(data.followedBy, data.except)
       break
     case 'getOutboxBounds':
       result = db!.get_outbox_bounds()

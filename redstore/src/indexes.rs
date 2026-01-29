@@ -12,7 +12,6 @@ pub const INDEX_PUBKEY: TableDefinition<&[u8], ()> = TableDefinition::new("index
 pub const INDEX_PUBKEY_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_kind");
 pub const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_dtag");
 pub const INDEX_TAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_tag");
-pub const INDEX_FOLLOWED: TableDefinition<&[u8], ()> = TableDefinition::new("index_followed");
 
 // <pubkey-hex> => [<start>, <end>] (used by the outbox module only)
 pub const OUTBOX_BOUNDS: TableDefinition<String, (u32, u32)> =

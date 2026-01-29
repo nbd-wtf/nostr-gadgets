@@ -33,8 +33,6 @@ export class OutboxManager {
   private onbeforeupdate: undefined | ((pubkey: string) => void)
   private ondeletions: undefined | ((ids: string[]) => void)
 
-  private authorIsFollowedBy: undefined | ((author: string) => string[] | undefined)
-
   constructor(
     baseFilters: Filter[],
     store: RedEventStore,
@@ -47,7 +45,6 @@ export class OutboxManager {
       ondeletions?: (ids: string[]) => void
       defaultRelaysForConfusedPeople?: string[]
       storeRelaysSeenOn?: boolean
-      authorIsFollowedBy?(author: string): string[] | undefined
     },
   ) {
     this.baseFilters = baseFilters
@@ -62,7 +59,6 @@ export class OutboxManager {
     this.ondeletions = opts?.ondeletions
     this.defaultRelaysForConfusedPeople = opts?.defaultRelaysForConfusedPeople || this.defaultRelaysForConfusedPeople
     this.storeRelaysSeenOn = opts?.storeRelaysSeenOn || false
-    this.authorIsFollowedBy = opts?.authorIsFollowedBy
   }
 
   close() {
@@ -249,7 +245,6 @@ export class OutboxManager {
                 seenOn: this.storeRelaysSeenOn
                   ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                   : undefined,
-                followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
               })
 
               if (isNew && deletion) {
@@ -294,8 +289,6 @@ export class OutboxManager {
     opts: {
       // this should only be undefined if you want the live() subscription to last forever
       signal: AbortSignal | undefined
-
-      isFollowedBy?: (pubkey: string) => string[] | undefined
     },
   ) {
     await this.ensureBoundsLoaded()
@@ -338,7 +331,6 @@ export class OutboxManager {
           seenOn: this.storeRelaysSeenOn
             ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
             : undefined,
-          followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
         })
 
         if (isNew && deletion) {
@@ -450,7 +442,6 @@ export class OutboxManager {
               seenOn: this.storeRelaysSeenOn
                 ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
                 : undefined,
-              followedBy: deletion ? this.authorIsFollowedBy?.(event.pubkey) : undefined,
             })
 
             if (isNew && deletion) {

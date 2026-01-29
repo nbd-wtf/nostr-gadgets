@@ -419,157 +419,13 @@ describe('redstore', () => {
     await store.close()
   })
 
-  test('following', async () => {
-    const store = new RedEventStore(null, TEST_DB)
-    await store.init()
-
-    const skA = hexToBytes('41a7faaa2e37a8ed0ebf6bd4e0c6e28c95b7b087794e15ca98d1374e944eee2b')
-    const skB = hexToBytes('611b5b25b45854a36c3621c94f3508516c9b373c18e2eca59ffd15a6908c96be')
-    const skC = hexToBytes('a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5')
-    const skD = hexToBytes('d15fe5f99a1aca0cc209cb2554eedad181043edb498afcab51dd993ba40da37b')
-
-    const pkA = getPublicKey(skA)
-    const pkB = getPublicKey(skB)
-    const pkC = getPublicKey(skC)
-    const pkD = getPublicKey(skD)
-
-    const events: NostrEvent[] = []
-
-    // create events: 10 from each pubkey
-    const sks = [skA, skB, skC, skD]
-    for (let sk of sks) {
-      for (let i = 0; i < 10; i++) {
-        const event = finalizeEvent(
-          {
-            kind: 1,
-            created_at: 2000 + i,
-            content: 'event ' + i,
-            tags: [],
-          },
-          sk,
-        )
-        events.push(event)
-
-        // save with follower relationships:
-        // A follows B and C
-        // B follows C and D
-        let followers: string[] = []
-        if (sk === skB || sk === skC) {
-          followers.push(pkA)
-        }
-        if (sk === skC || sk === skD) {
-          followers.push(pkB)
-        }
-        await store.saveEvent(event, { followedBy: followers })
-      }
-    }
-
-    // query by followed_by A
-    {
-      let count = 0
-      for (const evt of await store.queryEvents({ followedBy: pkA })) {
-        count++
-        expect(evt.pubkey === pkB || evt.pubkey === pkC).toBe(true)
-      }
-      expect(count).toEqual(20)
-    }
-
-    // query by followed_by B
-    {
-      let count = 0
-      for (const evt of await store.queryEvents({ followedBy: pkB })) {
-        count++
-        expect(evt.pubkey === pkC || evt.pubkey === pkD).toBe(true)
-      }
-      expect(count).toEqual(20)
-    }
-
-    // call markFollow so A starts following D
-    console.log('MARKFOLLOW', pkA, pkD)
-    await store.markFollow(pkA, pkD)
-
-    // query by followed by A (should return D events too)
-    {
-      let count = 0
-      console.log('FOLLOWED', pkA)
-      for (const evt of await store.queryEvents({ followedBy: pkA })) {
-        count++
-        expect(evt.pubkey === pkB || evt.pubkey === pkC || evt.pubkey === pkD).toBe(true)
-      }
-      expect(count).toEqual(30)
-    }
-
-    // query by followed B (should stay the same)
-    {
-      let count = 0
-      for (const evt of await store.queryEvents({ followedBy: pkB })) {
-        count++
-        expect(evt.pubkey === pkC || evt.pubkey === pkD).toBe(true)
-      }
-      expect(count).toEqual(20)
-    }
-
-    // call markUnfollow so both A and B stop following C
-    await store.markUnfollow(pkA, pkC)
-    await store.markUnfollow(pkB, pkC)
-
-    // query by followed by A (should not return C events)
-    {
-      let count = 0
-      for (const evt of await store.queryEvents({ followedBy: pkA })) {
-        count++
-        expect(evt.pubkey === pkB || evt.pubkey === pkD).toBe(true)
-      }
-      expect(count).toEqual(20)
-    }
-
-    // query by followed B (should not return C events)
-    {
-      let count = 0
-      for (const evt of await store.queryEvents({ followedBy: pkB })) {
-        count++
-        expect(evt.pubkey === pkD).toBe(true)
-      }
-      expect(count).toEqual(10)
-    }
-
-    // clean followed indexes
-    await store.cleanFollowed(pkA, [pkB])
-    await store.cleanFollowed(pkB, [])
-
-    // query by followed by A (now it should also not return D events)
-    {
-      let count = 0
-      for (const evt of await store.queryEvents({ followedBy: pkA })) {
-        count++
-        expect(evt.pubkey === pkB).toBe(true)
-      }
-      expect(count).toEqual(10)
-    }
-
-    // query by followed B (should not return any events)
-    {
-      let count = 0
-      for (const _ of await store.queryEvents({ followedBy: pkB })) {
-        count++
-      }
-      expect(count).toEqual(0)
-    }
-
-    await store.close()
-  })
-
   test('deletion', async () => {
     const store = new RedEventStore(null, TEST_DB)
     await store.init()
 
-    const skA = hexToBytes('8343c1ff3cc685cf9cd9faf4b7d5f2fa6ee061e48cfe97708428f6b7cd9c9fa4')
     const skB = hexToBytes('0a0869ac5240c995729cdb73626cf393b08759fca883c2e9646ba176f30ad82c')
 
-    const pkA = getPublicKey(skA)
-    const pkB = getPublicKey(skB)
-
-    // create events from pkB and mark them as followed by pkA
+    // create events from pkB
     const events: NostrEvent[] = []
     for (let i = 0; i < 5; i++) {
       const event = finalizeEvent(
@@ -582,17 +438,7 @@ describe('redstore', () => {
         skB,
       )
       events.push(event)
-      await store.saveEvent(event, { followedBy: [pkA] })
-    }
-
-    // verify events are queryable by followedBy
-    {
-      let count = 0
-      for (const evt of await store.queryEvents({ followedBy: pkA })) {
-        count++
-        expect(evt.pubkey).toEqual(pkB)
-      }
-      expect(count).toEqual(5)
+      await store.saveEvent(event)
     }
 
     // delete the first 3 events
@@ -602,20 +448,6 @@ describe('redstore', () => {
     expect(idsToDelete).toContain(first)
     expect(idsToDelete).toContain(second)
     expect(idsToDelete).toContain(third)
-
-    // verify only 2 events remain and are still queryable by followedBy
-    {
-      let count = 0
-      const remainingIds = new Set()
-      for (const evt of await store.queryEvents({ followedBy: pkA })) {
-        count++
-        expect(evt.pubkey).toEqual(pkB)
-        remainingIds.add(evt.id)
-      }
-      expect(count).toEqual(2)
-      expect(remainingIds.has(events[3].id)).toBe(true)
-      expect(remainingIds.has(events[4].id)).toBe(true)
-    }
 
     // verify deleted events are no longer queryable by ID
     const deletedEvents = await store.queryEvents({ ids: idsToDelete })

@@ -25,7 +25,6 @@ pub struct Querier {
     pub since: Option<u32>,
     pub until: u32,
     pub limit: usize,
-    pub followed_by: Option<String>,
 }
 
 impl Default for Querier {
@@ -39,7 +38,6 @@ impl Default for Querier {
             since: None,
             until: (js_sys::Date::now() / 1000.0) as u32,
             limit: 250,
-            followed_by: None,
         };
     }
 }
@@ -94,10 +92,6 @@ impl From<&js_sys::Object> for Querier {
                     }
                     "limit" => {
                         querier.limit = value.as_f64().expect("limit must be a number") as usize;
-                    }
-                    "followedBy" => {
-                        querier.followed_by =
-                            Some(value.as_string().expect("followedBy must be a string"));
                     }
                     "#d" => {
                         let array = js_sys::Array::from(&value);
@@ -275,7 +269,7 @@ pub fn extract_tags(event_json: &[u8]) -> Result<Vec<Vec<String>>> {
                 && event_json[tags_start + i - 1] == 44 // ','
                 && event_json[tags_start + i - 2] == 93 // ']'
             })
-            .map(|pos| pos + tags_start - 1)
+            .map(|pos| pos + tags_start - 2 + 1 /* we'll match the end of '],"', so we have to go 2 back, but add 1 so we include the ']' */)
         {
             return serde_json::from_slice::<Vec<Vec<String>>>(&event_json[tags_start..tags_end])
                 .map_err(|e| JsValue::from_str(&format!("invalid tags json extracted: {:?}", e,)));
@@ -304,5 +298,26 @@ pub fn extract_created_at(event_json: &[u8]) -> Result<u32> {
         Ok(ts)
     } else {
         Err(JsValue::from("failed to extract created_at"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_tags_on_preformatted_event() {
+        let evtj = r#"{"pubkey":"c5cdd5737e47f5426c9dea243012112ed62fba7b534788681606f79f5ab9682a","id":"908801a73409d38b1420b70edb21e380afa1a0fbb444d96f164b3f4926e1cc0a","kind":1,"created_at":1714060747,"sig":"9bfb9a8499ae3ebad287452abd777bad4daf65ed99e63149c3c38e11e54b997577ae18edf5439fd31d21593cea6c153b49549fba9177542c98f81156098f7595","tags":[["e","45e72174dad9971b8c9197295a3f871a87775af046df8686e1a2686ca8b6ef89","wss://relay.wellorder.net","root"],["p","f728d9e6e7048358e70930f5ca64b097770d989ccd86854fe618eda9c8a38106"]],"content":"Which lie is Ukraine war based on? Go on, enlighten me, please.","seen_on":["wss://nos.lol/"]}"#.as_bytes();
+        let tags = extract_tags(evtj).unwrap();
+        assert_eq!(tags[0][0], "e");
+        assert_eq!(
+            tags[0][1],
+            "45e72174dad9971b8c9197295a3f871a87775af046df8686e1a2686ca8b6ef89"
+        );
+        assert_eq!(tags[0][2], "wss://relay.wellorder.net");
+        assert_eq!(
+            tags[1][1],
+            "f728d9e6e7048358e70930f5ca64b097770d989ccd86854fe618eda9c8a38106"
+        );
     }
 }

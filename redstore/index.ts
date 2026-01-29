@@ -73,24 +73,22 @@ export class RedEventStore {
     }
   }
 
-  private saveBatch:
-    | null
-    | [ids: string[], lastAttempts: number[], followedBys: string[][], rawEvents: Uint8Array[], tasks: SaveTask[]] =
-    null
+  private saveBatch: null | [ids: string[], lastAttempts: number[], rawEvents: Uint8Array[], tasks: SaveTask[]] = null
+  private saveBatchTimeout: ReturnType<typeof setTimeout> | null = null
+
   /**
    * saves (or replaces) a nostr event to the store with automatic batching for performance.
-   * (if you want the batching to work you can't `await` it immediately upon calling it)
+   * uses a 300ms debounced timeout to batch multiple calls together.
    *
    * @param event - the nostr event to save
    * @param seenOn - optional array of relay URLs where this event was seen
    * @param lastAttempt - optional timestamp, used by the replaceable fetchers
-   * @param followedBy - optional array of pubkeys that are following this event
    * @returns boolean - true if the event was new, false if it was already saved
    * @throws {DatabaseError} if event values are out of bounds or storage fails
    */
   async saveEvent(
     event: NostrEvent,
-    { seenOn, lastAttempt, followedBy }: { seenOn?: string[]; lastAttempt?: number; followedBy?: string[] } = {},
+    { seenOn, lastAttempt }: { seenOn?: string[]; lastAttempt?: number } = {},
   ): Promise<boolean> {
     if (!this.#fullyInitialized) await this.init()
 
@@ -100,39 +98,44 @@ export class RedEventStore {
     }
 
     // start batching logic
-    let batch = this.saveBatch
+    if (!this.saveBatch) {
+      this.saveBatch = [[], [], [], []]
+    }
 
-    if (!batch) {
-      batch = [[], [], [], [], []]
-      this.saveBatch = batch
+    // reset/set the debounce timeout
+    if (this.saveBatchTimeout) {
+      clearTimeout(this.saveBatchTimeout)
+    }
+    this.saveBatchTimeout = setTimeout(() => {
+      const batch = this.saveBatch
+      if (!batch) return
 
-      // once we know we have a fresh batch, we schedule this batch to run
-      queueMicrotask(() => {
-        const batch = this.saveBatch
-        if (!batch) return
+      const lastAttempts = batch[1]
+      const rawEvents = batch[2]
+      const tasks = batch[3]
 
-        const lastAttempts = batch[1]
-        const followedBys = batch[2]
-        const rawEvents = batch[3]
-        const tasks = batch[4]
+      // clear the batch and timeout so new requests start a new batch
+      this.saveBatch = null
+      this.saveBatchTimeout = null
 
-        // as soon as we start processing this batch, we need to null it
-        // to ensure that any new requests will be added to a new batch
-        this.saveBatch = null
-
-        this.call('saveEvents', { lastAttempts, followedBys, rawEvents }).then(results => {
+      this.call('saveEvents', { lastAttempts, rawEvents })
+        .then(results => {
           for (let i = 0; i < tasks.length; i++) {
             tasks[i].resolve((results as boolean[])[i])
           }
         })
-      })
-    }
+        .catch(error => {
+          for (let i = 0; i < tasks.length; i++) {
+            tasks[i].reject(error instanceof Error ? error : new Error(String(error)))
+          }
+        })
+    }, 300)
 
-    batch = batch!
+    const batch = this.saveBatch
 
     // return existing task if it exists
     let idx = batch[0].indexOf(event.id)
-    if (idx !== -1) return batch[4][idx].p
+    if (idx !== -1) return batch[3][idx].p
 
     // add a new one
     let extra = ''
@@ -142,10 +145,9 @@ export class RedEventStore {
     }
 
     idx = batch[0].push(event.id) - 1
-    let task = (batch[4][idx] = {} as SaveTask)
+    let task = (batch[3][idx] = {} as SaveTask)
     batch[1][idx] = lastAttempt || 0
-    batch[2][idx] = followedBy || []
-    batch[3][idx] = utf8Encoder.encode(
+    batch[2][idx] = utf8Encoder.encode(
       `{"pubkey":"${event.pubkey}","id":"${event.id}","kind":${event.kind},"created_at":${event.created_at},"sig":"${event.sig}","tags":${JSON.stringify(event.tags)},"content":${JSON.stringify(event.content)}${extra}}`,
     )
 
@@ -189,7 +191,7 @@ export class RedEventStore {
    * @param maxLimit - maximum number of events to return (default: 500)
    * @returns events matching the filter criteria
    */
-  async queryEvents(filter: Filter & { followedBy?: string }, maxLimit: number = 2500): Promise<NostrEvent[]> {
+  async queryEvents(filter: Filter, maxLimit: number = 2500): Promise<NostrEvent[]> {
     if (!this.#fullyInitialized) await this.init()
     filter.limit = filter.limit ? Math.min(filter.limit, maxLimit) : maxLimit
     return ((await this.call('queryEvents', filter)) as Uint8Array[]).map(b => {
@@ -255,39 +257,6 @@ export class RedEventStore {
         return [b[0], event]
       }
     })
-  }
-
-  /**
-   * removes followedBy indexes for all events of a pubkey followed by another pubkey.
-   *
-   * @param follower - the pubkey that is unfollowing
-   * @param followed - the pubkey being unfollowed
-   */
-  async markFollow(follower: string, followed: string): Promise<void> {
-    if (!this.#fullyInitialized) await this.init()
-    await this.call('markFollow', { follower, followed })
-  }
-
-  /**
-   * removes followedBy indexes for all events of a pubkey followed by another pubkey.
-   *
-   * @param follower - the pubkey that is unfollowing
-   * @param followed - the pubkey being unfollowed
-   */
-  async markUnfollow(follower: string, followed: string): Promise<void> {
-    if (!this.#fullyInitialized) await this.init()
-    await this.call('markUnfollow', { follower, followed })
-  }
-
-  /**
-   * cleans followedBy indexes for events followed by a specific pubkey, except for some.
-   *
-   * @param followedBy - the pubkey whose followed events to clean
-   * @param except - list of authors whose indexes should not be deleted.
-   */
-  async cleanFollowed(followedBy: string, except: string[]): Promise<void> {
-    if (!this.#fullyInitialized) await this.init()
-    await this.call('cleanFollowed', { followedBy, except })
   }
 
   /**
