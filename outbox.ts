@@ -1,6 +1,8 @@
 import { getSemaphore } from '@henrygd/semaphore'
-import { Filter, NostrEvent, SimplePool } from '@nostr/tools'
+import { SimplePool } from '@nostr/tools/pool'
 import { normalizeURL } from '@nostr/tools/utils'
+import { Filter } from '@nostr/tools/filter'
+import { NostrEvent } from '@nostr/tools/core'
 import { EventDeletion } from '@nostr/tools/kinds'
 
 import { loadRelayList } from './lists.ts'
@@ -35,8 +37,8 @@ export class OutboxManager {
 
   constructor(
     baseFilters: Filter[],
-    opts?: {
-      store?: RedEventStore
+    store: RedEventStore,
+    opts: {
       pool?: SimplePool
       label?: string
       onliveupdate?: (event: NostrEvent) => void
@@ -49,10 +51,10 @@ export class OutboxManager {
     },
   ) {
     this.baseFilters = baseFilters
-    this.store = opts?.store || eventStore
+    this.store = store
     this.bounds = {}
     this.boundsPromise = this.getBounds()
-    this.pool = opts?.pool || pool
+    this.pool = opts?.pool || this.pool
     this.label = opts?.label || 'outbox'
     this.onliveupdate = opts?.onliveupdate
     this.onsyncupdate = opts?.onsyncupdate
@@ -480,7 +482,6 @@ export class OutboxManager {
    * retrieves bounds from the syncing store.
    */
   async getBounds(): Promise<{ [pubkey: string]: [number, number] }> {
-    if (!this.store.initialized) await this.store.init()
     return this.store.getOutboxBounds()
   }
 
@@ -488,7 +489,6 @@ export class OutboxManager {
    * saves a single bound to the syncing store.
    */
   async setBound(pubkey: string, bound: [number, number]): Promise<void> {
-    if (!this.store.initialized) await this.store.init()
     console.debug(
       'new bound for',
       pubkey,

@@ -25,32 +25,42 @@ export interface ReplaceableStore {
   deleteReplaceable(kind: number, pubkey: string): Promise<void>
 }
 
-// replaceables (kind 0, 3, 1xxxx, etc.)
-type StoredEntry = {
-  event: NostrEvent
-  lastAttempt: number
-}
+const STORAGE_KEY = '@nostr/gadgets/replaceables'
 
-// addressables (kind 3xxxx) - stored as a bundle
-type StoredBundle = {
-  events: NostrEvent[]
-  lastAttempt: number
+// Storage shape: { [pubkey]: { [kind]: [lastAttempt, event | events[]] } }
+type StoredEntry = [lastAttempt: number, event: NostrEvent | undefined]
+type StoredBundle = [lastAttempt: number, events: NostrEvent[]]
+type StorageData = {
+  [pubkey: string]: {
+    [kind: string]: StoredEntry | StoredBundle
+  }
 }
 
 function isAddressable(kind: number): boolean {
   return kind >= 30000 && kind < 40000
 }
 
-function makeKey(kind: number, pubkey: string): string {
-  return `@gadgets/repl:${kind}:${pubkey}`
-}
-
 /**
  * A ReplaceableStore implementation using window.localStorage.
- * For regular replaceables: stores as "<kind>:<pubkey>" -> {event, lastAttempt}
- * For 3xxxx kinds: stores as "<kind>:<pubkey>" -> {events[], lastAttempt} (bundle)
+ * All data stored in a single key with structure: {pubkey: {kind: [lastAttempt, event(s)]}}
+ * For regular replaceables: [lastAttempt, event | undefined]
+ * For 3xxxx kinds: [lastAttempt, events[]] (bundle)
  */
 export class LocalStorageReplaceableStore implements ReplaceableStore {
+  private loadStorage(): StorageData {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!raw) return {}
+    try {
+      return JSON.parse(raw)
+    } catch {
+      return {}
+    }
+  }
+
+  private saveStorage(data: StorageData): void {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  }
+
   async loadReplaceables(
     specs: [kind: number, pubkey: string, dtag?: string][],
   ): Promise<
@@ -59,147 +69,129 @@ export class LocalStorageReplaceableStore implements ReplaceableStore {
       | [lastAttempt: number | undefined, event: NostrEvent | undefined]
     )[]
   > {
+    const storage = this.loadStorage()
+
     return specs.map(([kind, pubkey, dtag]) => {
+      const pubkeyData = storage[pubkey]
+      if (!pubkeyData) {
+        return isAddressable(kind) && dtag === undefined ? [undefined, []] : [undefined, undefined]
+      }
+
+      const entry = pubkeyData[kind]
+      if (!entry) {
+        return isAddressable(kind) && dtag === undefined ? [undefined, []] : [undefined, undefined]
+      }
+
       if (isAddressable(kind) && dtag === undefined) {
         // for 3xxxx kinds without dtag, return bundle (array of all events)
-        const bundleKey = makeKey(kind, pubkey)
-        const raw = window.localStorage.getItem(bundleKey)
-        if (!raw) return [undefined, []]
-        try {
-          const bundle: StoredBundle = JSON.parse(raw)
-          return [bundle.lastAttempt, bundle.events]
-        } catch {
-          return [undefined, []]
-        }
+        const [lastAttempt, events] = entry as StoredBundle
+        return [lastAttempt, events]
       } else if (isAddressable(kind)) {
         // for 3xxxx kinds with dtag, return single event from bundle
-        const bundleKey = makeKey(kind, pubkey)
-        const raw = window.localStorage.getItem(bundleKey)
-        if (!raw) return [undefined, undefined]
-        try {
-          const bundle: StoredBundle = JSON.parse(raw)
-          const event = bundle.events.find(e => (e.tags.find(t => t[0] === 'd')?.[1] || '') === dtag)
-          return [bundle.lastAttempt, event]
-        } catch {
-          return [undefined, undefined]
-        }
+        const [lastAttempt, events] = entry as StoredBundle
+        const event = events.find(e => (e.tags.find(t => t[0] === 'd')?.[1] || '') === dtag)
+        return [lastAttempt, event]
       } else {
         // regular replaceable - single event storage
-        const key = makeKey(kind, pubkey)
-        const raw = window.localStorage.getItem(key)
-        if (!raw) return [undefined, undefined]
-        try {
-          const entry: StoredEntry = JSON.parse(raw)
-          // skip placeholder events with all-zero IDs
-          if (entry.event.id === '0'.repeat(64)) {
-            return [entry.lastAttempt, undefined]
-          }
-          return [entry.lastAttempt, entry.event]
-        } catch {
-          return [undefined, undefined]
+        const [lastAttempt, event] = entry as StoredEntry
+        // skip placeholder events with all-zero IDs
+        if (event && event.id === '0'.repeat(64)) {
+          return [lastAttempt, undefined]
         }
+        return [lastAttempt, event]
       }
     })
   }
 
   async saveEvent(event: NostrEvent, options?: { lastAttempt?: number }): Promise<boolean> {
-    const dtag = event.tags.find(t => t[0] === 'd')?.[1] || ''
+    const storage = this.loadStorage()
     const now = options?.lastAttempt || Math.round(Date.now() / 1000)
+    const kind = event.kind
+    const pubkey = event.pubkey
 
-    if (isAddressable(event.kind)) {
+    if (!storage[pubkey]) {
+      storage[pubkey] = {}
+    }
+
+    if (isAddressable(kind)) {
+      const dtag = event.tags.find(t => t[0] === 'd')?.[1] || ''
       // for 3xxxx kinds, store in bundle
-      const bundleKey = makeKey(event.kind, event.pubkey)
-      const raw = window.localStorage.getItem(bundleKey)
-      let bundle: StoredBundle = { events: [], lastAttempt: now }
-
-      if (raw) {
-        try {
-          bundle = JSON.parse(raw)
-        } catch {
-          // Ignore parse errors, start fresh
-        }
+      let bundle: StoredBundle = storage[pubkey][kind] as StoredBundle
+      if (!bundle) {
+        bundle = [now, []]
       }
 
       // handle placeholder events with all-zero IDs - just update lastAttempt
       if (event.id === '0'.repeat(64) && event.created_at === 0) {
-        bundle.lastAttempt = now
-        window.localStorage.setItem(bundleKey, JSON.stringify(bundle))
+        bundle[0] = now
+        storage[pubkey][kind] = bundle
+        this.saveStorage(storage)
         return false
       }
 
       // find existing event with same dtag
-      const existingIndex = bundle.events.findIndex(e => (e.tags.find(t => t[0] === 'd')?.[1] || '') === dtag)
+      const existingIndex = bundle[1].findIndex(e => (e.tags.find(t => t[0] === 'd')?.[1] || '') === dtag)
 
       if (existingIndex >= 0) {
-        const existing = bundle.events[existingIndex]
+        const existing = bundle[1][existingIndex]
         if (existing.created_at >= event.created_at) {
           // Existing is newer, just update lastAttempt
-          bundle.lastAttempt = now
-          window.localStorage.setItem(bundleKey, JSON.stringify(bundle))
+          bundle[0] = now
+          storage[pubkey][kind] = bundle
+          this.saveStorage(storage)
           return false
         }
         // replace with newer event
-        bundle.events[existingIndex] = event
+        bundle[1][existingIndex] = event
       } else {
         // add new event to bundle
-        bundle.events.push(event)
+        bundle[1].push(event)
       }
 
-      bundle.lastAttempt = now
-      window.localStorage.setItem(bundleKey, JSON.stringify(bundle))
+      bundle[0] = now
+      storage[pubkey][kind] = bundle
+      this.saveStorage(storage)
       return true
     } else {
       // regular replaceable - single event storage
-      const key = makeKey(event.kind, event.pubkey)
+      const existing = storage[pubkey][kind] as StoredEntry | undefined
 
       // handle placeholder events with all-zero IDs - just save lastAttempt marker
       if (event.id === '0'.repeat(64) && event.created_at === 0) {
-        const raw = window.localStorage.getItem(key)
-        if (raw) {
-          try {
-            const entry: StoredEntry = JSON.parse(raw)
-            entry.lastAttempt = now
-            window.localStorage.setItem(key, JSON.stringify(entry))
-          } catch {
-            // ignore parse errors
-          }
+        if (existing) {
+          existing[0] = now
+          storage[pubkey][kind] = existing
         } else {
-          // no existing entry - save a marker with a placeholder event
-          const marker: StoredEntry = { event, lastAttempt: now }
-          window.localStorage.setItem(key, JSON.stringify(marker))
+          storage[pubkey][kind] = [now, event]
         }
+        this.saveStorage(storage)
         return false
       }
 
       // check if we already have a newer event
-      const raw = window.localStorage.getItem(key)
-      if (raw) {
-        try {
-          const existing: StoredEntry = JSON.parse(raw)
-          if (existing.event.created_at >= event.created_at) {
-            // update lastAttempt if provided
-            existing.lastAttempt = now
-            window.localStorage.setItem(key, JSON.stringify(existing))
-            return false
-          }
-        } catch {
-          // ignore parse errors, will overwrite
-        }
+      if (existing && existing[1] && existing[1].created_at >= event.created_at) {
+        // update lastAttempt
+        existing[0] = now
+        storage[pubkey][kind] = existing
+        this.saveStorage(storage)
+        return false
       }
 
-      const entry: StoredEntry = { event, lastAttempt: now }
-      window.localStorage.setItem(key, JSON.stringify(entry))
+      storage[pubkey][kind] = [now, event]
+      this.saveStorage(storage)
       return true
     }
   }
 
   async deleteReplaceable(kind: number, pubkey: string) {
-    if (isAddressable(kind)) {
-      // delete the bundle
-      window.localStorage.removeItem(makeKey(kind, pubkey))
-    } else {
-      // delete the single entry
-      window.localStorage.removeItem(makeKey(kind, pubkey))
+    const storage = this.loadStorage()
+    if (storage[pubkey]) {
+      delete storage[pubkey][kind]
+      // clean up empty pubkey objects
+      if (Object.keys(storage[pubkey]).length === 0) {
+        delete storage[pubkey]
+      }
+      this.saveStorage(storage)
     }
   }
 }
