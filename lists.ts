@@ -128,6 +128,8 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
   10002,
   RELAYLIST_RELAYS,
   itemsFromTags<RelayItem>((tag: string[]): RelayItem | undefined => {
+    if (tag[0] !== 'r') return undefined
+
     if (tag.length === 2) {
       return { url: tag[1], read: true, write: true }
     } else if (tag[2] === 'read') {
@@ -253,7 +255,9 @@ export function makeListFetcher<I>(
 
         // try to get from store first -- also set up the results array with defaults
         // use 3-tuple with empty dtag to get single event return type
-        const stored = await replaceableStore.loadReplaceables(requests.map(r => [kind, r.target, ''] as [number, string, string]))
+        const stored = await replaceableStore.loadReplaceables(
+          requests.map(r => [kind, r.target, ''] as [number, string, string]),
+        )
 
         let results: ListResult<I>[] = stored.map<ListResult<I>>(([lastAttempt, storedEvent], i) => {
           const req = requests[i] as Request & { index: number }

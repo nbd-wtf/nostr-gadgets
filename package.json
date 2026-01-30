@@ -5,7 +5,7 @@
     "@henrygd/semaphore": "npm:@jsr/henrygd__semaphore@^0.0.2",
     "@nostr/tools": "../nostr-tools",
     "idb-keyval": "^6.2.1",
-    "@noble/hashes": "npm:@jsr/noble__hashes@2.0.1"
+    "@noble/hashes": "2.0.1"
   },
   "devDependencies": {
     "@vitest/browser-preview": "^4.0.16",
