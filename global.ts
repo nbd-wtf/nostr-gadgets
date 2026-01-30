@@ -1,13 +1,19 @@
 import { SimplePool } from '@nostr/tools/pool'
 import { MemoryHints } from './hints'
+import { Purgatory } from './purgatory'
 import { type ReplaceableStore, defaultReplaceableStore } from './replaceable-store'
 
 export type { ReplaceableStore }
 
+export const purgatory = new Purgatory()
+
 /**
  * pool is a global used by all other functions in this library. Feel free to use it directly in your app.
  */
-export let pool: SimplePool = new SimplePool()
+export let pool: SimplePool = new SimplePool({
+  onRelayConnectionFailure: purgatory.onRelayConnectionFailure.bind(purgatory),
+  allowConnectingToRelay: purgatory.allowConnectingToRelay.bind(purgatory),
+})
 
 /**
  * setPool sets the global pool -- do not use unless you know what you're doing.

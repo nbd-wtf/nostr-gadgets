@@ -1,13 +1,13 @@
-import { expect, test, describe, beforeAll } from 'vitest'
+import { expect, test, describe } from 'vitest'
 
 import { loadNostrUser } from './metadata'
+import { normalizeURL } from '@nostr/tools/utils'
 import { loadRelayList, loadFollowsList, makeListFetcher, itemsFromTags, isFresh } from './lists'
 import { loadWoT, globalism } from './wot'
 import { loadRelaySets } from './sets'
 import { outboxFilterRelayBatch } from './outbox'
+import { pool, purgatory } from './global'
 import { isHex32 } from './utils'
-import { eventStore } from './global'
-import { RedEventStore } from './redstore'
 
 const TEST_PUBKEYS = {
   fiatjaf: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
@@ -17,14 +17,6 @@ const TEST_PUBKEYS = {
 }
 
 describe('replaceables', () => {
-  beforeAll(async () => {
-    const dbs = await RedEventStore.list()
-    console.log('before test:', dbs)
-    for (let db of dbs) {
-      if (db.name === eventStore.name) await RedEventStore.delete(db.name)
-    }
-  })
-
   test('loadNostrUser', async () => {
     const users = await Promise.all([
       loadNostrUser(TEST_PUBKEYS.fiatjaf),
@@ -166,5 +158,21 @@ describe('outbox', () => {
     expect(counts[TEST_PUBKEYS.pablo]).toBeGreaterThan(2)
     expect(counts[TEST_PUBKEYS.jb55]).toBeGreaterThan(2)
     expect(counts[TEST_PUBKEYS.daniele]).toBeGreaterThan(2)
+  })
+})
+
+describe('purgatory', () => {
+  test('invalid relay gets added to purgatory and fails instantly', async () => {
+    const invalidRelayUrl = 'wss://relay.example.com'
+
+    const event = await pool.get([invalidRelayUrl], { kinds: [1] })
+    expect(event).toBeNull()
+
+    // check that relay was added to purgatory
+    expect(purgatory.state[normalizeURL(invalidRelayUrl)]).toBeTruthy()
+    expect(purgatory.state[normalizeURL(invalidRelayUrl)].failures).toEqual(1)
+
+    // check that purgatory now blocks connections to this relay
+    expect(purgatory.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
   })
 })
