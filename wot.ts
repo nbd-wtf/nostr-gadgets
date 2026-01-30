@@ -5,7 +5,7 @@
 
 import { createStore, get, set, UseStore } from 'idb-keyval'
 import { loadFollowsList, loadMuteList, loadRelayList } from './lists'
-import { normalizeURL } from '@nostr/tools/utils'
+import { purgatory } from './global'
 
 var store: UseStore
 
@@ -54,10 +54,11 @@ export async function globalism(pubkeys: string[]): Promise<string[]> {
   for (let i = 0; i < rls.length; i++) {
     for (let j = 0; j < rls[i].items.length; j++) {
       try {
-        const relay = normalizeURL(rls[i].items[j].url)
-        let curr = list.find(rs => rs[1] === relay)
+        const url = rls[i].items[j].url
+        if (!purgatory.allowConnectingToRelay(url, ['read', this.baseFilters])) continue
+        let curr = list.find(rs => rs[1] === url)
         if (!curr) {
-          curr = [0, relay]
+          curr = [0, url]
           list.push(curr)
         }
         curr[0] += 20 / rls[i].items.length

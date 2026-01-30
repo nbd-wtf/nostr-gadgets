@@ -131,11 +131,11 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
     if (tag[0] !== 'r') return undefined
 
     if (tag.length === 2) {
-      return { url: tag[1], read: true, write: true }
+      return { url: normalizeURL(tag[1]), read: true, write: true }
     } else if (tag[2] === 'read') {
-      return { url: tag[1], read: true, write: false }
+      return { url: normalizeURL(tag[1]), read: true, write: false }
     } else if (tag[2] === 'write') {
-      return { url: tag[1], read: false, write: true }
+      return { url: normalizeURL(tag[1]), read: false, write: true }
     }
   }),
 )

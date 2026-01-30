@@ -11,8 +11,8 @@ export const purgatory = new Purgatory()
  * pool is a global used by all other functions in this library. Feel free to use it directly in your app.
  */
 export let pool: SimplePool = new SimplePool({
-  onRelayConnectionFailure: purgatory.onRelayConnectionFailure.bind(purgatory),
   allowConnectingToRelay: purgatory.allowConnectingToRelay.bind(purgatory),
+  onRelayConnectionFailure: purgatory.onRelayConnectionFailure.bind(purgatory),
 })
 
 /**

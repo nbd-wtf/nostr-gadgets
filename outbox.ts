@@ -1,6 +1,5 @@
 import { getSemaphore } from '@henrygd/semaphore'
 import { SimplePool } from '@nostr/tools/pool'
-import { normalizeURL } from '@nostr/tools/utils'
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/core'
 import { EventDeletion } from '@nostr/tools/kinds'
@@ -9,6 +8,7 @@ import { loadRelayList } from './lists.ts'
 import { RedEventStore } from './redstore/index.ts'
 import { shuffle } from './utils.ts'
 import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
+import { purgatory } from './global.ts'
 
 /**
  * OutboxManager handles the pool, store, and bounds for outbox feeds.
@@ -198,6 +198,7 @@ export class OutboxManager {
 
           let relays = (await loadRelayList(pubkey)).items
             .filter(r => r.write)
+            .filter(r => purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
             .slice(0, 4)
             .map(r => r.url)
 
@@ -416,6 +417,7 @@ export class OutboxManager {
 
         let relays = (await loadRelayList(pubkey)).items
           .filter(r => r.write)
+          .filter(r => purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
           .slice(0, 4)
           .map(r => r.url)
 
@@ -563,7 +565,8 @@ export async function outboxFilterRelayBatch(
       for (let i = 0; i < rl.items.length; i++) {
         if (rl.items[i].write) {
           try {
-            const url = normalizeURL(rl.items[i].url)
+            const url = rl.items[i].url
+            if (!purgatory.allowConnectingToRelay(url, ['read', this.baseFilters])) continue
             const count = relayCounts[url] || { count: 0 }
             relayCounts[url] = count
             relaysByPubKey[pubkey][url] = count
