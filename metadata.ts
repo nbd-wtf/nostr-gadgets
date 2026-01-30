@@ -111,7 +111,9 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
 
       // try to get from store first -- also set up the results array with defaults
       // use 3-tuple with empty dtag to get single event return type
-      const stored = await replaceableStore.loadReplaceables(requests.map(r => [0, r.pubkey, ''] as [number, string, string]))
+      const stored = (await replaceableStore.loadReplaceables(
+        requests.map(r => [0, r.pubkey, ''] as [number, string, string]),
+      )) as [number, NostrEvent][]
 
       let results: Array<NostrUser | Error> = stored.map(([lastAttempt, storedEvent], i): NostrUser => {
         const req = requests[i]

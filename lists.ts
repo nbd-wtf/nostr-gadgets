@@ -255,9 +255,9 @@ export function makeListFetcher<I>(
 
         // try to get from store first -- also set up the results array with defaults
         // use 3-tuple with empty dtag to get single event return type
-        const stored = await replaceableStore.loadReplaceables(
+        const stored = (await replaceableStore.loadReplaceables(
           requests.map(r => [kind, r.target, ''] as [number, string, string]),
-        )
+        )) as [number, NostrEvent][]
 
         let results: ListResult<I>[] = stored.map<ListResult<I>>(([lastAttempt, storedEvent], i) => {
           const req = requests[i] as Request & { index: number }

@@ -83,9 +83,9 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         let now = Math.round(Date.now() / 1000)
 
         // try to get from store first -- 2-tuple returns all events for 3xxxx kinds as bundle
-        const stored = await replaceableStore.loadReplaceables(
+        const stored = (await replaceableStore.loadReplaceables(
           requests.map(r => [kind, r.target] as [number, string]),
-        )
+        )) as [number, NostrEvent[]][]
 
         let results = stored.map(([lastAttempt, events], i) => {
           const req = requests[i] as Request & { index: number }
