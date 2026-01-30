@@ -22,11 +22,12 @@ export class OutboxManager {
   private pool: SimplePool
   private label: string
 
-  private currentlySyncing = new Map<string, () => void>()
-  private permanentlyLive = new Set<string>()
-  private nuclearAbort = new AbortController()
+  private currentlySyncing: Map<string, () => void>
+  private permanentlyLive: Set<string>
+  public liveSubscriptions: { url: string; filter: Filter }[]
+  private nuclearAbort: AbortController
   private defaultRelaysForConfusedPeople = BIG_RELAYS_DO_NOT_USE_EVER
-  private storeRelaysSeenOn = false
+  private storeRelaysSeenOn: boolean
 
   private onliveupdate: undefined | ((event: NostrEvent) => void)
   private onsyncupdate: undefined | ((pubkey: string) => void)
@@ -59,10 +60,19 @@ export class OutboxManager {
     this.ondeletions = opts?.ondeletions
     this.defaultRelaysForConfusedPeople = opts?.defaultRelaysForConfusedPeople || this.defaultRelaysForConfusedPeople
     this.storeRelaysSeenOn = opts?.storeRelaysSeenOn || false
+    this.setup()
+  }
+
+  setup() {
+    this.nuclearAbort = new AbortController()
+    this.liveSubscriptions = []
+    this.currentlySyncing = new Map()
+    this.permanentlyLive = new Set()
   }
 
   close() {
     this.nuclearAbort.abort('<OutboxManager closed>')
+    this.setup()
   }
 
   private async ensureBoundsLoaded() {
@@ -322,6 +332,8 @@ export class OutboxManager {
       })),
     )
 
+    this.liveSubscriptions.push(...declaration)
+
     const closer = this.pool.subscribeMap(declaration, {
       label: `live-${this.label}`,
       onevent: async event => {
@@ -348,6 +360,7 @@ export class OutboxManager {
     if (opts.signal) {
       opts.signal.onabort = () => {
         closer.close()
+        this.liveSubscriptions = this.liveSubscriptions.filter(sub => declaration.includes(sub))
       }
     }
     this.nuclearAbort.signal.onabort = () => {
