@@ -46,7 +46,7 @@ export class Purgatory {
     const relay = this.state[url]
     if (!relay) return true
 
-    let purgeTime = relay.failures * 5 * 60 // 5 minutes for each failure
+    let purgeTime = relay.failures * 15 * 60 // 15 minutes for each failure
     let lastAttempt =
       relay.lastAttempt < this.startTime
         ? /* last time was in a previous session. apply the discount */ relay.lastAttempt + this.discount
