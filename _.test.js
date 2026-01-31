@@ -1,4 +1,4 @@
-import { expect, test, describe, beforeAll } from 'vitest'
+import { expect, test, describe, beforeAll, beforeEach } from 'vitest'
 import { generateSecretKey, getPublicKey, finalizeEvent } from '@nostr/tools/pure'
 import { normalizeURL } from '@nostr/tools/utils'
 
@@ -11,6 +11,7 @@ import { pool, purgatory, setReplaceableStore } from './global'
 import { isHex32 } from './utils'
 import { RedEventStore } from './redstore'
 import { defaultReplaceableStore } from './replaceable-store'
+import { Purgatory } from './purgatory'
 
 const TEST_PUBKEYS = {
   fiatjaf: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
@@ -185,18 +186,70 @@ test('outbox_filter_batch', async () => {
   expect(counts[TEST_PUBKEYS.fiatjaf]).toBeGreaterThanOrEqual(2)
 })
 
-test('purgatory', async () => {
-  window.localStorage.removeItem('@nostr/gadgets/purgatory')
+describe('purgatory', async () => {
+  test('basic', async () => {
+    window.localStorage.removeItem('@nostr/gadgets/purgatory')
+    const invalidRelayUrl = 'wss://relay.example.com'
 
-  const invalidRelayUrl = 'wss://relay.example.com'
+    const event = await pool.get([invalidRelayUrl], { kinds: [1] })
+    expect(event).toBeNull()
 
-  const event = await pool.get([invalidRelayUrl], { kinds: [1] })
-  expect(event).toBeNull()
+    // check that relay was added to purgatory
+    expect(purgatory.state[normalizeURL(invalidRelayUrl)]).toBeTruthy()
+    expect(purgatory.state[normalizeURL(invalidRelayUrl)].failures).toEqual(1)
 
-  // check that relay was added to purgatory
-  expect(purgatory.state[normalizeURL(invalidRelayUrl)]).toBeTruthy()
-  expect(purgatory.state[normalizeURL(invalidRelayUrl)].failures).toEqual(1)
+    // check that purgatory now blocks connections to this relay
+    expect(purgatory.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+  })
 
-  // check that purgatory now blocks connections to this relay
-  expect(purgatory.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+  test('cross-session', async () => {
+    const label = '@nostr/gadgets/purgatory/test'
+    window.localStorage.removeItem(label)
+    const invalidRelayUrl = 'wss://relay.example2.com'
+    const now = Math.round(Date.now() / 1000)
+
+    window.localStorage.setItem(
+      label,
+      JSON.stringify({
+        lastSave: now - 60 * 100, // 100 minutes ago
+        [normalizeURL(invalidRelayUrl)]: { failures: 1, lastAttempt: now - 60 * 105 /* 105 minutes */ },
+      }),
+    )
+
+    const p = new Purgatory(label)
+    p.startTime = now - 60 * 3 // 3 minutes ago
+
+    // - a relay was failed, so it should be on purgatory for 15 minutes
+    // - 5 minutes later we closed the browser
+    // - 97 minutes afterwards we opened it again
+    // - now it's been opened for 3 minutes, the relay should still fail to connect
+    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+
+    // - try again, but this time pretend we've been open for 6 minutes
+    p.startTime = now - 60 * 6
+    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+
+    // - try again, but this time pretend we've been open for 9 minutes
+    p.startTime = now - 60 * 9
+    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+
+    // - try again, but this time pretend we've been open for 11 minutes
+    // except this time it should work
+    p.startTime = now - 60 * 11
+    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(true)
+
+    // but if the number of failures is higher then it shouldn't
+    p.state[normalizeURL(invalidRelayUrl)].failures++
+    p.startTime = now - 60 * 11
+    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+
+    // - try again, but this time pretend we've been open for 20 minutes
+    p.startTime = now - 60 * 20
+    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+
+    // - try again, but this time pretend we've been open for 26 minutes
+    // and then it should work again
+    p.startTime = now - 60 * 26
+    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(true)
+  })
 })

@@ -13,6 +13,7 @@ export const purgatory = new Purgatory()
 export let pool: SimplePool = new SimplePool({
   allowConnectingToRelay: purgatory.allowConnectingToRelay.bind(purgatory),
   onRelayConnectionFailure: purgatory.onRelayConnectionFailure.bind(purgatory),
+  onRelayConnectionSuccess: purgatory.onRelayConnectionSuccess.bind(purgatory),
 })
 
 /**
