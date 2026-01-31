@@ -55,7 +55,8 @@ export async function globalism(pubkeys: string[]): Promise<string[]> {
     for (let j = 0; j < rls[i].items.length; j++) {
       try {
         const url = rls[i].items[j].url
-        if (!purgatory.allowConnectingToRelay(url, ['read', this.baseFilters])) continue
+        const allowed = purgatory.allowConnectingToRelay(url, ['read', [{}]])
+        if (!allowed) continue
         let curr = list.find(rs => rs[1] === url)
         if (!curr) {
           curr = [0, url]

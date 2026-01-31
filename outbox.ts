@@ -197,8 +197,7 @@ export class OutboxManager {
           }
 
           let relays = (await loadRelayList(pubkey)).items
-            .filter(r => r.write)
-            .filter(r => purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
+            .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
             .slice(0, 4)
             .map(r => r.url)
 
@@ -416,8 +415,7 @@ export class OutboxManager {
         }
 
         let relays = (await loadRelayList(pubkey)).items
-          .filter(r => r.write)
-          .filter(r => purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
+          .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
           .slice(0, 4)
           .map(r => r.url)
 
@@ -566,7 +564,7 @@ export async function outboxFilterRelayBatch(
         if (rl.items[i].write) {
           try {
             const url = rl.items[i].url
-            if (!purgatory.allowConnectingToRelay(url, ['read', this.baseFilters])) continue
+            if (!purgatory.allowConnectingToRelay(url, ['read', baseFilters])) continue
             const count = relayCounts[url] || { count: 0 }
             relayCounts[url] = count
             relaysByPubKey[pubkey][url] = count

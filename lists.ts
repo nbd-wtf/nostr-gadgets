@@ -250,8 +250,9 @@ export function makeListFetcher<I>(
   const dataloader = new DataLoader<Request, ListResult<I>, string>(
     requests =>
       new Promise(async resolve => {
-        let remainingRequests: (Request & { index: number })[] = []
-        let now = Math.round(Date.now() / 1000)
+        const remainingRequests: (Request & { index: number })[] = []
+        const pendingSaves: Promise<boolean>[] = []
+        const now = Math.round(Date.now() / 1000)
 
         // try to get from store first -- also set up the results array with defaults
         // use 3-tuple with empty dtag to get single event return type
@@ -266,7 +267,7 @@ export function makeListFetcher<I>(
           if (typeof req.refreshStyle === 'object') {
             // we have the event right here, so just use it
             const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
-            replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now })
+            pendingSaves.push(replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now }))
             return final
           } else if (!storedEvent) {
             if (req.refreshStyle !== false) remainingRequests.push(req)
@@ -283,7 +284,8 @@ export function makeListFetcher<I>(
         })
 
         if (remainingRequests.length === 0) {
-          resolve(results)
+          if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
+          else resolve(results)
           return
         }
 
@@ -330,7 +332,8 @@ export function makeListFetcher<I>(
                 handle?.close()
               },
               async onclose() {
-                resolve(results)
+                if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
+                else resolve(results)
 
                 // save blank events for pubkeys that didn't receive any events (they won't be really saved)
                 for (const req of remainingRequests) {
@@ -353,7 +356,8 @@ export function makeListFetcher<I>(
             },
           )
         } catch (err) {
-          resolve(results.map(_ => err as Error))
+          if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
+          else resolve(results.map(_ => err as Error))
         }
       }),
     {

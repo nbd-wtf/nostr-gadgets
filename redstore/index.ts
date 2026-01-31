@@ -319,7 +319,7 @@ type SaveTask = {
 
 // special properties we sneak into the event objects
 const isLocalSymbol = Symbol('this event is stored locally')
-const seenOnSymbol = Symbol('relays where this event was seen before stored')
+const seenOnSymbol = Symbol('relays where this event was seen')
 
 export function isLocal(event: NostrEvent): boolean {
   return (event as any)[isLocalSymbol] || false

@@ -107,7 +107,8 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
   async requests =>
     new Promise(async resolve => {
       const toFetch: NostrUserRequest[] = []
-      let now = Math.round(Date.now() / 1000)
+      const pendingSaves: Promise<boolean>[] = []
+      const now = Math.round(Date.now() / 1000)
 
       // try to get from store first -- also set up the results array with defaults
       // use 3-tuple with empty dtag to get single event return type
@@ -122,7 +123,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
           // we have the event right here, so just use it
           let nu = bareNostrUser(req.pubkey)
           enhanceNostrUserWithEvent(nu, req.refreshStyle)
-          replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now })
+          pendingSaves.push(replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now }))
           return nu
         } else if (!storedEvent) {
           if (req.refreshStyle !== false) toFetch.push(req)
@@ -151,7 +152,8 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
 
       // no need to do any requests if we don't have anything to fetch
       if (toFetch.length === 0) {
-        resolve(results)
+        if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
+        else resolve(results)
         return
       }
 
@@ -219,7 +221,8 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
             }
           },
           oneose() {
-            resolve(results)
+            if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
+            else resolve(results)
 
             h.close()
 
@@ -246,7 +249,8 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
         for (let i = 0; i < results.length; i++) {
           results[i] = err as Error
         }
-        resolve(results)
+        if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
+        else resolve(results)
       }
     }),
   {

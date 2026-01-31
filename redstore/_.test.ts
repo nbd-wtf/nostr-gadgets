@@ -110,6 +110,27 @@ describe('redstore', () => {
     await store.close()
   })
 
+  test('uniq', async () => {
+    const store = new RedEventStore(null, TEST_DB)
+    await store.init()
+
+    const event = finalizeEvent(
+      {
+        kind: 1888,
+        created_at: 1000,
+        content: 'goodbye',
+        tags: [],
+      },
+      sk4,
+    )
+
+    await store.saveEvent(event)
+    await store.saveEvent(event)
+
+    const results = await store.queryEvents({ authors: [getPublicKey(sk4)], kinds: [1888] }, 2)
+    expect(results).toHaveLength(1)
+  })
+
   test('more', async () => {
     const store = new RedEventStore(null, TEST_DB)
     await store.init()

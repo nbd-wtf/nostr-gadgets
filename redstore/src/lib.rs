@@ -431,10 +431,6 @@ impl Redstore {
             s
         };
 
-        if last_serial % 4 == 0 {
-            let _ = write_txn.set_durability(redb::Durability::None);
-        }
-
         #[cfg(debug_assertions)]
         web_sys::console::log_1(
             &js_sys::JsString::from_str(&format!(
@@ -471,6 +467,35 @@ impl Redstore {
             {
                 // don't store the event if it didn't come
                 continue;
+            }
+
+            // check if event id already exists (uniqueness by id)
+            {
+                let mut id_key = [0u8; 8];
+                if parse_hex_into(&indexable_event.id[48..64], &mut id_key[0..8]).is_ok() {
+                    let ids_index = read_txn.open_table(INDEX_ID).map_err(|e| {
+                        JsValue::from_str(&format!("open index_id for dup check error: {:?}", e))
+                    })?;
+
+                    if ids_index
+                        .get(&id_key[..])
+                        .map_err(|e| {
+                            JsValue::from_str(&format!(
+                                "get from index_id for dup check error: {:?}",
+                                e
+                            ))
+                        })?
+                        .is_some()
+                    {
+                        #[cfg(debug_assertions)]
+                        web_sys::console::log_1(&js_sys::JsString::from(format!(
+                            "event not stored: duplicate id={}",
+                            indexable_event.id
+                        )));
+                        result.set(i, js_sys::Boolean::from(false).into());
+                        continue;
+                    }
+                }
             }
 
             let last_attempt = last_attempts
@@ -597,35 +622,28 @@ impl Redstore {
             }
 
             // insert event and indexes
-            let is_new = {
+            {
                 let mut events_table = write_txn.open_table(EVENTS).map_err(|e| {
                     JsValue::from_str(&format!("events insert table error: {:?}", e))
                 })?;
 
                 events_table
                     .insert(current_serial, &raw_event[..])
-                    .map_err(|e| JsValue::from_str(&format!("events insert error: {:?}", e)))?
-                    .is_none() // it will be None if the key is new, otherwise will return the old value
-            };
-
-            // normal indexes (if new)
-            if is_new {
-                #[cfg(debug_assertions)]
-                web_sys::console::log_1(&js_sys::JsString::from(format!(
-                    "successfully stored replaceable event: kind={}, id={}",
-                    indexable_event.kind, indexable_event.id
-                )));
-                self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
-
-                current_serial += 1;
-                result.set(i, js_sys::Boolean::from(true).into());
-            } else {
-                #[cfg(debug_assertions)]
-                web_sys::console::log_1(&js_sys::JsString::from(format!(
-                    "replaceable event not stored: event already exists with same id"
-                )));
-                result.set(i, js_sys::Boolean::from(false).into());
+                    .map_err(|e| JsValue::from_str(&format!("events insert error: {:?}", e)))?;
             }
+
+            #[cfg(debug_assertions)]
+            web_sys::console::log_1(&js_sys::JsString::from(format!(
+                "successfully stored event: kind={}, id={}",
+                indexable_event.kind, indexable_event.id
+            )));
+
+            {
+                self.insert_indexes(&mut write_txn, &indexable_event, current_serial)?;
+            }
+
+            current_serial += 1;
+            result.set(i, js_sys::Boolean::from(true).into());
         }
 
         write_txn
