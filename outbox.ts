@@ -230,7 +230,8 @@ export class OutboxManager {
             ).flat()
           } catch (err) {
             console.warn('failed to query events for', pubkey, 'at', relays, '=>', err)
-            // TODO
+            this.finishSyncing(pubkey)
+            sem.release()
             return
           }
 
@@ -445,7 +446,8 @@ export class OutboxManager {
           ).flat()
         } catch (err) {
           console.warn('failed to query before events for', pubkey, 'at', relays, '=>', err)
-          // TODO
+          this.finishSyncing(pubkey)
+          sem.release()
           return
         }
 
