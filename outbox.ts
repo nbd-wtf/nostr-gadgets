@@ -218,9 +218,12 @@ export class OutboxManager {
               await Promise.race([
                 new Promise<NostrEvent[]>((_, reject) => setTimeout(() => reject(new Error('<timeout>')), 45000)),
                 Promise.all(
-                  this.baseFilters.map(
-                    f => this.pool.querySync(relays, { ...f, authors: [pubkey], since: newest, limit: 200 }),
-                    { label: `sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
+                  this.baseFilters.map(f =>
+                    this.pool.querySync(
+                      relays,
+                      { ...f, authors: [pubkey], since: newest, limit: 200 },
+                      { label: `sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
+                    ),
                   ),
                 ),
               ])
