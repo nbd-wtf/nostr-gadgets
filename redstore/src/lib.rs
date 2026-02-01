@@ -46,6 +46,12 @@ impl StorageBackend for WasmBackend {
         Ok(size as u64)
     }
 
+    fn set_len(&self, len: u64) -> std::result::Result<(), io::Error> {
+        self.sync_handle
+            .truncate_with_u32(len as u32)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))
+    }
+
     fn read(&self, offset: u64, out: &mut [u8]) -> std::result::Result<(), io::Error> {
         let mut bytes_read = 0;
         let options = web_sys::FileSystemReadWriteOptions::new();
@@ -60,13 +66,6 @@ impl StorageBackend for WasmBackend {
 
             bytes_read += read_result as usize;
         }
-        Ok(())
-    }
-
-    fn set_len(&self, len: u64) -> io::Result<()> {
-        self.sync_handle
-            .truncate_with_f64(len as f64)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
         Ok(())
     }
 
@@ -948,6 +947,10 @@ impl Redstore {
             .commit()
             .map_err(|e| JsValue::from_str(&format!("commit error: {:?}", e)))?;
 
+        Ok(())
+    }
+
+    pub fn close(self) -> Result<()> {
         Ok(())
     }
 }

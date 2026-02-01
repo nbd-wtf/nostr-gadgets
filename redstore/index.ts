@@ -13,6 +13,7 @@ export class DatabaseError extends Error {
 export class RedEventStore {
   #initialized: undefined | Promise<boolean>
   #fullyInitialized: boolean = false
+  #manuallyClosed: boolean = false
   private worker: Worker
   private name: string
   private requests: Record<string, any> = {}
@@ -53,8 +54,15 @@ export class RedEventStore {
    * initializes the database.
    * @returns boolean - true if we're the main database operators, false if we're just forwarding calls to others.
    */
-  async init(): Promise<boolean> {
-    if (this.#initialized) return this.#initialized
+  async init(force?: boolean): Promise<boolean> {
+    if (this.#manuallyClosed && !force) {
+      return Promise.reject(new DatabaseError('database was manually closed. to reopen call init(true)'))
+    }
+
+    if (this.#manuallyClosed) {
+      this.#manuallyClosed = false
+    } else if (this.#initialized) return this.#initialized
+
     this.#initialized = this.call('init', { fileName: this.name })
     this.#initialized.then(() => {
       this.#fullyInitialized = true
@@ -67,10 +75,23 @@ export class RedEventStore {
    */
   async close(): Promise<void> {
     if (this.#initialized) {
-      this.call('close', {})
+      try {
+        await this.call('close', {})
+      } catch {}
       this.#fullyInitialized = false
-      this.#initialized = undefined
+      this.#manuallyClosed = true
+      this.#initialized = Promise.reject(new DatabaseError('database was manually closed and cannot be reopened'))
     }
+  }
+
+  /**
+   * erase the database (deletes the db file).
+   */
+  async delete(): Promise<void> {
+    if (this.#initialized && !this.#manuallyClosed) {
+      throw new Error("can't erase an open database, close() first.")
+    }
+    return RedEventStore.delete(this.name)
   }
 
   private saveBatch: null | [ids: string[], lastAttempts: number[], rawEvents: Uint8Array[], tasks: SaveTask[]] = null

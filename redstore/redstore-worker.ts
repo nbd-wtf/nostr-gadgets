@@ -70,6 +70,7 @@ self.addEventListener('message', async event => {
       if (db) {
         // handle directly if we're the main worker
         if (method === 'close') {
+          db!.close()
           syncHandle.close()
           sendToPage([id, true, true])
           broadcast(['close'])
