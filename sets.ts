@@ -3,10 +3,11 @@
  * Contains functions for optimized fetching of addressable lists associated with a pubkey.
  */
 
-import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
+
+import DataLoader from './dataloader'
 
 import { pool, replaceableStore } from './global'
 import { isHex32 } from './utils'

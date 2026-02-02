@@ -1,7 +1,6 @@
 import { expect, test, beforeAll, describe } from 'vitest'
 import { hexToBytes } from '@nostr/tools/utils'
 import { finalizeEvent } from '@nostr/tools/pure'
-
 import { matchFilter } from '@nostr/tools/filter'
 import { NostrEvent, getPublicKey } from '@nostr/tools/pure'
 

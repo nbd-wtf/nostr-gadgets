@@ -1,4 +1,4 @@
-import { expect, test, describe, beforeAll, beforeEach } from 'vitest'
+import { expect, test, describe, beforeAll } from 'vitest'
 import { generateSecretKey, getPublicKey, finalizeEvent } from '@nostr/tools/pure'
 import { normalizeURL } from '@nostr/tools/utils'
 

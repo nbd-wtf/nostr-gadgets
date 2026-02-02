@@ -21,7 +21,7 @@ async function main() {
   }
 
   // initialize the store
-  const store = new RedEventStore('example-db')
+  const store = new RedEventStore(null, 'example-db')
   await store.init()
   console.log('✓ store initialized')
 

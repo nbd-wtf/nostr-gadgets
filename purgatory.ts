@@ -7,7 +7,7 @@ type PurgedRelay = {
 
 export class Purgatory {
   label: string
-  interval: NodeJS.Timeout
+  interval: number
   state: { [url: string]: PurgedRelay } = {}
 
   // when this class was instantiated

@@ -7,13 +7,13 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
+import { AddressPointer } from '@nostr/tools/nip19'
+import { normalizeURL } from '@nostr/tools/utils'
 
 import { pool, replaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
-import { AddressPointer } from '@nostr/tools/nip19'
-import { normalizeURL } from '@nostr/tools/utils'
 
 let serial = 0
 
