@@ -354,7 +354,11 @@ export class OutboxManager {
         }
 
         if (isNew) {
-          this.bounds[event.pubkey][1] = Math.round(Date.now() / 1000)
+          const now = Math.round(Date.now() / 1000)
+
+          if (event.pubkey in this.bounds) this.bounds[event.pubkey][1] = now
+          else this.bounds[event.pubkey] = [now - 1, now]
+
           await this.setBound(event.pubkey, this.bounds[event.pubkey])
           this.onliveupdate?.(event)
         }
