@@ -5,7 +5,7 @@ import { type ReplaceableStore, defaultReplaceableStore } from './replaceable-st
 
 export type { ReplaceableStore }
 
-export const purgatory = new Purgatory()
+export const purgatory: Purgatory = new Purgatory()
 
 /**
  * pool is a global used by all other functions in this library. Feel free to use it directly in your app.

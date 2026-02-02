@@ -3,9 +3,9 @@
   "dependencies": {
     "@fiatjaf/lru-cache": "npm:@jsr/fiatjaf__lru-cache@^0.0.1",
     "@henrygd/semaphore": "npm:@jsr/henrygd__semaphore@^0.0.2",
-    "@nostr/tools": "../nostr-tools",
-    "idb-keyval": "^6.2.1",
-    "@noble/hashes": "2.0.1"
+    "@noble/hashes": "2.0.1",
+    "@nostr/tools": "npm:@jsr/nostr__tools@^2.23.0",
+    "idb-keyval": "^6.2.1"
   },
   "devDependencies": {
     "@vitest/browser-preview": "^4.0.16",
