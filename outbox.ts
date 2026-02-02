@@ -251,40 +251,42 @@ export class OutboxManager {
             events,
           )
 
-          let added = await Promise.all(
-            events.map(async event => {
-              const deletion = event.kind === EventDeletion
+          if (events.length) {
+            // if we didn't get any events we won't have any new events necessarily
+            // we also will not update bounds (since this was likely an error)
+            let added = await Promise.all(
+              events.map(async event => {
+                const deletion = event.kind === EventDeletion
 
-              const isNew = await this.store.saveEvent(event, {
-                seenOn: this.storeRelaysSeenOn
-                  ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-                  : undefined,
-              })
+                const isNew = await this.store.saveEvent(event, {
+                  seenOn: this.storeRelaysSeenOn
+                    ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
+                    : undefined,
+                })
 
-              if (isNew && deletion) {
-                this.performDeletions(event)
-              }
+                if (isNew && deletion) {
+                  this.performDeletions(event)
+                }
 
-              return isNew
-            }),
-          )
+                return isNew
+              }),
+            )
 
-          if (!addedNewEventsOnSync) {
-            addedNewEventsOnSync = added.indexOf(true) !== -1
+            if (!addedNewEventsOnSync) {
+              addedNewEventsOnSync = added.indexOf(true) !== -1
+            }
+
+            // update stored bound bounds for this person since they're caught up to now
+            if (bound) {
+              bound[1] = now
+            } else {
+              // didn't have anything before, but now we have all of these
+              bound = [events[events.length - 1].created_at, now]
+            }
+            this.bounds[pubkey] = bound
+            await this.setBound(pubkey, bound)
           }
 
-          // update stored bound bounds for this person since they're caught up to now
-          if (bound) {
-            bound[1] = now
-          } else if (events.length) {
-            // didn't have anything before, but now we have all of these
-            bound = [events[events.length - 1].created_at, now]
-          } else {
-            // no bound, no events
-            bound = [now - 1, now]
-          }
-          this.bounds[pubkey] = bound
-          await this.setBound(pubkey, bound)
           this.finishSyncing(pubkey)
           this.onsyncupdate?.(pubkey)
 
