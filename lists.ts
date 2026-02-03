@@ -10,7 +10,7 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { AddressPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 
-import { pool, replaceableStore } from './global'
+import { pool, purgatory, replaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
@@ -390,7 +390,7 @@ export function makeListFetcher<I>(
       const rl = await loadRelayList(pubkey, hints, refreshStyle)
       relays.push(
         ...rl.items
-          .filter(({ write }) => write)
+          .filter(({ write, url }) => write && purgatory.allowConnectingToRelay(url, ['read', [{ kinds: [kind] }]]))
           .map(({ url }) => url)
           .slice(0, 3),
       )

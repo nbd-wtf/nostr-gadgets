@@ -7,7 +7,7 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 
-import { pool, replaceableStore } from './global'
+import { pool, purgatory, replaceableStore } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
 
@@ -170,7 +170,7 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
             const { items } = await loadRelayList(pubkey)
             let gathered = 0
             for (let j = 0; j < items.length; j++) {
-              if (items[j].write) {
+              if (items[j].write && purgatory.allowConnectingToRelay(items[j].url, ['read', [{ kinds: [0] }]])) {
                 selectedRelays.add(items[j].url)
                 gathered++
                 if (gathered >= 2) break

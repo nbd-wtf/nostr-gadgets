@@ -9,7 +9,7 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 
 import DataLoader from './dataloader'
 
-import { pool, replaceableStore } from './global'
+import { pool, purgatory, replaceableStore } from './global'
 import { isHex32 } from './utils'
 import { Emoji, itemsFromTags, loadRelayList } from './lists'
 
@@ -213,7 +213,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
     const rl = await loadRelayList(pubkey, hints)
     relays.push(
       ...rl.items
-        .filter(({ write }) => write)
+        .filter(({ write, url }) => write && purgatory.allowConnectingToRelay(url, ['read', [{ kinds: [kind] }]]))
         .map(({ url }) => url)
         .slice(0, 3),
     )
