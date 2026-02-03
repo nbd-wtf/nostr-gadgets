@@ -48,6 +48,8 @@ export class Purgatory {
   }
 
   allowConnectingToRelay(url: string, _operation: ['read', Filter[]] | ['write', Event]): boolean {
+    if (!url) return false
+
     const relay = this.state[url]
     if (!relay) return true
 
