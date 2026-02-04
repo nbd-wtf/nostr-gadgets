@@ -30,8 +30,8 @@ export class OutboxManager {
   private storeRelaysSeenOn: boolean
 
   private onliveupdate: undefined | ((event: NostrEvent) => void)
-  private onsyncupdate: undefined | ((pubkey: string) => void)
-  private onbeforeupdate: undefined | ((pubkey: string) => void)
+  private onsyncupdate: undefined | ((pubkey: string, success: boolean) => void)
+  private onbeforeupdate: undefined | ((pubkey: string, success: boolean) => void)
   private ondeletions: undefined | ((ids: string[]) => void)
 
   constructor(
@@ -41,7 +41,7 @@ export class OutboxManager {
       pool?: SimplePool
       label?: string
       onliveupdate?: (event: NostrEvent) => void
-      onsyncupdate?: (pubkey: string) => void
+      onsyncupdate?: (pubkey: string, success: boolean) => void
       onbeforeupdate?: (pubkey: string) => void
       ondeletions?: (ids: string[]) => void
       defaultRelaysForConfusedPeople?: string[]
@@ -181,6 +181,7 @@ export class OutboxManager {
           'already',
         )
         this.finishSyncing(pubkey)
+        this.onsyncupdate?.(pubkey, true)
         continue
       }
 
@@ -192,6 +193,7 @@ export class OutboxManager {
         sem.acquire().then(async () => {
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
             this.finishSyncing(pubkey)
+            this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
           }
@@ -208,6 +210,7 @@ export class OutboxManager {
 
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
             this.finishSyncing(pubkey)
+            this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
           }
@@ -231,12 +234,14 @@ export class OutboxManager {
           } catch (err) {
             console.warn('failed to query events for', pubkey, 'at', relays, '=>', err)
             this.finishSyncing(pubkey)
+            this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
           }
 
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
             this.finishSyncing(pubkey)
+            this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
           }
@@ -288,8 +293,7 @@ export class OutboxManager {
           }
 
           this.finishSyncing(pubkey)
-          this.onsyncupdate?.(pubkey)
-
+          this.onsyncupdate?.(pubkey, true)
           sem.release()
         }),
       )
@@ -403,6 +407,8 @@ export class OutboxManager {
       const sem = getSemaphore('outbox-sync', 15) // do it only 15 pubkeys at a time
       await sem.acquire().then(async () => {
         if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
+          this.finishSyncing(pubkey)
+          this.onbeforeupdate?.(pubkey, false)
           sem.release()
           return
         }
@@ -412,6 +418,8 @@ export class OutboxManager {
           // this should never happen because we set the bounds for everybody
           // (on the first fetch if they don't have one)
           console.error('pagination on pubkey without a bound', pubkey)
+          this.finishSyncing(pubkey)
+          this.onbeforeupdate?.(pubkey, false)
           sem.release()
           return
         }
@@ -453,6 +461,7 @@ export class OutboxManager {
         } catch (err) {
           console.warn('failed to query before events for', pubkey, 'at', relays, '=>', err)
           this.finishSyncing(pubkey)
+          this.onbeforeupdate?.(pubkey, false)
           sem.release()
           return
         }
@@ -484,7 +493,7 @@ export class OutboxManager {
         this.bounds[pubkey] = bound
         await this.setBound(pubkey, bound)
         this.finishSyncing(pubkey)
-        this.onbeforeupdate?.(pubkey)
+        this.onbeforeupdate?.(pubkey, false)
 
         sem.release()
       })
