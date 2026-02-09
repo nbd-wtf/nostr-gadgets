@@ -12,6 +12,7 @@ import { isHex32 } from './utils'
 import { RedEventStore } from './redstore'
 import { defaultReplaceableStore } from './replaceable-store'
 import { Purgatory } from './purgatory'
+import { loadRelayInfo } from './relays'
 
 const TEST_PUBKEYS = {
   fiatjaf: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
@@ -252,4 +253,41 @@ describe('purgatory', async () => {
     p.startTime = now - 60 * 26
     expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(true)
   })
+})
+
+test('relay-info', async () => {
+  // test with a valid relay
+  const relayInfo = await loadRelayInfo('relay.damus.io')
+  expect(relayInfo).toBeTruthy()
+  expect(relayInfo.name).toBe('damus.io')
+  expect(relayInfo.description.includes('Damus')).toBeTruthy()
+
+  // test with refreshStyle false (should use cache if available)
+  const cachedInfo = await loadRelayInfo('wss://relay.damus.io', false)
+  expect(cachedInfo).toEqual(relayInfo)
+
+  // test with an invalid relay
+  const [invalid, cached] = await Promise.all([
+    loadRelayInfo('wss://invalid.example.com'),
+    loadRelayInfo('relay.damus.io'),
+  ])
+  expect(invalid).toBe(null)
+  expect(cached).toEqual(cachedInfo)
+
+  // test with forced refresh data
+  const forcedData = {
+    name: 'test relay',
+    description: 'test description',
+    pubkey: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+  }
+  const [forcedInfo, first, another, yetAnother] = await Promise.all([
+    loadRelayInfo('wss://test.example.com', forcedData),
+    loadRelayInfo('wss://relay.damus.io'),
+    loadRelayInfo('relay.primal.net'),
+    loadRelayInfo('indexer.coracle.social'),
+  ])
+  expect(forcedInfo).toEqual(forcedData)
+  expect(first).toEqual(relayInfo)
+  expect(another.software.includes('strfry')).toBeTruthy()
+  expect(yetAnother.software.includes('git')).toBeTruthy()
 })
