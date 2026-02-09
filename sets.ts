@@ -77,10 +77,16 @@ export const loadEmojiSets: SetFetcher<Emoji> = makeSetFetcher<Emoji>(
 export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => I[]): SetFetcher<I> {
   type Request = { target: string; relays: string[]; forceUpdate?: boolean }
 
-  const dataloader = new DataLoader<Request, SetResult<I>, string>(
+  const dataloader = new DataLoader<Request, Promise<SetResult<I>> | SetResult<I>, string>(
     requests =>
       new Promise(async resolve => {
-        let remainingRequests: (Request & { index: number })[] = []
+        const toFetch: {
+          [target: string]: {
+            req: Request & { index: number }
+            resolve: (result: SetResult<I>) => void
+            resolved: boolean
+          }
+        } = {}
         let now = Math.round(Date.now() / 1000)
 
         // try to get from store first -- 2-tuple returns all events for 3xxxx kinds as bundle
@@ -88,7 +94,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           requests.map(r => [kind, r.target] as [number, string]),
         )) as [number, NostrEvent[]][]
 
-        let results = stored.map(([lastAttempt, events], i) => {
+        let results = stored.map(([lastAttempt, events], i): SetResult<I> | Promise<SetResult<I>> => {
           const req = requests[i] as Request & { index: number }
           req.index = i
 
@@ -106,28 +112,42 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           }
 
           if (Object.keys(result).length === 0) {
-            remainingRequests.push(req)
             // we don't have anything for this key, fill in with empty object
-            return { lastAttempt: now, result: {} }
+            if (req.forceUpdate !== false) {
+              return new Promise(resolve => {
+                toFetch[req.target] = { req, resolve, resolved: false }
+              })
+            } else {
+              return {}
+            }
           } else if (req.forceUpdate || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
-            remainingRequests.push(req)
             // we have something but it's old (2 days), so we will use it but still try to fetch new versions
-            return { lastAttempt: lastAttempt || 0, result }
+            if (req.forceUpdate !== false) {
+              return new Promise(resolve => {
+                resolve(result)
+                toFetch[req.target] = { req, resolve, resolved: true }
+              })
+            } else {
+              return result
+            }
           } else {
             // this one is so good we won't try to fetch it again
-            return { lastAttempt: lastAttempt || 0, result }
+            return result
           }
         })
 
-        if (remainingRequests.length === 0) {
-          resolve(results.map(r => r.result))
+        // resolve immediately (pending reqs will return a promise thus resolve later)
+        resolve(results)
+
+        if (Object.keys(toFetch).length === 0) {
           return
         }
 
         const filterByRelay: { [url: string]: Filter } = {}
-        for (let r = 0; r < remainingRequests.length; r++) {
-          const req = remainingRequests[r]
-          const relays = req.relays.slice(0, Math.min(4, req.relays.length))
+        for (const {
+          req: { target, relays: reqRelays },
+        } of Object.values(toFetch)) {
+          const relays = reqRelays.slice(0, Math.min(4, reqRelays.length))
           for (let j = 0; j < relays.length; j++) {
             const url = relays[j]
             let filter = filterByRelay[url]
@@ -135,7 +155,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
               filter = { kinds: [kind], authors: [] }
               filterByRelay[url] = filter
             }
-            filter.authors?.push(req.target)
+            filter.authors?.push(target)
           }
         }
 
@@ -145,55 +165,54 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
             {
-              label: `kind:${kind}:batch(${remainingRequests.length})`,
+              label: `kind:${kind}:batch(${Object.keys(toFetch).length})`,
               onevent(evt) {
-                for (let r = 0; r < remainingRequests.length; r++) {
-                  const req = remainingRequests[r]
-                  if (req.target === evt.pubkey) {
-                    const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
-                    const result = results[req.index].result
-                    const existing = result[dTag]
+                const { resolve, resolved } = toFetch[evt.pubkey]
+                if (resolved) return
 
-                    // only update if this is a newer event for this d tag
-                    if (!existing || existing.event.created_at < evt.created_at) {
-                      result[dTag] = {
-                        event: evt,
-                        items: process(evt),
-                      }
-                      eventsToSave.push(evt)
-                    }
-                    return
+                const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
+                const result = {}
+                const existing = result[dTag]
+
+                // only update if this is a newer event for this d tag
+                if (!existing || existing.event.created_at < evt.created_at) {
+                  result[dTag] = {
+                    event: evt,
+                    items: process(evt),
                   }
+                  eventsToSave.push(evt)
                 }
+                resolve(result)
+                toFetch[evt.pubkey].resolved = true
               },
               oneose() {
                 handle?.close()
               },
               async onclose() {
-                resolve(results.map(r => r.result))
-
                 // save fetched events to store (this also updates lastAttempt on the bundle)
                 for (const evt of eventsToSave) {
                   replaceableStore.saveEvent(evt, { lastAttempt: now })
                 }
 
-                // for pubkeys that didn't receive any events, update lastAttempt so we don't keep retrying
-                const pubkeysReceived = new Set(eventsToSave.map(e => e.pubkey))
-                for (const req of remainingRequests) {
-                  if (!pubkeysReceived.has(req.target)) {
-                    replaceableStore.saveEvent(
-                      {
-                        id: '0'.repeat(64),
-                        pubkey: req.target,
-                        kind: kind,
-                        sig: '0'.repeat(128),
-                        tags: [],
-                        created_at: 0,
-                        content: '',
-                      },
-                      { lastAttempt: now },
-                    )
-                  }
+                // resolve promises for targets that didn't receive any events with their existing result
+                for (const { req, resolve, resolved } of Object.values(toFetch)) {
+                  if (resolved) continue
+
+                  resolve({})
+
+                  // for pubkeys that didn't receive any events, update lastAttempt so we don't keep retrying
+                  replaceableStore.saveEvent(
+                    {
+                      id: '0'.repeat(64),
+                      pubkey: req.target,
+                      kind: kind,
+                      sig: '0'.repeat(128),
+                      tags: [],
+                      created_at: 0,
+                      content: '',
+                    },
+                    { lastAttempt: now },
+                  )
                 }
               },
             },

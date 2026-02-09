@@ -247,10 +247,16 @@ export function makeListFetcher<I>(
 ): ListFetcher<I> {
   type Request = { target: string; relays: string[]; refreshStyle?: boolean | NostrEvent; defaultItems?: I[] }
 
-  const dataloader = new DataLoader<Request, ListResult<I>, string>(
+  const dataloader = new DataLoader<Request, Promise<ListResult<I>> | ListResult<I>, string>(
     requests =>
       new Promise(async resolve => {
-        const remainingRequests: (Request & { index: number })[] = []
+        const toFetch: {
+          [target: string]: {
+            req: Request & { index: number }
+            resolve: (result: ListResult<I>) => void
+            resolved: boolean
+          }
+        } = {}
         const pendingSaves: Promise<boolean>[] = []
         const now = Math.round(Date.now() / 1000)
 
@@ -260,39 +266,58 @@ export function makeListFetcher<I>(
           requests.map(r => [kind, r.target, ''] as [number, string, string]),
         )) as [number, NostrEvent][]
 
-        let results: ListResult<I>[] = stored.map<ListResult<I>>(([lastAttempt, storedEvent], i) => {
-          const req = requests[i] as Request & { index: number }
-          req.index = i
+        let results: Array<Promise<ListResult<I>> | ListResult<I> | Error> = stored.map(
+          ([lastAttempt, storedEvent], i): ListResult<I> | Promise<ListResult<I>> => {
+            const req = requests[i] as Request & { index: number }
+            req.index = i
 
-          if (typeof req.refreshStyle === 'object') {
-            // we have the event right here, so just use it
-            const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
-            pendingSaves.push(replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now }))
-            return final
-          } else if (!storedEvent) {
-            if (req.refreshStyle !== false) remainingRequests.push(req)
-            // we don't have anything for this key, fill in with a placeholder
-            return { items: req.defaultItems || [], event: null, [isFresh]: false }
-          } else if (req.refreshStyle === true || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
-            if (req.refreshStyle !== false) remainingRequests.push(req)
-            // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-            return { event: storedEvent, items: process(storedEvent), [isFresh]: false }
-          } else {
-            // this one is so good we won't try to fetch it again
-            return { event: storedEvent, items: process(storedEvent), [isFresh]: false }
-          }
-        })
+            if (typeof req.refreshStyle === 'object') {
+              // we have the event right here, so just use it
+              const final = { event: req.refreshStyle, items: process(req.refreshStyle), [isFresh]: true }
+              pendingSaves.push(replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now }))
+              return final
+            } else if (!storedEvent) {
+              // we don't have anything for this key, fill in with a placeholder
+              if (req.refreshStyle !== false) {
+                return new Promise(resolve => {
+                  toFetch[req.target] = { req, resolve, resolved: false }
+                })
+              } else {
+                return { items: req.defaultItems || [], event: null, [isFresh]: false }
+              }
+            } else if (req.refreshStyle === true || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
+              // we have something but it's old (2 days), so we will use it but still try to fetch a new version
+              const good = { event: storedEvent, items: process(storedEvent), [isFresh]: false }
+              if (req.refreshStyle !== false) {
+                return new Promise(resolve => {
+                  resolve(good)
+                  toFetch[req.target] = { req, resolve, resolved: true }
+                })
+              } else {
+                return good
+              }
+            } else {
+              // this one is so good we won't try to fetch it again
+              return { event: storedEvent, items: process(storedEvent), [isFresh]: false }
+            }
+          },
+        )
 
-        if (remainingRequests.length === 0) {
-          if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
-          else resolve(results)
+        // wait for pendingSaves (from when an event is passed through refreshStyle)
+        if (pendingSaves.length > 0) await Promise.all(pendingSaves)
+
+        // resolve immediately (pending reqs will return a promise thus resolve later)
+        resolve(results)
+
+        if (Object.keys(toFetch).length === 0) {
           return
         }
 
         const filterByRelay: { [url: string]: Filter } = {}
-        for (let r = 0; r < remainingRequests.length; r++) {
-          const req = remainingRequests[r]
-          const relays = req.relays.slice(0, Math.min(4, req.relays.length))
+        for (const {
+          req: { target, relays: reqRelays },
+        } of Object.values(toFetch)) {
+          const relays = reqRelays.slice(0, Math.min(4, reqRelays.length))
           do {
             relays.push(randomPick(hardcodedRelays))
           } while (relays.length < 3)
@@ -303,61 +328,55 @@ export function makeListFetcher<I>(
               filter = { kinds: [kind], authors: [] }
               filterByRelay[url] = filter
             }
-            filter.authors?.push(req.target)
+            filter.authors?.push(target)
           }
         }
 
         try {
           let handle: SubCloser | undefined
-          const eventsReceived = new Set<string>()
           // eslint-disable-next-line prefer-const
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
             {
-              label: `kind:${kind}:batch(${remainingRequests.length})`,
+              label: `kind:${kind}:batch(${Object.keys(toFetch).length})`,
               onevent(evt) {
-                for (let r = 0; r < remainingRequests.length; r++) {
-                  const req = remainingRequests[r]
-                  if (req.target === evt.pubkey) {
-                    const previous = results[req.index]?.event
-                    if ((previous?.created_at || 0) > evt.created_at) return
-                    results[req.index] = { event: evt, items: process(evt), [isFresh]: true }
-                    eventsReceived.add(evt.pubkey)
-                    replaceableStore.saveEvent(evt, { lastAttempt: now })
-                    return
-                  }
-                }
+                const { req, resolve, resolved } = toFetch[evt.pubkey]
+                if (resolved) return
+
+                resolve({ event: evt, items: process(evt), [isFresh]: true })
+                toFetch[evt.pubkey].resolved = true
+                replaceableStore.saveEvent(evt, { lastAttempt: now })
               },
               oneose() {
                 handle?.close()
               },
               async onclose() {
-                if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
-                else resolve(results)
+                // resolve promises for targets that didn't receive any events with their placeholder data
+                for (const { req, resolve, resolved } of Object.values(toFetch)) {
+                  if (resolved) continue
 
-                // save blank events for pubkeys that didn't receive any events (they won't be really saved)
-                for (const req of remainingRequests) {
-                  if (!eventsReceived.has(req.target)) {
-                    replaceableStore.saveEvent(
-                      {
-                        id: '0'.repeat(64),
-                        pubkey: req.target,
-                        kind: kind,
-                        sig: '0'.repeat(128),
-                        tags: [],
-                        created_at: 0,
-                        content: '',
-                      },
-                      { lastAttempt: now },
-                    )
-                  }
+                  const placeholder = { items: req.defaultItems || [], event: null, [isFresh]: false }
+                  resolve(placeholder)
+
+                  // save blank events for targets that didn't receive any events (they won't be really saved)
+                  replaceableStore.saveEvent(
+                    {
+                      id: '0'.repeat(64),
+                      pubkey: req.target,
+                      kind: kind,
+                      sig: '0'.repeat(128),
+                      tags: [],
+                      created_at: 0,
+                      content: '',
+                    },
+                    { lastAttempt: now },
+                  )
                 }
               },
             },
           )
         } catch (err) {
-          if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
-          else resolve(results.map(_ => err as Error))
+          resolve(results.map(_ => err as Error))
         }
       }),
     {

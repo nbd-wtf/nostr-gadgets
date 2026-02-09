@@ -147,12 +147,14 @@ const metadataLoader = new DataLoader<
             }
           } else if (req.refreshStyle === true || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
             // we have something but it's old (2 days), so we will use it but still try to fetch a new version
+            const good = nostrUserFromEvent(storedEvent)
             if (req.refreshStyle !== false) {
               return new Promise(resolve => {
-                toFetch[req.pubkey] = { req, resolve, resolved: false }
+                resolve(good)
+                toFetch[req.pubkey] = { req, resolve, resolved: true }
               })
             } else {
-              return nostrUserFromEvent(storedEvent)
+              return good
             }
           } else {
             const nu = nostrUserFromEvent(storedEvent)
