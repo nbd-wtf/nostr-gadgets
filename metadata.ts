@@ -103,10 +103,20 @@ export async function loadNostrUser(request: NostrUserRequest | string): Promise
   )
 }
 
-const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrEvent | boolean }, NostrUser, string>(
+const metadataLoader = new DataLoader<
+  NostrUserRequest & { refreshStyle?: NostrEvent | boolean },
+  Promise<NostrUser> | NostrUser,
+  string
+>(
   async requests =>
     new Promise(async resolve => {
-      const toFetch: NostrUserRequest[] = []
+      const toFetch: {
+        [pubkey: string]: {
+          req: NostrUserRequest
+          resolve: (result: NostrUser) => void
+          resolved: boolean
+        }
+      } = {}
       const pendingSaves: Promise<boolean>[] = []
       const now = Math.round(Date.now() / 1000)
 
@@ -116,52 +126,63 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
         requests.map(r => [0, r.pubkey, ''] as [number, string, string]),
       )) as [number, NostrEvent][]
 
-      let results: Array<NostrUser | Error> = stored.map(([lastAttempt, storedEvent], i): NostrUser => {
-        const req = requests[i]
+      let results: Array<Promise<NostrUser> | NostrUser | Error> = stored.map(
+        ([lastAttempt, storedEvent], i): NostrUser | Promise<NostrUser> => {
+          const req = requests[i]
 
-        if (typeof req.refreshStyle === 'object') {
-          // we have the event right here, so just use it
-          let nu = bareNostrUser(req.pubkey)
-          enhanceNostrUserWithEvent(nu, req.refreshStyle)
-          pendingSaves.push(replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now }))
-          return nu
-        } else if (!storedEvent) {
-          if (req.refreshStyle !== false) toFetch.push(req)
-          // we don't have anything for this key, fill in with a placeholder
-          let nu = bareNostrUser(req.pubkey)
-          return nu
-        } else if (req.refreshStyle === true || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
-          if (req.refreshStyle !== false) toFetch.push(req)
-          // we have something but it's old (2 days), so we will use it but still try to fetch a new version
-          let nu = bareNostrUser(req.pubkey)
-          enhanceNostrUserWithEvent(nu, storedEvent)
-          return nu
-        } else {
-          const nu = bareNostrUser(req.pubkey)
-          enhanceNostrUserWithEvent(nu, storedEvent)
-          if (lastAttempt < now - 60 * 60 && !nu.metadata.name && !nu.metadata.picture && !nu.metadata.about) {
-            if (req.refreshStyle !== false) toFetch.push(req)
-            // we have something but and it's not so old (1 hour), but it's empty, so we will try again
+          if (typeof req.refreshStyle === 'object') {
+            // we have the event right here, so just use it
+            let nu = bareNostrUser(req.pubkey)
+            enhanceNostrUserWithEvent(nu, req.refreshStyle)
+            pendingSaves.push(replaceableStore.saveEvent(req.refreshStyle, { lastAttempt: now }))
             return nu
+          } else if (!storedEvent) {
+            // we don't have anything for this key, fill in with a placeholder
+            if (req.refreshStyle !== false) {
+              return new Promise(resolve => {
+                toFetch[req.pubkey] = { req, resolve, resolved: false }
+              })
+            } else {
+              return bareNostrUser(req.pubkey)
+            }
+          } else if (req.refreshStyle === true || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
+            // we have something but it's old (2 days), so we will use it but still try to fetch a new version
+            if (req.refreshStyle !== false) {
+              return new Promise(resolve => {
+                toFetch[req.pubkey] = { req, resolve, resolved: false }
+              })
+            } else {
+              return nostrUserFromEvent(storedEvent)
+            }
           } else {
-            // this one is so good we won't try to fetch it again
-            return nu
+            const nu = nostrUserFromEvent(storedEvent)
+            if (lastAttempt < now - 60 * 60 && !nu.metadata.name && !nu.metadata.picture && !nu.metadata.about) {
+              // we have something but and it's not so old (1 hour), but it's empty, so we will try again
+              if (req.refreshStyle !== false) {
+                return new Promise(resolve => {
+                  toFetch[req.pubkey] = { req, resolve, resolved: false }
+                })
+              }
+              return nu
+            } else {
+              // this one is so good we won't try to fetch it again
+              return nu
+            }
           }
-        }
-      })
+        },
+      )
 
-      // no need to do any requests if we don't have anything to fetch
-      if (toFetch.length === 0) {
-        if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
-        else resolve(results)
-        return
-      }
+      // wait for pendingSaves (from when an event is passed through refreshStyle)
+      if (pendingSaves.length > 0) await Promise.all(pendingSaves)
+
+      // resolve immediately (pending reqs will return a promise thus resolve later)
+      resolve(results)
 
       // gather relays for each pubkey that needs fetching
       const pubkeysByRelay: { [relay: string]: string[] } = {}
 
       await Promise.all(
-        toFetch.map(async ({ pubkey, relays = [] }) => {
+        Object.values(toFetch).map(async ({ req: { pubkey, relays = [] } }) => {
           // start with provided relays (up to 3)
           const selectedRelays = new Set<string>(relays.slice(0, 3))
 
@@ -202,46 +223,37 @@ const metadataLoader = new DataLoader<NostrUserRequest & { refreshStyle?: NostrE
           filter: { kinds: [0], authors: pubkeys },
         }))
 
-        const eventsReceived = new Set<string>()
-
         let h = pool.subscribeMap(requestMap, {
           label: `metadata(${requests.length})`,
           onevent(evt) {
-            for (let i = 0; i < requests.length; i++) {
-              if (requests[i].pubkey === evt.pubkey) {
-                const nu = results[i] as NostrUser
-                if (nu.lastUpdated > evt.created_at) return
-
-                enhanceNostrUserWithEvent(nu, evt)
-                eventsReceived.add(evt.pubkey)
-                replaceableStore.saveEvent(evt, { lastAttempt: now })
-
-                return
-              }
-            }
+            const nu = nostrUserFromEvent(evt)
+            toFetch[evt.pubkey].resolve(nu)
+            toFetch[evt.pubkey].resolved = true
+            replaceableStore.saveEvent(evt, { lastAttempt: now })
           },
           oneose() {
-            if (pendingSaves.length > 0) Promise.all(pendingSaves).then(() => resolve(results))
-            else resolve(results)
-
             h.close()
 
-            // save blank events for pubkeys that didn't receive any events (they won't be really saved)
-            for (const req of toFetch) {
-              if (!eventsReceived.has(req.pubkey)) {
-                replaceableStore.saveEvent(
-                  {
-                    id: '0'.repeat(64),
-                    pubkey: req.pubkey,
-                    kind: 0,
-                    sig: '0'.repeat(128),
-                    tags: [],
-                    created_at: 0,
-                    content: '',
-                  },
-                  { lastAttempt: now },
-                )
-              }
+            // resolve promises for pubkeys that didn't receive any events with their placeholder data
+            for (const { req, resolve, resolved } of Object.values(toFetch)) {
+              if (resolved) continue
+
+              const placeholder = bareNostrUser(req.pubkey)
+              resolve(placeholder)
+
+              // save blank events for pubkeys that didn't receive any events (they won't be really saved)
+              replaceableStore.saveEvent(
+                {
+                  id: '0'.repeat(64),
+                  pubkey: req.pubkey,
+                  kind: 0,
+                  sig: '0'.repeat(128),
+                  tags: [],
+                  created_at: 0,
+                  content: '',
+                },
+                { lastAttempt: now },
+              )
             }
           },
         })
