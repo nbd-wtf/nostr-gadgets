@@ -7,7 +7,7 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/core'
 import type { Filter } from '@nostr/tools/filter'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
-import { AddressPointer } from '@nostr/tools/nip19'
+import { AddressPointer, EventPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 
 import { pool, purgatory, replaceableStore } from './global'
@@ -136,6 +136,24 @@ export const loadRelayList: ListFetcher<RelayItem> = makeListFetcher<RelayItem>(
       return { url: normalizeURL(tag[1]), read: true, write: false }
     } else if (tag[2] === 'write') {
       return { url: normalizeURL(tag[1]), read: false, write: true }
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10027 favorite scroll lists.
+ */
+export const loadFavoriteScrolls: ListFetcher<EventPointer> = makeListFetcher<EventPointer>(
+  10027,
+  [],
+  itemsFromTags<EventPointer>((tag: string[]): EventPointer | undefined => {
+    if (tag.length >= 2 && tag[0] === 'e' && isHex32(tag[1])) {
+      return {
+        id: tag[1],
+        kind: 1227,
+        relays: tag[2] ? [normalizeURL(tag[2])] : undefined,
+        author: isHex32(tag[3]) ? tag[3] : undefined,
+      }
     }
   }),
 )
@@ -340,7 +358,7 @@ export function makeListFetcher<I>(
             {
               label: `kind:${kind}:batch(${Object.keys(toFetch).length})`,
               onevent(evt) {
-                const { req, resolve, resolved } = toFetch[evt.pubkey]
+                const { resolve, resolved } = toFetch[evt.pubkey]
                 if (resolved) return
 
                 resolve({ event: evt, items: process(evt), [isFresh]: true })
