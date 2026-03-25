@@ -1,5 +1,4 @@
 import { SimplePool } from '@nostr/tools/pool'
-import { MemoryHints } from './hints'
 import { Purgatory } from './purgatory'
 import { type ReplaceableStore, defaultReplaceableStore } from './replaceable-store'
 
@@ -22,11 +21,6 @@ export let pool: SimplePool = new SimplePool({
 export function setPool(p: SimplePool) {
   pool = p
 }
-
-/**
- * hints is a global used by other functions in this library. Use it directly.
- */
-export const hints: MemoryHints = new MemoryHints()
 
 /**
  * replaceableStore is a global store used for caching replaceable Nostr events.

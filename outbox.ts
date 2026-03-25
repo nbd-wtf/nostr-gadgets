@@ -574,6 +574,7 @@ export async function outboxFilterRelayBatch(
   const numberOfRelaysPerUser = pubkeys.length < 100 ? 4 : pubkeys.length < 800 ? 3 : pubkeys.length < 1200 ? 2 : 1
 
   // get the most popular relays among the list of followed people
+  // (because browsers are stupid and doesn't allow too many relay connections)
   await Promise.all(
     pubkeys.map(async pubkey => {
       const rl = await loadRelayList(pubkey)
