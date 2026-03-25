@@ -9,10 +9,14 @@ import { RedEventStore } from './index.ts'
 const TEST_DB = '_.test.db'
 
 beforeAll(async () => {
-  const dbs = await RedEventStore.list()
-  console.log('before test:', dbs)
-  for (let db of dbs) {
-    if (db.name === TEST_DB) await RedEventStore.delete(db.name)
+  try {
+    const dbs = await RedEventStore.list()
+    console.log('before test:', dbs)
+    for (let db of dbs) {
+      if (db.name === TEST_DB) await RedEventStore.delete(db.name)
+    }
+  } catch (e) {
+    console.log('Could not clean up test database:', e)
   }
 })
 
@@ -477,6 +481,117 @@ describe('redstore', () => {
     const remainingIds = events.slice(3).map(e => e.id)
     const remainingEvents = await store.queryEvents({ ids: remainingIds })
     expect(remainingEvents.length).toEqual(2)
+
+    await store.close()
+  })
+
+  test('d-tag query without authors', async () => {
+    // use a unique timestamp-based database name to avoid conflicts
+    const TEST_DB_DTAG = '_.test.dtag.' + Date.now() + '.db'
+
+    const store = new RedEventStore(null, TEST_DB_DTAG)
+    await store.init()
+
+    // create kind:30166 events with different "d" tags
+    // we'll create events from multiple signers with various "d" tag values
+    // some "d" tag values will be repeated
+    const dTagValues = ['alpha', 'beta', 'gamma', 'delta', 'alpha', 'beta', 'epsilon', 'alpha']
+    const createdEvents: NostrEvent[] = []
+    const signers = [sk1, sk2, sk3, sk4, sk5, sk1, sk2, sk3] // reuse some signers
+
+    for (let i = 0; i < dTagValues.length; i++) {
+      const event = finalizeEvent(
+        {
+          kind: 30166,
+          created_at: 5000 + i,
+          content: `content for ${dTagValues[i]}`,
+          tags: [['d', dTagValues[i]]],
+        },
+        signers[i],
+      )
+      createdEvents.push(event)
+      await store.saveEvent(event)
+    }
+
+    // test querying by "d" tag without specifying authors
+    // query for "alpha" - should return 3 events (indices 0, 4, 7)
+    {
+      let count = 0
+      const filter = { kinds: [30166], '#d': ['alpha'] }
+      const results = await store.queryEvents(filter)
+      console.log('Query results for alpha:', results.length, 'events')
+      for (let evt of results) {
+        console.log('Event:', evt.id, 'kind:', evt.kind, 'tags:', evt.tags)
+        expect(matchFilter(filter, evt)).toBe(true)
+        expect(evt.tags.find(t => t[0] === 'd')?.[1]).toEqual('alpha')
+        count++
+      }
+      expect(count).toEqual(3)
+    }
+
+    // query for "beta" - should return 2 events (indices 1, 5)
+    {
+      let count = 0
+      const filter = { kinds: [30166], '#d': ['beta'] }
+      const results = await store.queryEvents(filter)
+      for (let evt of results) {
+        expect(matchFilter(filter, evt)).toBe(true)
+        expect(evt.tags.find(t => t[0] === 'd')?.[1]).toEqual('beta')
+        count++
+      }
+      expect(count).toEqual(2)
+    }
+
+    // query for "gamma" - should return 1 event (index 2)
+    {
+      let count = 0
+      const filter = { kinds: [30166], '#d': ['gamma'] }
+      const results = await store.queryEvents(filter)
+      for (let evt of results) {
+        expect(matchFilter(filter, evt)).toBe(true)
+        expect(evt.tags.find(t => t[0] === 'd')?.[1]).toEqual('gamma')
+        count++
+      }
+      expect(count).toEqual(1)
+    }
+
+    // query for "epsilon" - should return 1 event (index 6)
+    {
+      let count = 0
+      const filter = { kinds: [30166], '#d': ['epsilon'] }
+      const results = await store.queryEvents(filter)
+      for (let evt of results) {
+        expect(matchFilter(filter, evt)).toBe(true)
+        expect(evt.tags.find(t => t[0] === 'd')?.[1]).toEqual('epsilon')
+        count++
+      }
+      expect(count).toEqual(1)
+    }
+
+    // query for non-existent "d" tag - should return 0 events
+    {
+      let count = 0
+      const filter = { kinds: [30166], '#d': ['nonexistent'] }
+      const results = await store.queryEvents(filter)
+      for (let _evt of results) {
+        count++
+      }
+      expect(count).toEqual(0)
+    }
+
+    // query for multiple "d" tag values - should return events for both
+    {
+      let count = 0
+      const filter = { kinds: [30166], '#d': ['alpha', 'beta'] }
+      const results = await store.queryEvents(filter)
+      for (let evt of results) {
+        expect(matchFilter(filter, evt)).toBe(true)
+        const dTag = evt.tags.find(t => t[0] === 'd')?.[1]
+        expect(['alpha', 'beta']).toContain(dTag)
+        count++
+      }
+      expect(count).toEqual(5) // 3 alpha + 2 beta
+    }
 
     await store.close()
   })
