@@ -8,7 +8,8 @@ import { createStore, getMany, set, UseStore } from 'idb-keyval'
 import DataLoader from './dataloader'
 import { normalizeURL } from '@nostr/tools/utils'
 
-type RelayInfoDocument = {
+export type RelayInfoDocument = {
+  url: string
   name?: string
   description?: string
   pubkey?: string
@@ -81,6 +82,7 @@ const relayInfoLoader = new DataLoader<
         results[i] = fetchRelayInformation(norm)
           .then(async doc => {
             const info = {
+              url: norm,
               name: doc.name,
               description: doc.description,
               contact: doc.contact,
@@ -88,6 +90,7 @@ const relayInfoLoader = new DataLoader<
               pubkey: doc.pubkey,
               software: doc.software,
               version: doc.version,
+              supported_nips: doc.supported_nips,
             } as RelayInfoDocument
 
             await set(norm, { info, timestamp: Date.now() }, currentStore)
