@@ -14,7 +14,7 @@ example: build-redstore
     cd redstore/example && ../../node_modules/.bin/vite dev
 
 test: build-redstore
-    ./node_modules/.bin/vitest
+    ./node_modules/.bin/vitest --bail=1
 
 test-only testName: build-redstore
-    ./node_modules/.bin/vitest -t {{testName}}
+    ./node_modules/.bin/vitest -t {{testName}} --bail=1

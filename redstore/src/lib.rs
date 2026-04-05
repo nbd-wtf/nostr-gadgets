@@ -247,6 +247,7 @@ impl Redstore {
                     extra_tags: None,
                     queries: vec![Query {
                         table_name: "index_pubkey_kind",
+                        full_scan: false,
                         results: Vec::with_capacity(1),
                         exhausted: false,
                         curr_key: query_key,
@@ -266,6 +267,7 @@ impl Redstore {
                     extra_tags: None,
                     queries: vec![Query {
                         table_name: "index_pubkey_dtag",
+                        full_scan: false,
                         results: Vec::with_capacity(1),
                         exhausted: false,
                         curr_key: query_key,

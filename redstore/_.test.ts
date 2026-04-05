@@ -16,7 +16,7 @@ beforeAll(async () => {
       if (db.name === TEST_DB) await RedEventStore.delete(db.name)
     }
   } catch (e) {
-    console.log('Could not clean up test database:', e)
+    console.log('could not clean up test databases:', e)
   }
 })
 
@@ -440,6 +440,7 @@ describe('redstore', () => {
         expect(count).toEqual(1)
       }
     }
+
     await store.close()
   })
 
@@ -519,9 +520,7 @@ describe('redstore', () => {
       let count = 0
       const filter = { kinds: [30166], '#d': ['alpha'] }
       const results = await store.queryEvents(filter)
-      console.log('Query results for alpha:', results.length, 'events')
       for (let evt of results) {
-        console.log('Event:', evt.id, 'kind:', evt.kind, 'tags:', evt.tags)
         expect(matchFilter(filter, evt)).toBe(true)
         expect(evt.tags.find(t => t[0] === 'd')?.[1]).toEqual('alpha')
         count++
@@ -577,6 +576,19 @@ describe('redstore', () => {
         count++
       }
       expect(count).toEqual(0)
+    }
+
+    // query for "d" tag without kinds - should return all matching events
+    {
+      let count = 0
+      const filter = { '#d': ['alpha'] }
+      const results = await store.queryEvents(filter)
+      for (let evt of results) {
+        expect(matchFilter(filter, evt)).toBe(true)
+        expect(evt.tags.find(t => t[0] === 'd')?.[1]).toEqual('alpha')
+        count++
+      }
+      expect(count).toEqual(3)
     }
 
     // query for multiple "d" tag values - should return events for both

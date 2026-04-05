@@ -21,6 +21,7 @@ pub struct Plan {
 #[derive(Debug)]
 pub struct Query {
     pub table_name: &'static str,
+    pub full_scan: bool,
     pub curr_key: Vec<u8>,
     pub results: Vec<(u32, u32)>, // (timestamp, serial)
     pub exhausted: bool,
@@ -70,24 +71,26 @@ impl Query {
             let key_bytes = key.value();
             let key_len = key_bytes.len();
 
-            // check if key matches our prefix
-            if key_len != self.curr_key.len()
-                || key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8]
-            {
-                #[cfg(debug_assertions)]
-                web_sys::console::log_7(
-                    &js_sys::JsString::from("exiting on prefix"),
-                    &js_sys::Number::from(key_len as u32),
-                    &js_sys::Number::from(self.curr_key.len() as u32),
-                    &js_sys::Boolean::from(key_len != self.curr_key.len()),
-                    &js_sys::Uint8Array::from(&key_bytes[0..key_len - 8]),
-                    &js_sys::Uint8Array::from(&self.curr_key[0..key_len - 8]),
-                    &js_sys::Boolean::from(
-                        key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8],
-                    ),
-                );
-                self.exhausted = true;
-                return Ok(false);
+            if !self.full_scan {
+                // check if key matches our prefix
+                if key_len != self.curr_key.len()
+                    || key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8]
+                {
+                    #[cfg(debug_assertions)]
+                    web_sys::console::log_7(
+                        &js_sys::JsString::from("exiting on prefix"),
+                        &js_sys::Number::from(key_len as u32),
+                        &js_sys::Number::from(self.curr_key.len() as u32),
+                        &js_sys::Boolean::from(key_len != self.curr_key.len()),
+                        &js_sys::Uint8Array::from(&key_bytes[0..key_len - 8]),
+                        &js_sys::Uint8Array::from(&self.curr_key[0..key_len - 8]),
+                        &js_sys::Boolean::from(
+                            key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8],
+                        ),
+                    );
+                    self.exhausted = true;
+                    return Ok(false);
+                }
             }
 
             // extract timestamp from key
@@ -141,14 +144,14 @@ impl Query {
 pub fn prepare(spec: &mut Querier) -> Result<Plan> {
     let mut queries = Vec::new();
 
-    if let (Some(authors), Some(dtags)) = (&spec.authors, spec.dtags.take()) {
-        // use index_pubkey_kind for combined author+kind queries
+    if let (Some(authors), Some(dtags)) = (&spec.authors, &spec.dtags) {
+        // use index_pubkey_dtag for combined author+dtag queries
         for author in authors {
             let mut author_bytes = vec![0u8; 8];
             parse_hex_into(&author[48..64], &mut author_bytes)
                 .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
 
-            for dtag in &dtags {
+            for dtag in dtags {
                 let mut start_key = vec![0u8; 24];
 
                 let mut hasher = Sha256::new();
@@ -161,6 +164,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
                 start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
                 queries.push(Query {
                     table_name: "index_pubkey_dtag",
+                    full_scan: false,
                     curr_key: start_key,
                     results: Vec::new(),
                     exhausted: false,
@@ -168,7 +172,54 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             }
         }
 
-        // remove here so we don't use it extra_authors later
+        // remove here so we don't use it in extra_authors/extra_tags later
+        spec.authors.take();
+        spec.dtags.take();
+    } else if spec.dtags.is_some() && spec.authors.is_none() {
+        // d-tags without authors are hard because we can't easily use the index_pubkey_dtag
+        if let Some(kinds) = spec.kinds.take() {
+            // for d tag queries with kinds we'll scan through index_pubkey_kind
+            // (only addressable kinds are valid
+            // because in this case we can reasonably expect to not to have to scan too much)
+            if kinds.iter().all(|kind| *kind >= 30_000 && *kind < 40_000) != true {
+                // return nothing
+                return Ok(Plan {
+                    queries,
+                    since: spec.since.unwrap_or(0),
+                    extra_kinds: Vec::new(),
+                    extra_authors: None,
+                    extra_tags: None,
+                });
+            }
+            for kind in kinds {
+                let mut start_key = vec![0u8; 10];
+                start_key[0..2].copy_from_slice(&kind.to_be_bytes());
+                start_key[2..6].copy_from_slice(&spec.until.to_be_bytes());
+                start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
+                queries.push(Query {
+                    table_name: "index_kind",
+                    full_scan: false,
+                    curr_key: start_key,
+                    results: Vec::new(),
+                    exhausted: false,
+                });
+            }
+        } else {
+            // we don't have kinds, so let's scan through all the addressable events
+            // do a full scan on index_pubkey_dtag and filter by d tag
+            let mut start_key = vec![0xffu8; 24];
+            start_key[16..20].copy_from_slice(&spec.until.to_be_bytes());
+            start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+            queries.push(Query {
+                table_name: "index_pubkey_dtag",
+                full_scan: true,
+                curr_key: start_key,
+                results: Vec::new(),
+                exhausted: false,
+            });
+        }
+
+        // remove here so we don't use it in extra_authors later
         spec.authors.take();
     } else if let Some((letter, values)) = spec.tags.pop() {
         // use index_tag for tag queries
@@ -185,6 +236,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             start_key[13..17].copy_from_slice(&MAX_U32_BYTES);
             queries.push(Query {
                 table_name: "index_tag",
+                full_scan: false,
                 curr_key: start_key,
                 results: Vec::new(),
                 exhausted: false,
@@ -205,6 +257,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
                 start_key[14..18].copy_from_slice(&MAX_U32_BYTES);
                 queries.push(Query {
                     table_name: "index_pubkey_kind",
+                    full_scan: false,
                     curr_key: start_key,
                     results: Vec::new(),
                     exhausted: false,
@@ -226,6 +279,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
 
             queries.push(Query {
                 table_name: "index_pubkey",
+                full_scan: false,
                 curr_key: start_key,
                 results: Vec::new(),
                 exhausted: false,
@@ -240,6 +294,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
             queries.push(Query {
                 table_name: "index_kind",
+                full_scan: false,
                 curr_key: start_key,
                 results: Vec::new(),
                 exhausted: false,
@@ -252,13 +307,14 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
         start_key[4..8].copy_from_slice(&MAX_U32_BYTES);
         queries.push(Query {
             table_name: "index_nothing",
+            full_scan: false,
             curr_key: start_key,
             results: Vec::new(),
             exhausted: false,
         });
     }
 
-    // we'll do these only if kinds/authors remain after planning the queries above (i.e. they weren't used)
+    // we'll do these only if kinds/authors/tags remain after planning the queries above (i.e. they weren't used)
     let extra_kinds = spec.kinds.take().unwrap_or(Vec::new());
 
     let extra_authors = spec.authors.take().map(|authors| {
@@ -428,6 +484,7 @@ pub fn execute(
                             continue;
                         }
                     }
+
                     if let Some((bf_letters, tags_bf)) = &plan.extra_tags {
                         if let Ok(tags) = extract_tags(event_json) {
                             // must contain all tags that are being filtered;
