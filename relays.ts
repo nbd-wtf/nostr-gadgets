@@ -4,7 +4,6 @@
  */
 
 import { fetchRelayInformation } from '@nostr/tools/nip11'
-import { createStore, getMany, set, UseStore } from 'idb-keyval'
 import DataLoader from './dataloader'
 import { normalizeURL } from '@nostr/tools/utils'
 
@@ -25,16 +24,32 @@ interface CachedRelayInfo {
   timestamp: number
 }
 
-let store: UseStore
+const STORAGE_KEY = '@nostr/gadgets/relays'
 
-/**
- * Loads and initializes the IndexedDB store for caching relay information.
- */
-function getStore(): UseStore {
-  if (!store) {
-    store = createStore('@nostr/gadgets/relays', 'cache')
+type RelayInfoCache = {
+  [url: string]: CachedRelayInfo
+}
+
+function loadCache(): RelayInfoCache {
+  const raw = window.localStorage.getItem(STORAGE_KEY)
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object') return parsed as RelayInfoCache
+  } catch {
+    return {}
   }
-  return store
+  return {}
+}
+
+function saveCache(cache: RelayInfoCache): void {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cache))
+}
+
+function saveCacheEntry(url: string, entry: CachedRelayInfo): void {
+  const cache = loadCache()
+  cache[url] = entry
+  saveCache(cache)
 }
 
 type RelayInfoRequest = {
@@ -49,12 +64,12 @@ const relayInfoLoader = new DataLoader<
 >(
   async reqs => {
     const normalizedUrls = reqs.map(r => normalizeURL(r.url))
-    const currentStore = getStore()
 
     // try to get cached data first for all URLs at once
     let cached: (CachedRelayInfo | undefined)[] = []
     try {
-      cached = await getMany(normalizedUrls, currentStore)
+      const cache = loadCache()
+      cached = normalizedUrls.map(url => cache[url])
     } catch (error) {
       console.warn('error reading relay info from cache:', error)
       cached = new Array(reqs.length).fill(undefined)
@@ -70,7 +85,7 @@ const relayInfoLoader = new DataLoader<
       if (typeof req.refreshStyle === 'object') {
         // just return what we received
         results[i] = req.refreshStyle
-        await set(norm, req.refreshStyle, currentStore)
+        saveCacheEntry(norm, { info: req.refreshStyle, timestamp: Date.now() })
       } else if (
         (cachedInfo && Date.now() < cachedInfo.timestamp + 2 * 24 * 60 * 60 * 1000) ||
         req.refreshStyle === false
@@ -93,12 +108,12 @@ const relayInfoLoader = new DataLoader<
               supported_nips: doc.supported_nips,
             } as RelayInfoDocument
 
-            await set(norm, { info, timestamp: Date.now() }, currentStore)
+            saveCacheEntry(norm, { info, timestamp: Date.now() })
             return info
           })
           .catch(() => {
             // save failure (but fake it as a day in the future, so it refreshes sooner)
-            set(norm, { info: null, timestamp: Date.now() + 1000 * 60 * 60 * 24 * 1 }, currentStore)
+            saveCacheEntry(norm, { info: null, timestamp: Date.now() + 1000 * 60 * 60 * 24 * 1 })
 
             // return stale data
             return cachedInfo?.info || null
