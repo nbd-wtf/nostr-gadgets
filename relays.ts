@@ -11,6 +11,7 @@ export type RelayInfoDocument = {
   url: string
   name?: string
   description?: string
+  icon?: string
   pubkey?: string
   self?: string
   contact?: string
@@ -100,6 +101,7 @@ const relayInfoLoader = new DataLoader<
               url: norm,
               name: doc.name,
               description: doc.description,
+              icon: doc.icon,
               contact: doc.contact,
               self: (doc as any).self,
               pubkey: doc.pubkey,
