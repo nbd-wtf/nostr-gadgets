@@ -336,10 +336,11 @@ export class OutboxManager {
 
     const declaration = await outboxFilterRelayBatch(
       authors,
-      ...this.baseFilters.map(f => ({
+      this.baseFilters.map(f => ({
         ...f,
         since: Math.round(Date.now() / 1000) - 60 * 60 * 2, // since 2 hours ago
       })),
+      { fallbackRelays: this.defaultRelaysForConfusedPeople },
     )
 
     this.liveSubscriptions.push(...declaration)
@@ -564,7 +565,8 @@ export class OutboxManager {
  */
 export async function outboxFilterRelayBatch(
   pubkeys: string[],
-  ...baseFilters: Filter[]
+  baseFilters: Filter[],
+  opts?: { fallbackRelays?: string[] },
 ): Promise<{ url: string; filter: Filter }[]> {
   const declaration: { url: string; filter: Filter }[] = []
 
@@ -600,6 +602,20 @@ export async function outboxFilterRelayBatch(
       }
     }),
   )
+
+  // For pubkeys with no discoverable write relays, fall back to provided relays
+  if (opts?.fallbackRelays?.length) {
+    for (const pubkey of pubkeys) {
+      if (Object.keys(relaysByPubKey[pubkey]).length === 0) {
+        for (const url of opts.fallbackRelays) {
+          const count = relayCounts[url] || { count: 0 }
+          relayCounts[url] = count
+          relaysByPubKey[pubkey][url] = count
+          count.count++
+        }
+      }
+    }
+  }
 
   // choose from the most popular first for each user
   for (let i = 0; i < pubkeys.length; i++) {
