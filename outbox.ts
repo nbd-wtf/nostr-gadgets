@@ -565,9 +565,12 @@ export class OutboxManager {
  */
 export async function outboxFilterRelayBatch(
   pubkeys: string[],
-  baseFilters: Filter[],
+  baseFilters: Filter | Filter[],
   opts?: { fallbackRelays?: string[] },
 ): Promise<{ url: string; filter: Filter }[]> {
+  baseFilters = Array.isArray(baseFilters) ? baseFilters : [baseFilters]
+  const fallbackRelays = (opts?.fallbackRelays || []).map(url => ({ url, write: true }))
+
   const declaration: { url: string; filter: Filter }[] = []
 
   type Count = { count: number }
@@ -580,10 +583,12 @@ export async function outboxFilterRelayBatch(
   await Promise.all(
     pubkeys.map(async pubkey => {
       const rl = await loadRelayList(pubkey)
+      const items = rl.items.length ? rl.items : fallbackRelays
+
       relaysByPubKey[pubkey] = {}
 
       let w = 0
-      for (let i = 0; i < rl.items.length; i++) {
+      for (let i = 0; i < items.length; i++) {
         if (rl.items[i].write) {
           try {
             const url = rl.items[i].url
@@ -602,20 +607,6 @@ export async function outboxFilterRelayBatch(
       }
     }),
   )
-
-  // For pubkeys with no discoverable write relays, fall back to provided relays
-  if (opts?.fallbackRelays?.length) {
-    for (const pubkey of pubkeys) {
-      if (Object.keys(relaysByPubKey[pubkey]).length === 0) {
-        for (const url of opts.fallbackRelays) {
-          const count = relayCounts[url] || { count: 0 }
-          relayCounts[url] = count
-          relaysByPubKey[pubkey][url] = count
-          count.count++
-        }
-      }
-    }
-  }
 
   // choose from the most popular first for each user
   for (let i = 0; i < pubkeys.length; i++) {
