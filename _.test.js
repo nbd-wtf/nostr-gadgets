@@ -159,10 +159,7 @@ test('globalism', async () => {
 test('outbox_filter_batch', async () => {
   const result = await outboxFilterRelayBatch(
     [TEST_PUBKEYS.fiatjaf, TEST_PUBKEYS.hodlbod, TEST_PUBKEYS.pablo, TEST_PUBKEYS.daniele],
-    {
-      kinds: [1],
-      limit: 10,
-    },
+    [{ kinds: [1], limit: 10 }],
   )
 
   expect(result.length).toBeGreaterThan(2)
