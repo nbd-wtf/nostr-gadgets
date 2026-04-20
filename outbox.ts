@@ -589,9 +589,9 @@ export async function outboxFilterRelayBatch(
 
       let w = 0
       for (let i = 0; i < items.length; i++) {
-        if (rl.items[i].write) {
+        if (items[i].write) {
           try {
-            const url = rl.items[i].url
+            const url = items[i].url
             if (!purgatory.allowConnectingToRelay(url, ['read', baseFilters])) continue
             const count = relayCounts[url] || { count: 0 }
             relayCounts[url] = count
