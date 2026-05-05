@@ -418,11 +418,12 @@ export function makeListFetcher<I>(
       dataloader._cacheMap.delete(pubkey)
       return { items: defaultItems || [], event: null, [isFresh]: true }
     }
-
     let relays: string[] = hints
 
     if (kind === 10002) {
-      return await dataloader.load({ target: pubkey, relays, refreshStyle, defaultItems })
+      const req = { target: pubkey, relays, refreshStyle, defaultItems }
+      if (refreshStyle) dataloader.clear(req)
+      return await dataloader.load(req)
     } else {
       const rl = await loadRelayList(pubkey, hints, refreshStyle)
       relays.push(
@@ -433,10 +434,7 @@ export function makeListFetcher<I>(
       )
 
       const req = { target: pubkey, relays, refreshStyle, defaultItems }
-
-      if (refreshStyle) {
-        dataloader.clear(req)
-      }
+      if (refreshStyle) dataloader.clear(req)
 
       return await dataloader.load(req)
     }
