@@ -42,7 +42,7 @@ export class OutboxManager {
       label?: string
       onliveupdate?: (event: NostrEvent) => void
       onsyncupdate?: (pubkey: string, success: boolean) => void
-      onbeforeupdate?: (pubkey: string) => void
+      onbeforeupdate?: (pubkey: string, success: boolean) => void
       ondeletions?: (ids: string[]) => void
       defaultRelaysForConfusedPeople?: string[]
       storeRelaysSeenOn?: boolean
@@ -52,7 +52,7 @@ export class OutboxManager {
     this.store = store
     this.bounds = {}
     this.boundsPromise = this.getBounds()
-    this.pool = opts?.pool || this.pool
+    this.pool = opts?.pool || new SimplePool()
     this.label = opts?.label || 'outbox'
     this.onliveupdate = opts?.onliveupdate
     this.onsyncupdate = opts?.onsyncupdate
@@ -372,15 +372,15 @@ export class OutboxManager {
       },
     })
 
-    if (opts.signal) {
-      opts.signal.onabort = () => {
-        closer.close()
-        this.liveSubscriptions = this.liveSubscriptions.filter(sub => declaration.includes(sub))
-      }
-    }
-    this.nuclearAbort.signal.onabort = () => {
+    const closeSubscription = () => {
       closer.close()
+      this.liveSubscriptions = this.liveSubscriptions.filter(sub => !declaration.includes(sub))
     }
+
+    if (opts.signal) {
+      opts.signal.addEventListener('abort', closeSubscription, { once: true })
+    }
+    this.nuclearAbort.signal.addEventListener('abort', closeSubscription, { once: true })
   }
 
   async before(
@@ -429,6 +429,8 @@ export class OutboxManager {
 
         // if we already have events for this person that are older don't try to fetch anything
         if (oldest && oldest < ts) {
+          this.finishSyncing(pubkey)
+          this.onbeforeupdate?.(pubkey, true)
           sem.release()
           return
         }
@@ -494,7 +496,7 @@ export class OutboxManager {
         this.bounds[pubkey] = bound
         await this.setBound(pubkey, bound)
         this.finishSyncing(pubkey)
-        this.onbeforeupdate?.(pubkey, false)
+        this.onbeforeupdate?.(pubkey, true)
 
         sem.release()
       })
