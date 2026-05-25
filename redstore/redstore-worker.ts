@@ -31,6 +31,17 @@ bc.addEventListener('message', async event => {
       // handle only if we're the main worker
       if (!db) return
 
+      if (re[0] === 'close') {
+        clearIntervals()
+        db!.close()
+        syncHandle.close()
+        db = null
+        broadcast(['response', proxyId, true, true])
+        broadcast(['close'])
+        bc.close()
+        return
+      }
+
       const result = command(re[0], re[1])
       broadcast(['response', proxyId, true, result])
 

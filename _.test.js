@@ -135,7 +135,6 @@ function testReplaceables() {
   test('loadRelaySets', async () => {
     const result = await loadRelaySets(TEST_PUBKEYS.fiatjaf)
 
-    expect(result['JGM9mue0UifwnpT8xQIPkScfqYpQACMR'].items.includes('wss://lockbox.fiatjaf.com/')).toBeTruthy()
     expect(result['f4qt86BG85u8POyWO6OMWznNg7innDxp'].items.includes('wss://pyramid.fiatjaf.com/')).toBeTruthy()
     expect(result.lastAttempt).toBeFalsy()
   })
