@@ -1,5 +1,5 @@
 use fastbloom::BloomFilter;
-use redb::ReadTransaction;
+use redb::{ReadTransaction, ReadableTable, WriteTransaction};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 
@@ -8,6 +8,62 @@ use crate::utils::{
     parse_hex_into,
 };
 use crate::{QueryResultEvent, indexes::*};
+
+pub trait Transaction {
+    fn open_events(&self) -> Result<impl ReadableTable<u32, &'static [u8]>>;
+    fn open_id_index(&self) -> Result<impl ReadableTable<&'static [u8], u32>>;
+    fn open_index_table(&self, name: &str) -> Result<impl ReadableTable<&'static [u8], ()>>;
+}
+
+impl Transaction for ReadTransaction {
+    fn open_events(&self) -> Result<impl ReadableTable<u32, &'static [u8]>> {
+        self.open_table(EVENTS)
+            .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))
+    }
+
+    fn open_id_index(&self) -> Result<impl ReadableTable<&'static [u8], u32>> {
+        self.open_table(INDEX_ID)
+            .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))
+    }
+
+    fn open_index_table(&self, name: &str) -> Result<impl ReadableTable<&'static [u8], ()>> {
+        match name {
+            "index_nothing" => self.open_table(INDEX_NOTHING),
+            "index_kind" => self.open_table(INDEX_KIND),
+            "index_pubkey" => self.open_table(INDEX_PUBKEY),
+            "index_pubkey_kind" => self.open_table(INDEX_PUBKEY_KIND),
+            "index_pubkey_dtag" => self.open_table(INDEX_PUBKEY_DTAG),
+            "index_tag" => self.open_table(INDEX_TAG),
+            _ => return Err(JsValue::from_str(&format!("unknown table: {}", name))),
+        }
+        .map_err(|e| JsValue::from_str(&format!("open table error: {:?}", e)))
+    }
+}
+
+impl Transaction for WriteTransaction {
+    fn open_events(&self) -> Result<impl ReadableTable<u32, &'static [u8]>> {
+        self.open_table(EVENTS)
+            .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))
+    }
+
+    fn open_id_index(&self) -> Result<impl ReadableTable<&'static [u8], u32>> {
+        self.open_table(INDEX_ID)
+            .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))
+    }
+
+    fn open_index_table(&self, name: &str) -> Result<impl ReadableTable<&'static [u8], ()>> {
+        match name {
+            "index_nothing" => self.open_table(INDEX_NOTHING),
+            "index_kind" => self.open_table(INDEX_KIND),
+            "index_pubkey" => self.open_table(INDEX_PUBKEY),
+            "index_pubkey_kind" => self.open_table(INDEX_PUBKEY_KIND),
+            "index_pubkey_dtag" => self.open_table(INDEX_PUBKEY_DTAG),
+            "index_tag" => self.open_table(INDEX_TAG),
+            _ => return Err(JsValue::from_str(&format!("unknown table: {}", name))),
+        }
+        .map_err(|e| JsValue::from_str(&format!("open table error: {:?}", e)))
+    }
+}
 
 #[derive(Debug)]
 pub struct Plan {
@@ -28,9 +84,9 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn pull_results(
+    pub fn pull_results<T: Transaction>(
         &mut self,
-        txn: &ReadTransaction,
+        txn: &T,
         batch_size: usize,
         since: u32,
     ) -> Result<bool> {
@@ -44,22 +100,7 @@ impl Query {
             return Ok(false);
         }
 
-        let table = match self.table_name {
-            "index_nothing" => txn.open_table(INDEX_NOTHING),
-            "index_kind" => txn.open_table(INDEX_KIND),
-            "index_pubkey" => txn.open_table(INDEX_PUBKEY),
-            "index_pubkey_kind" => txn.open_table(INDEX_PUBKEY_KIND),
-            "index_pubkey_dtag" => txn.open_table(INDEX_PUBKEY_DTAG),
-            "index_tag" => txn.open_table(INDEX_TAG),
-            _ => {
-                return Err(JsValue::from_str(&format!(
-                    "unknown table: {}",
-                    self.table_name
-                )));
-            }
-        }
-        .map_err(|e| JsValue::from_str(&format!("open table error: {:?}", e)))?;
-
+        let table = txn.open_index_table(self.table_name)?;
         let mut count = 0;
 
         for item in table
@@ -381,14 +422,14 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
 }
 
 #[inline]
-pub fn execute(
-    txn: &ReadTransaction,
+pub fn execute<T: Transaction>(
+    txn: &T,
     plan: &mut Plan,
     limit: usize,
     batch_size: usize,
 ) -> Result<Vec<QueryResultEvent>> {
     let events_table = txn
-        .open_table(EVENTS)
+        .open_events()
         .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
 
     // execute queries and merge results

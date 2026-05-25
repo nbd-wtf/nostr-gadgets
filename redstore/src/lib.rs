@@ -5,14 +5,14 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use redb::{
-    Database, ReadTransaction, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
+    Database, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
 };
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
 
 use crate::indexes::*;
-use crate::query::{Plan, Query, execute, prepare};
+use crate::query::{Plan, Query, Transaction, execute, prepare};
 use crate::utils::{IndexableEvent, MAX_U32_BYTES, Querier, Result, extract_id, parse_hex_into};
 
 mod indexes;
@@ -332,15 +332,14 @@ impl Redstore {
         Ok(results)
     }
 
-    fn query_internal(
+    fn query_internal<T: Transaction>(
         &self,
-        txn: &ReadTransaction,
+        txn: &T,
         mut spec: Querier,
     ) -> Result<Vec<QueryResultEvent>> {
-        // special id query, just get the ids in whatever order and return
         if let Some(ids) = spec.ids {
             let events_table = txn
-                .open_table(EVENTS)
+                .open_events()
                 .map_err(|e| JsValue::from_str(&format!("open events table error: {:?}", e)))?;
 
             let mut results: Vec<QueryResultEvent> = Vec::with_capacity(ids.len());
@@ -351,7 +350,7 @@ impl Redstore {
                     .map_err(|e| JsValue::from_str(&format!("id is not valid hex: {:?}", e)))?;
 
                 let ids_index = txn
-                    .open_table(INDEX_ID)
+                    .open_id_index()
                     .map_err(|e| JsValue::from_str(&format!("open index_id error: {:?}", e)))?;
 
                 // get directly
@@ -414,10 +413,6 @@ impl Redstore {
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
-        let read_txn = db
-            .begin_read()
-            .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
-
         // get last serial
         let last_serial: u32 = {
             let events_table = write_txn
@@ -473,7 +468,7 @@ impl Redstore {
             {
                 let mut id_key = [0u8; 8];
                 if parse_hex_into(&indexable_event.id[48..64], &mut id_key[0..8]).is_ok() {
-                    let ids_index = read_txn.open_table(INDEX_ID).map_err(|e| {
+                    let ids_index = write_txn.open_table(INDEX_ID).map_err(|e| {
                         JsValue::from_str(&format!("open index_id for dup check error: {:?}", e))
                     })?;
 
@@ -572,7 +567,7 @@ impl Redstore {
                     json,
                     timestamp,
                     serial,
-                } in self.query_internal(&read_txn, rq).map_err(|e| {
+                } in self.query_internal(&write_txn, rq).map_err(|e| {
                     JsValue::from_str(&format!("pre-replacement query error: {:?}", e))
                 })? {
                     if timestamp.expect("query result without ids should always have timestamp")
@@ -742,10 +737,6 @@ impl Redstore {
             .begin_write()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
-        let read_txn = db
-            .begin_read()
-            .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
-
         let result = js_sys::Array::new();
 
         // query for the events to delete
@@ -755,7 +746,7 @@ impl Redstore {
                 serial,
                 timestamp: _,
             } in &self.query_internal(
-                &read_txn,
+                &write_txn,
                 (&js_sys::Object::from(filters_arr.get(f))).into(),
             )? {
                 // parse the event JSON to get the event structure
