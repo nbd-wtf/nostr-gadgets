@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use redb::{
     Database, ReadTransaction, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
 };
-use serde_json;
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
@@ -42,14 +41,14 @@ impl StorageBackend for WasmBackend {
         let size = self
             .sync_handle
             .get_size()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
         Ok(size as u64)
     }
 
     fn set_len(&self, len: u64) -> std::result::Result<(), io::Error> {
         self.sync_handle
             .truncate_with_u32(len as u32)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))
+            .map_err(|e| std::io::Error::other(format!("{:?}", e)))
     }
 
     fn read(&self, offset: u64, out: &mut [u8]) -> std::result::Result<(), io::Error> {
@@ -62,7 +61,7 @@ impl StorageBackend for WasmBackend {
             let read_result = self
                 .sync_handle
                 .read_with_u8_array_and_options(&mut out[bytes_read..], &options)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+                .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
 
             bytes_read += read_result as usize;
         }
@@ -72,7 +71,7 @@ impl StorageBackend for WasmBackend {
     fn sync_data(&self) -> io::Result<()> {
         self.sync_handle
             .flush()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+            .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
         Ok(())
     }
 
@@ -86,7 +85,7 @@ impl StorageBackend for WasmBackend {
             let written = self
                 .sync_handle
                 .write_with_u8_array_and_options(&data[bytes_written..], &options)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+                .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
 
             bytes_written += written as usize;
         }
@@ -204,7 +203,9 @@ impl Redstore {
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
         let results = js_sys::Array::new_with_length(specs.len() as u32 / 18);
+
         let mut r = 0;
+        #[allow(clippy::explicit_counter_loop)]
         for i in (0..specs.len()).step_by(18) {
             let result = js_sys::Array::new_with_length(2);
             let key: [u8; 18] = specs[i..i + 18].try_into().expect("18 is not 18");
@@ -277,7 +278,7 @@ impl Redstore {
 
             // for 3xxxx kinds with empty dtaghash, query up to 50 events and return as array
             let is_addressable_bundle =
-                kind >= 30000 && kind < 40000 && dtaghash == [0, 0, 0, 0, 0, 0, 0, 0];
+                (30000..40000).contains(&kind) && dtaghash == [0, 0, 0, 0, 0, 0, 0, 0];
             let limit = if is_addressable_bundle { 50 } else { 1 };
 
             let events = execute(&read_txn, &mut plan, limit, limit)?;
@@ -365,7 +366,7 @@ impl Redstore {
                         results.push(QueryResultEvent {
                             json: event_json.value().to_owned(),
                             timestamp: None,
-                            serial: serial,
+                            serial,
                         });
                     }
                 }
@@ -393,7 +394,7 @@ impl Redstore {
         }
 
         let mut plan = prepare(&mut spec)?;
-        execute(&txn, &mut plan, spec.limit, std::cmp::min(20, spec.limit))
+        execute(txn, &mut plan, spec.limit, std::cmp::min(20, spec.limit))
     }
 
     // takes { last_attempts: [], rawEvents: [] }, returns [bool, ...]
@@ -418,18 +419,16 @@ impl Redstore {
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
         // get last serial
-        let last_serial = {
+        let last_serial: u32 = {
             let events_table = write_txn
                 .open_table(EVENTS)
                 .map_err(|e| JsValue::from_str(&format!("serial get table error: {:?}", e)))?;
 
-            let s = events_table
+            events_table
                 .last()
                 .map_err(|e| JsValue::from_str(&format!("get serial err: {:?}", e)))?
                 .map(|l| l.0.value())
-                .unwrap_or(0);
-
-            s
+                .unwrap_or(0)
         };
 
         #[cfg(debug_assertions)]
@@ -451,7 +450,7 @@ impl Redstore {
 
         for i in 0..raw_events_arr.length() {
             let raw_event = &js_sys::Uint8Array::from(raw_events_arr.get(i)).to_vec();
-            let indexable_event = match IndexableEvent::from_json_event(&raw_event) {
+            let indexable_event = match IndexableEvent::from_json_event(raw_event) {
                 Err(_) => IndexableEvent {
                     id: "0".repeat(64),
                     kind: 0,
@@ -610,12 +609,12 @@ impl Redstore {
                     }
                 }
 
-                if let Some(_) = has_better_previous {
+                if has_better_previous.is_some() {
                     // in this case we won't store the event we just received
                     #[cfg(debug_assertions)]
-                    web_sys::console::log_1(&js_sys::JsString::from(format!(
-                        "replaceable event not stored: newer event exists"
-                    )));
+                    web_sys::console::log_1(&js_sys::JsString::from(
+                        "replaceable event not stored: newer event exists",
+                    ));
                     result.set(i, js_sys::Boolean::from(false).into());
 
                     continue;
@@ -760,7 +759,7 @@ impl Redstore {
                 (&js_sys::Object::from(filters_arr.get(f))).into(),
             )? {
                 // parse the event JSON to get the event structure
-                let indexable_event: IndexableEvent = serde_json::from_slice(&json)
+                let indexable_event: IndexableEvent = serde_json::from_slice(json)
                     .map_err(|e| JsValue::from_str(&format!("parse event error: {:?}", e)))?;
 
                 // delete the event and its indexes

@@ -71,26 +71,24 @@ impl Query {
             let key_bytes = key.value();
             let key_len = key_bytes.len();
 
-            if !self.full_scan {
-                // check if key matches our prefix
-                if key_len != self.curr_key.len()
-                    || key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8]
-                {
-                    #[cfg(debug_assertions)]
-                    web_sys::console::log_7(
-                        &js_sys::JsString::from("exiting on prefix"),
-                        &js_sys::Number::from(key_len as u32),
-                        &js_sys::Number::from(self.curr_key.len() as u32),
-                        &js_sys::Boolean::from(key_len != self.curr_key.len()),
-                        &js_sys::Uint8Array::from(&key_bytes[0..key_len - 8]),
-                        &js_sys::Uint8Array::from(&self.curr_key[0..key_len - 8]),
-                        &js_sys::Boolean::from(
-                            key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8],
-                        ),
-                    );
-                    self.exhausted = true;
-                    return Ok(false);
-                }
+            if !self.full_scan
+                && (key_len != self.curr_key.len()
+                    || key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8])
+            {
+                #[cfg(debug_assertions)]
+                web_sys::console::log_7(
+                    &js_sys::JsString::from("exiting on prefix"),
+                    &js_sys::Number::from(key_len as u32),
+                    &js_sys::Number::from(self.curr_key.len() as u32),
+                    &js_sys::Boolean::from(key_len != self.curr_key.len()),
+                    &js_sys::Uint8Array::from(&key_bytes[0..key_len - 8]),
+                    &js_sys::Uint8Array::from(&self.curr_key[0..key_len - 8]),
+                    &js_sys::Boolean::from(
+                        key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8],
+                    ),
+                );
+                self.exhausted = true;
+                return Ok(false);
             }
 
             // extract timestamp from key
@@ -119,8 +117,8 @@ impl Query {
             #[cfg(debug_assertions)]
             web_sys::console::log_3(
                 &js_sys::JsString::from("pulled"),
-                &js_sys::Number::from(timestamp as u32),
-                &js_sys::Number::from(serial as u32),
+                &js_sys::Number::from(timestamp),
+                &js_sys::Number::from(serial),
             );
             self.results.push((timestamp, serial));
             count += 1;
@@ -181,7 +179,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             // for d tag queries with kinds we'll scan through index_pubkey_kind
             // (only addressable kinds are valid
             // because in this case we can reasonably expect to not to have to scan too much)
-            if kinds.iter().all(|kind| *kind >= 30_000 && *kind < 40_000) != true {
+            if !kinds.iter().all(|kind| *kind >= 30_000 && *kind < 40_000) {
                 // return nothing
                 return Ok(Plan {
                     queries,
@@ -315,7 +313,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
     }
 
     // we'll do these only if kinds/authors/tags remain after planning the queries above (i.e. they weren't used)
-    let extra_kinds = spec.kinds.take().unwrap_or(Vec::new());
+    let extra_kinds = spec.kinds.take().unwrap_or_default();
 
     let extra_authors = spec.authors.take().map(|authors| {
         let mut bf = BloomFilter::with_false_pos(0.01).expected_items(authors.len());
@@ -325,21 +323,21 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
         bf
     });
 
-    let extra_tags = match (spec.dtags.take(), spec.tags.len() > 0) {
+    let extra_tags = match (spec.dtags.take(), !spec.tags.is_empty()) {
         (Some(dtags), false) => {
             let mut bf = BloomFilter::with_false_pos(0.01).expected_items(dtags.len());
             for dtag in dtags {
                 let full = format!("d=>{}", dtag);
                 bf.insert(&full);
             }
-            Some((vec!['d' as u8], bf))
+            Some((vec![b'd'], bf))
         }
         (Some(dtags), true) => {
             let mut bf_letters = Vec::with_capacity(1 + spec.tags.len());
             let mut bf =
                 BloomFilter::with_false_pos(0.01).expected_items(dtags.len() + spec.tags.len() * 2);
             for dtag in dtags {
-                bf_letters.push('d' as u8);
+                bf_letters.push(b'd');
                 let full = format!("d=>{}", dtag);
                 bf.insert(&full);
             }
@@ -397,7 +395,7 @@ pub fn execute(
     let mut remaining_unexhausted = plan.queries.len();
 
     for query in &mut plan.queries {
-        let has_more = query.pull_results(&txn, batch_size, plan.since)?;
+        let has_more = query.pull_results(txn, batch_size, plan.since)?;
         if !has_more {
             remaining_unexhausted -= 1;
         }
@@ -427,17 +425,16 @@ pub fn execute(
         let mut top_query_idx = None;
         let mut top_query_timestamp = 0;
         for (idx, query) in plan.queries.iter_mut().enumerate() {
-            if let Some((timestamp, _)) = query.results.iter().last() {
-                if *timestamp > top_query_timestamp {
-                    top_query_timestamp = *timestamp;
-                    top_query_idx = Some(idx);
-                }
+            if let Some((timestamp, _)) = query.results.iter().last()
+                && *timestamp > top_query_timestamp
+            {
+                top_query_timestamp = *timestamp;
+                top_query_idx = Some(idx);
             }
             batch.append(&mut query.results);
         }
 
-        // sort by timestamp (newest last so we can pop)
-        batch.sort_by(|(a, _), (b, _)| a.cmp(&b));
+        batch.sort_by_key(|m| m.0);
 
         while !batch.is_empty() {
             if emitted_count >= limit {
@@ -466,7 +463,7 @@ pub fn execute(
                             web_sys::console::log_1(&js_sys::JsString::from(format!(
                                 "prevented on extra_authors ({}): {}",
                                 String::from_utf8_lossy(author_hex),
-                                String::from_utf8_lossy(&event_json),
+                                String::from_utf8_lossy(event_json),
                             )));
                             continue;
                         }
@@ -479,40 +476,37 @@ pub fn execute(
                                 "prevented on extra_kind ({} & {:?}): {}",
                                 &kind,
                                 &plan.extra_kinds,
-                                String::from_utf8_lossy(&event_json),
+                                String::from_utf8_lossy(event_json),
                             )));
                             continue;
                         }
                     }
 
-                    if let Some((bf_letters, tags_bf)) = &plan.extra_tags {
-                        if let Ok(tags) = extract_tags(event_json) {
-                            // must contain all tags that are being filtered;
-                            // and for all the tags at least one must be present in the bloom filter
-                            if !bf_letters.iter().all(|letter| {
-                                tags.iter().any(|tag| {
-                                    tag.len() >= 2
-                                        && tag[0].len() == 1
-                                        && tag[0].chars().next().unwrap_or('-') as u8 == *letter
-                                        && tags_bf.contains(&format!("{}=>{}", &tag[0], &tag[1]))
-                                })
-                            }) {
-                                #[cfg(debug_assertions)]
-                                web_sys::console::log_1(&js_sys::JsString::from(format!(
-                                    "prevented on extra_tags ({:?}): {}",
-                                    tags,
-                                    String::from_utf8_lossy(&event_json),
-                                )));
-                                continue;
-                            }
-                        }
+                    if let Some((bf_letters, tags_bf)) = &plan.extra_tags
+                        && let Ok(tags) = extract_tags(event_json)
+                        && !bf_letters.iter().all(|letter| {
+                            tags.iter().any(|tag| {
+                                tag.len() >= 2
+                                    && tag[0].len() == 1
+                                    && tag[0].chars().next().unwrap_or('-') as u8 == *letter
+                                    && tags_bf.contains(&format!("{}=>{}", &tag[0], &tag[1]))
+                            })
+                        })
+                    {
+                        #[cfg(debug_assertions)]
+                        web_sys::console::log_1(&js_sys::JsString::from(format!(
+                            "prevented on extra_tags ({:?}): {}",
+                            tags,
+                            String::from_utf8_lossy(event_json),
+                        )));
+                        continue;
                     }
 
                     #[cfg(debug_assertions)]
                     web_sys::console::log_1(&js_sys::JsString::from(format!(
                         "emitted {}/{} skipping extras {} {:?} {}",
                         serial,
-                        String::from_utf8_lossy(&event_json),
+                        String::from_utf8_lossy(event_json),
                         plan.extra_authors.is_some(),
                         plan.extra_kinds,
                         plan.extra_tags.is_some(),
@@ -541,7 +535,7 @@ pub fn execute(
             && !plan.queries[top_idx].exhausted
         {
             // fetch from the top query
-            let has_more = plan.queries[top_idx].pull_results(&txn, batch_size, plan.since)?;
+            let has_more = plan.queries[top_idx].pull_results(txn, batch_size, plan.since)?;
             if !has_more {
                 remaining_unexhausted -= 1;
             }
@@ -549,7 +543,7 @@ pub fn execute(
             // fetch from all the other queries
             for query in &mut plan.queries {
                 if !query.exhausted {
-                    let has_more = query.pull_results(&txn, batch_size, plan.since)?;
+                    let has_more = query.pull_results(txn, batch_size, plan.since)?;
                     if !has_more {
                         remaining_unexhausted -= 1;
                     }

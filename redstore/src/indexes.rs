@@ -50,7 +50,7 @@ pub fn compute_indexes(indexable_event: &IndexableEvent, serial: u32) -> Vec<Ind
 
     // index_kind: [2-bytes-of-the-kind][4-bytes-of-the-timestamp][4-bytes-serial]
     let mut kind_key = vec![0u8; 10];
-    kind_key[0..2].copy_from_slice(&(indexable_event.kind as u16).to_be_bytes());
+    kind_key[0..2].copy_from_slice(&indexable_event.kind.to_be_bytes());
     kind_key[2..6].copy_from_slice(&timestamp.to_be_bytes());
     kind_key[6..10].copy_from_slice(&serial.to_be_bytes());
     indexes.push(IndexEntry {

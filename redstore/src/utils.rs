@@ -29,7 +29,7 @@ pub struct Querier {
 
 impl Default for Querier {
     fn default() -> Self {
-        return Self {
+        Self {
             ids: None,
             authors: None,
             kinds: None,
@@ -38,7 +38,7 @@ impl Default for Querier {
             since: None,
             until: (js_sys::Date::now() / 1000.0) as u32,
             limit: 250,
-        };
+        }
     }
 }
 
@@ -49,7 +49,7 @@ impl From<&js_sys::Object> for Querier {
         let keys = js_sys::Object::keys(filter);
         for i in 0..keys.length() {
             let key = keys.get(i);
-            if let Ok(value) = js_sys::Reflect::get(&filter, &key) {
+            if let Ok(value) = js_sys::Reflect::get(filter, &key) {
                 let key_string = key.as_string().expect("object key is not a string?");
                 let key_str = key_string.as_str();
                 match key_str {
@@ -103,8 +103,7 @@ impl From<&js_sys::Object> for Querier {
                         }
                     }
                     _ => {
-                        if key_str.starts_with("#") {
-                            let name = key_str[1..].to_string();
+                        if let Some(name) = key_str.strip_prefix("#") {
                             let array = js_sys::Array::from(&value);
                             let mut values = Vec::with_capacity(array.length() as usize);
                             for i in 0..array.length() {
@@ -117,7 +116,7 @@ impl From<&js_sys::Object> for Querier {
             }
         }
 
-        return querier;
+        querier
     }
 }
 
@@ -154,11 +153,10 @@ impl IndexableEvent {
                 .unwrap() as u8;
 
             let value = tag.swap_remove(1);
-            if letter == 100 {
-                if kind >= 30000 && kind < 40000 {
+            if letter == 100
+                && (30000..40000).contains(&kind) {
                     dtag = Some(value.clone())
                 }
-            }
 
             tags.push((letter, value));
         }
@@ -230,7 +228,7 @@ pub fn extract_pubkey(event_json: &[u8]) -> String {
 }
 
 #[inline]
-pub fn extract_pubkey_bytes<'a>(event_json: &'a [u8]) -> &'a [u8] {
+pub fn extract_pubkey_bytes(event_json: &[u8]) -> &[u8] {
     &event_json[11..75]
 }
 
@@ -259,8 +257,7 @@ pub fn extract_tags(event_json: &[u8]) -> Result<Vec<Vec<String>>> {
         .iter()
         .position(|c| *c == 34 /* '"' */)
         .map(|pos| pos + 305 + 9)
-    {
-        if let Some(tags_end) = event_json[tags_start..]
+        && let Some(tags_end) = event_json[tags_start..]
             .iter()
             .enumerate()
             .position(|(i, c)| {
@@ -274,7 +271,6 @@ pub fn extract_tags(event_json: &[u8]) -> Result<Vec<Vec<String>>> {
             return serde_json::from_slice::<Vec<Vec<String>>>(&event_json[tags_start..tags_end])
                 .map_err(|e| JsValue::from_str(&format!("invalid tags json extracted: {:?}", e,)));
         }
-    }
 
     Err(JsValue::from("failed to extract tags"))
 }
