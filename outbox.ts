@@ -16,9 +16,8 @@ import { purgatory } from './global.ts'
  */
 export class OutboxManager {
   readonly store: RedEventStore
-  readonly baseFilters: Filter[]
-  private bounds: { [pubkey: string]: [oldest: number, newest: number] }
-  private boundsPromise: null | Promise<{ [pubkey: string]: [number, number] }>
+  private bounds: { [pubkey: string]: { [kind: number]: [oldest: number, newest: number] } }
+  private boundsPromise: null | Promise<{ [pubkey: string]: { [kind: number]: [number, number] } }>
   private pool: SimplePool
   private label: string
 
@@ -35,7 +34,6 @@ export class OutboxManager {
   private ondeletions: undefined | ((ids: string[]) => void)
 
   constructor(
-    baseFilters: Filter[],
     store: RedEventStore,
     opts: {
       pool?: SimplePool
@@ -48,7 +46,6 @@ export class OutboxManager {
       storeRelaysSeenOn?: boolean
     },
   ) {
-    this.baseFilters = baseFilters
     this.store = store
     this.bounds = {}
     this.boundsPromise = this.getBounds()
@@ -123,12 +120,18 @@ export class OutboxManager {
    * Returns if a public key is synced up to at least 2 hours ago, which means it
    * can be dealt with by just calling .live().
    */
-  async isSynced(pubkey: string): Promise<boolean> {
+  async isSynced(pubkey: string, kinds: number[]): Promise<boolean> {
     await this.ensureBoundsLoaded()
-    const bound = this.bounds[pubkey]
-    const newest = bound ? bound[1] : undefined
+    const bounds = this.bounds[pubkey]
     const now = Math.round(Date.now() / 1000)
-    return Boolean(newest && newest > now - 60 * 60 * 2) // 2 hours
+
+    for (let i = 0; i < kinds.length; i++) {
+      const bound = bounds?.[kinds[i]]
+      const newest = bound ? bound[1] : undefined
+      if (!newest || newest <= now - 60 * 60 * 2) return false // 2 hours
+    }
+
+    return true
   }
 
   /**
@@ -136,6 +139,7 @@ export class OutboxManager {
    */
   async sync(
     authors: string[],
+    kinds: number[],
     opts: {
       signal: AbortSignal
     },
@@ -167,17 +171,23 @@ export class OutboxManager {
       if (this.nuclearAbort.signal.aborted || opts.signal.aborted) break
 
       let pubkey = authors[i]
-      let bound = this.bounds[pubkey]
-      let newest = bound ? bound[1] : undefined
+      let bounds = this.bounds[pubkey]
+      let syncedUpTo: undefined | number
 
-      if (newest && newest > now - 60 * 60 * 2) {
+      for (let kind of kinds) {
+        const bound = bounds?.[kind]
+        const newest = bound ? bound[1] : undefined
+        if (!syncedUpTo || (newest && newest < syncedUpTo)) syncedUpTo = newest
+      }
+
+      if (syncedUpTo && syncedUpTo > now - 60 * 60 * 2) {
         // if this person was caught up to 2 hours ago there is no need to repeat this
         // (we'll make up for these missing events in the ongoing live subscription)
         console.debug(
           `${i + 1}/${authors.length} skip`,
           pubkey,
           'synced up to',
-          new Date(newest * 1000).toLocaleString(),
+          syncedUpTo ? new Date(syncedUpTo * 1000).toLocaleString() : 'never',
           'already',
         )
         this.finishSyncing(pubkey)
@@ -188,7 +198,7 @@ export class OutboxManager {
       console.debug(`${i + 1}/${authors.length} syncing`, pubkey)
 
       // do it only 16 filters at a time because of relay limits
-      const sem = getSemaphore('outbox-sync', 16 / this.baseFilters.length)
+      const sem = getSemaphore('outbox-sync', 16)
       promises.push(
         sem.acquire().then(async () => {
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
@@ -199,7 +209,7 @@ export class OutboxManager {
           }
 
           let relays = (await loadRelayList(pubkey)).items
-            .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
+            .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', [{ kinds }]]))
             .slice(0, 4)
             .map(r => r.url)
 
@@ -220,14 +230,10 @@ export class OutboxManager {
             events = (
               await Promise.race([
                 new Promise<NostrEvent[]>((_, reject) => setTimeout(() => reject(new Error('<timeout>')), 45000)),
-                Promise.all(
-                  this.baseFilters.map(f =>
-                    this.pool.querySync(
-                      relays,
-                      { ...f, authors: [pubkey], since: newest, limit: 200 },
-                      { label: `sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
-                    ),
-                  ),
+                this.pool.querySync(
+                  relays,
+                  { kinds, authors: [pubkey], since: syncedUpTo, limit: 200 },
+                  { label: `sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
                 ),
               ])
             ).flat()
@@ -250,8 +256,8 @@ export class OutboxManager {
             `${i + 1}/${authors.length} events downloaded`,
             pubkey,
             relays,
-            'newest:',
-            newest ? new Date(newest * 1000).toLocaleString() : newest,
+            'synced up to:',
+            syncedUpTo ? new Date(syncedUpTo * 1000).toLocaleString() : syncedUpTo,
             `got ${events.length} events`,
             events,
           )
@@ -273,6 +279,16 @@ export class OutboxManager {
                   this.performDeletions(event)
                 }
 
+                // update bound (or not)
+                const bound = bounds[event.kind]
+                if (bound) {
+                  // we had a bound before, should we update it?
+                  if (bound[0] > event.created_at) bound[0] = event.created_at
+                } else {
+                  // didn't have anything before, but now we have all of these
+                  bounds[event.kind] = [now - 1, now]
+                }
+
                 return isNew
               }),
             )
@@ -282,14 +298,11 @@ export class OutboxManager {
             }
 
             // update stored bound bounds for this person since they're caught up to now
-            if (bound) {
-              bound[1] = now
-            } else {
-              // didn't have anything before, but now we have all of these
-              bound = [events[events.length - 1].created_at, now]
+            for (let kind of kinds) {
+              bounds[kind][1] = now
+              await this.setBound(pubkey, kind, bounds[kind])
             }
-            this.bounds[pubkey] = bound
-            await this.setBound(pubkey, bound)
+            this.bounds[pubkey] = bounds
           }
 
           this.finishSyncing(pubkey)
@@ -306,6 +319,7 @@ export class OutboxManager {
 
   async live(
     authors: string[],
+    kinds: number[],
     opts: {
       // this should only be undefined if you want the live() subscription to last forever
       signal: AbortSignal | undefined
@@ -336,10 +350,10 @@ export class OutboxManager {
 
     const declaration = await outboxFilterRelayBatch(
       authors,
-      this.baseFilters.map(f => ({
-        ...f,
+      {
+        kinds,
         since: Math.round(Date.now() / 1000) - 60 * 60 * 2, // since 2 hours ago
-      })),
+      },
       { fallbackRelays: this.defaultRelaysForConfusedPeople },
     )
 
@@ -360,15 +374,7 @@ export class OutboxManager {
           this.performDeletions(event)
         }
 
-        if (isNew) {
-          const now = Math.round(Date.now() / 1000)
-
-          if (event.pubkey in this.bounds) this.bounds[event.pubkey][1] = now
-          else this.bounds[event.pubkey] = [now - 1, now]
-
-          await this.setBound(event.pubkey, this.bounds[event.pubkey])
-          this.onliveupdate?.(event)
-        }
+        if (isNew) this.onliveupdate?.(event)
       },
     })
 
@@ -385,6 +391,7 @@ export class OutboxManager {
 
   async before(
     authors: string[],
+    kinds: number[],
     ts: number,
     opts: {
       signal: AbortSignal
@@ -414,8 +421,8 @@ export class OutboxManager {
           return
         }
 
-        let bound = this.bounds[pubkey]
-        if (!bound) {
+        let bounds = this.bounds[pubkey]
+        if (!bounds) {
           // this should never happen because we set the bounds for everybody
           // (on the first fetch if they don't have one)
           console.error('pagination on pubkey without a bound', pubkey)
@@ -425,10 +432,22 @@ export class OutboxManager {
           return
         }
 
-        let oldest = bound ? bound[0] : undefined
+        // check bounds for every kind we're interested in
+        let until = 0
+        let satisfied = true
+        for (let kind of kinds) {
+          const bound = bounds[kind]
+          let oldest = bound ? bound[0] : undefined
 
-        // if we already have events for this person that are older don't try to fetch anything
-        if (oldest && oldest < ts) {
+          // we're missing events for at least one kind, we'll have to fetch
+          if (!oldest) {
+            satisfied = false
+          } else if (oldest >= ts) {
+            satisfied = false
+            if (oldest > until) until = oldest
+          }
+        }
+        if (satisfied) {
           this.finishSyncing(pubkey)
           this.onbeforeupdate?.(pubkey, true)
           sem.release()
@@ -436,7 +455,7 @@ export class OutboxManager {
         }
 
         let relays = (await loadRelayList(pubkey)).items
-          .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', this.baseFilters]))
+          .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', [{ kinds }]]))
           .slice(0, 4)
           .map(r => r.url)
 
@@ -450,14 +469,15 @@ export class OutboxManager {
           events = (
             await Promise.race([
               new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
-              Promise.all(
-                this.baseFilters.map(f =>
-                  this.pool.querySync(
-                    relays,
-                    { ...f, authors: [pubkey], until: oldest, limit: 200 },
-                    { label: `page-${pubkey.substring(0, 6)}` },
-                  ),
-                ),
+              this.pool.querySync(
+                relays,
+                {
+                  kinds,
+                  authors: [pubkey],
+                  until: until || undefined,
+                  limit: 200,
+                },
+                { label: `page-${pubkey.substring(0, 6)}` },
               ),
             ])
           ).flat()
@@ -469,7 +489,9 @@ export class OutboxManager {
           return
         }
 
-        console.debug('paginating to the past', pubkey, relays, oldest, events)
+        console.debug('paginating to the past', pubkey, relays, until, events)
+
+        let boundsToUpdate: Set<number> = new Set()
         await Promise.all(
           events.map(async event => {
             const deletion = event.kind === EventDeletion
@@ -484,17 +506,22 @@ export class OutboxManager {
               this.performDeletions(event)
             }
 
+            // update bound (or not)
+            const bound = bounds[event.kind]
+            if (bound[0] > event.created_at) {
+              bounds[event.kind][0] = event.created_at
+              boundsToUpdate.add(event.kind)
+            }
+
             return isNew
           }),
         )
 
-        // update oldest bound
-        if (events.length) {
-          // didn't have anything before, but now we have all of these
-          bound[0] = events[events.length - 1].created_at
+        // update stored bound bounds for this person
+        for (let kind of boundsToUpdate.values()) {
+          await this.setBound(pubkey, kind, bounds[kind])
         }
-        this.bounds[pubkey] = bound
-        await this.setBound(pubkey, bound)
+
         this.finishSyncing(pubkey)
         this.onbeforeupdate?.(pubkey, true)
 
@@ -508,20 +535,21 @@ export class OutboxManager {
   /**
    * retrieves bounds from the syncing store.
    */
-  async getBounds(): Promise<{ [pubkey: string]: [number, number] }> {
+  async getBounds(): Promise<{ [pubkey: string]: { [kind: number]: [number, number] } }> {
     return this.store.getOutboxBounds()
   }
 
   /**
    * saves a single bound to the syncing store.
    */
-  async setBound(pubkey: string, bound: [number, number]): Promise<void> {
+  async setBound(pubkey: string, kind: number, bound: [number, number]): Promise<void> {
     console.debug(
       'new bound for',
       pubkey,
+      kind,
       bound.map(d => new Date(d * 1000).toLocaleString()),
     )
-    return this.store.setOutboxBound(pubkey, bound)
+    return this.store.setOutboxBound(pubkey, kind, bound)
   }
 
   private async performDeletions(event: NostrEvent) {

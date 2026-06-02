@@ -13,9 +13,9 @@ pub const INDEX_PUBKEY_KIND: TableDefinition<&[u8], ()> = TableDefinition::new("
 pub const INDEX_PUBKEY_DTAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_pubkey_dtag");
 pub const INDEX_TAG: TableDefinition<&[u8], ()> = TableDefinition::new("index_tag");
 
-// <pubkey-hex> => [<start>, <end>] (used by the outbox module only)
-pub const OUTBOX_BOUNDS: TableDefinition<String, (u32, u32)> =
-    TableDefinition::new("outbox_bounds");
+// <pubkey-hex>:<kind> => [<start>, <end>] (used by the outbox module only)
+pub const OUTBOX_KIND_BOUNDS: TableDefinition<String, (u32, u32)> =
+    TableDefinition::new("outbox_kind_bounds");
 
 // <kind><pubkey-8-bytes><d-tag-hash> => timestamp (used by the replaceable loader modules only)
 pub const LAST_ATTEMPT: TableDefinition<[u8; 18], u32> = TableDefinition::new("last_attempts");

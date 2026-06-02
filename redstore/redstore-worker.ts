@@ -237,7 +237,7 @@ function command(method: string, data: any): any {
       result = db!.get_outbox_bounds()
       break
     case 'setOutboxBound':
-      result = db!.set_outbox_bound(data.pubkey, data.bound[0], data.bound[1])
+      result = db!.set_outbox_bound(data.pubkey, data.kind, data.bound[0], data.bound[1])
       break
     default:
       throw new Error(`unknown method: ${method}`)

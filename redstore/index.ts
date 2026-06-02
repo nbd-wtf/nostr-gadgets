@@ -283,7 +283,7 @@ export class RedEventStore {
   /**
    * only for use by the outbox module.
    */
-  async getOutboxBounds(): Promise<{ [pubkey: string]: [number, number] }> {
+  async getOutboxBounds(): Promise<{ [pubkey: string]: { [kind: number]: [start: number, end: number] } }> {
     if (!this.#fullyInitialized) await this.init()
     const response = await this.call('getOutboxBounds', {})
     return JSON.parse(utf8Decoder.decode(response))
@@ -292,9 +292,9 @@ export class RedEventStore {
   /**
    * only for use by the outbox module.
    */
-  async setOutboxBound(pubkey: string, bound: [start: number, end: number]): Promise<void> {
+  async setOutboxBound(pubkey: string, kind: number, bound: [start: number, end: number]): Promise<void> {
     if (!this.#fullyInitialized) await this.init()
-    await this.call('setOutboxBound', { pubkey, bound })
+    await this.call('setOutboxBound', { pubkey, kind, bound })
   }
 
   /**

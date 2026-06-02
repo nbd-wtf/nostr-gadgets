@@ -4,9 +4,7 @@ use std::io::{self};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use redb::{
-    Database, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction,
-};
+use redb::{Database, ReadableDatabase, ReadableTable, StorageBackend, WriteTransaction};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use web_sys::FileSystemSyncAccessHandle;
@@ -140,8 +138,8 @@ impl Redstore {
             .open_table(INDEX_TAG)
             .map_err(|e| JsValue::from_str(&format!("initial open index_tag: {:?}", e)))?;
         write_txn
-            .open_table(OUTBOX_BOUNDS)
-            .map_err(|e| JsValue::from_str(&format!("initial open outbox_bounds: {:?}", e)))?;
+            .open_table(OUTBOX_KIND_BOUNDS)
+            .map_err(|e| JsValue::from_str(&format!("initial open outbox_kind_bounds: {:?}", e)))?;
         write_txn
             .open_table(LAST_ATTEMPT)
             .map_err(|e| JsValue::from_str(&format!("initial open last_attempts: {:?}", e)))?;
@@ -861,7 +859,7 @@ impl Redstore {
         Ok(deleted)
     }
 
-    // returns a JSON like `{"<pubkey>": [<start>, <end>]} as an Uint8Array`
+    // returns a JSON like `{"<pubkey>": {"<kind>": [<start>, <end>] } } as an Uint8Array`
     pub fn get_outbox_bounds(&self) -> Result<js_sys::Uint8Array> {
         let db = self
             .db
@@ -872,7 +870,7 @@ impl Redstore {
             .map_err(|e| JsValue::from_str(&format!("read transaction error: {:?}", e)))?;
 
         let bounds_table = read_txn
-            .open_table(OUTBOX_BOUNDS)
+            .open_table(OUTBOX_KIND_BOUNDS)
             .map_err(|e| JsValue::from_str(&format!("open bounds table error: {:?}", e)))?;
 
         let mut map = serde_json::Map::new();
@@ -880,16 +878,24 @@ impl Redstore {
             .iter()
             .map_err(|e| JsValue::from_str(&format!("bounds iteration error: {:?}", e)))?
         {
-            let (pubkey, bound) =
+            let (pubkey_kind, bound) =
                 item.map_err(|e| JsValue::from_str(&format!("bound access error: {:?}", e)))?;
+            let key = pubkey_kind.value();
+            let Some((pubkey, kind)) = key.rsplit_once(':') else {
+                continue;
+            };
             let (start, end) = bound.value();
-            map.insert(
-                pubkey.value(),
-                serde_json::Value::Array(vec![
-                    serde_json::Value::Number(start.into()),
-                    serde_json::Value::Number(end.into()),
-                ]),
-            );
+            let bound = serde_json::Value::Array(vec![
+                serde_json::Value::Number(start.into()),
+                serde_json::Value::Number(end.into()),
+            ]);
+
+            let pubkey_bounds = map
+                .entry(pubkey.to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(kind_bounds) = pubkey_bounds {
+                kind_bounds.insert(kind.to_string(), bound);
+            }
         }
 
         let json = serde_json::to_vec(&serde_json::Value::Object(map))
@@ -901,6 +907,7 @@ impl Redstore {
     pub fn set_outbox_bound(
         &self,
         pubkey: js_sys::JsString,
+        kind: js_sys::Number,
         bound_start: js_sys::Number,
         bound_end: js_sys::Number,
     ) -> Result<()> {
@@ -914,14 +921,20 @@ impl Redstore {
 
         {
             let mut bounds_table = write_txn
-                .open_table(OUTBOX_BOUNDS)
+                .open_table(OUTBOX_KIND_BOUNDS)
                 .map_err(|e| JsValue::from_str(&format!("open bounds table error: {:?}", e)))?;
+
+            let pubkey = pubkey
+                .as_string()
+                .expect("set_outbox_bound pubkey param must be string");
+            let kind = kind
+                .as_f64()
+                .expect("set_outbox_bound kind param must be a numeric kind")
+                as u32;
 
             bounds_table
                 .insert(
-                    pubkey
-                        .as_string()
-                        .expect("set_outbox_bound pubkey param must be string"),
+                    format!("{}:{}", pubkey, kind),
                     (
                         bound_start.as_f64().expect(
                             "set_outbox_bound bound_start param must be a numeric timestamp",
