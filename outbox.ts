@@ -79,9 +79,24 @@ export class OutboxManager {
     }
   }
 
-  private markSyncing(authors: string[]) {
+  private syncingKey(pubkey: string, kind: number): string {
+    return `${pubkey}:${kind}`
+  }
+
+  private isSyncing(pubkey: string, kinds: number[]): boolean {
+    for (let i = 0; i < kinds.length; i++) {
+      if (!this.currentlySyncing.has(this.syncingKey(pubkey, kinds[i]))) return false
+    }
+    return true
+  }
+
+  private markSyncing(authors: string[], kinds: number[]) {
     for (let i = 0; i < authors.length; i++) {
-      this.currentlySyncing.set(authors[i], () => {})
+      for (let k = 0; k < kinds.length; k++) {
+        const key = this.syncingKey(authors[i], kinds[k])
+        if (this.currentlySyncing.has(key)) continue
+        this.currentlySyncing.set(key, () => {})
+      }
     }
   }
 
@@ -89,30 +104,43 @@ export class OutboxManager {
    * Marks a specific public key as not syncing anymore and execute any callbacks that
    * may have registered for that.
    */
-  private finishSyncing(pubkey: string) {
-    const fn = this.currentlySyncing.get(pubkey)
-    this.currentlySyncing.delete(pubkey)
-    fn?.()
+  private finishSyncing(author: string, kinds: number[]) {
+    for (let k = 0; k < kinds.length; k++) {
+      const key = this.syncingKey(author, kinds[k])
+      const fn = this.currentlySyncing.get(key)
+      this.currentlySyncing.delete(key)
+      fn?.()
+    }
   }
 
   /**
    * Returns a promise that is resolved when this pubkey has finished syncing entirely.
    */
-  private async waitForSyncingToFinish(pubkey: string): Promise<void> {
-    const prev = this.currentlySyncing.get(pubkey)
-    if (prev) {
-      await new Promise<void>(resolve => {
-        // register a new callback here to resolve our promise
-        // (this will be called after the item is removed from currentlySyncing)
-        this.currentlySyncing.set(pubkey, () => {
-          prev()
-          resolve()
-        })
-      })
+  private async waitForSyncingToFinish(pubkey: string, kinds: number[]): Promise<void> {
+    const promises: Promise<void>[] = []
+    for (let i = 0; i < kinds.length; i++) {
+      const key = this.syncingKey(pubkey, kinds[i])
+      const prev = this.currentlySyncing.get(key)
+      if (!prev) continue
+
+      promises.push(
+        new Promise<void>(resolve => {
+          // register a new callback here to resolve our promise
+          // (this will be called after the item is removed from currentlySyncing)
+          this.currentlySyncing.set(key, () => {
+            prev()
+            resolve()
+          })
+        }),
+      )
+    }
+
+    if (promises.length) {
+      await Promise.all(promises)
 
       // now we check again because someone else may have been waiting too and they
       // may have put this key in a syncing state again
-      return this.waitForSyncingToFinish(pubkey)
+      return this.waitForSyncingToFinish(pubkey, kinds)
     }
   }
 
@@ -122,7 +150,7 @@ export class OutboxManager {
    */
   async isSynced(pubkey: string, kinds: number[]): Promise<boolean> {
     await this.ensureBoundsLoaded()
-    const bounds = this.bounds[pubkey]
+    const bounds = this.bounds[pubkey] || {}
     const now = Math.round(Date.now() / 1000)
 
     for (let i = 0; i < kinds.length; i++) {
@@ -146,17 +174,18 @@ export class OutboxManager {
   ): Promise<boolean> {
     await this.ensureBoundsLoaded()
 
-    for (let i = authors.length - 1; i >= 0; i--) {
-      if (this.currentlySyncing.has(authors[i])) {
+    for (let a = 0; a < authors.length; a++) {
+      if (this.isSyncing(authors[a], kinds)) {
         // swap-delete
-        authors[i] = authors[authors.length - 1]
+        authors[a] = authors[authors.length - 1]
         authors.length = authors.length - 1
+        a--
       }
     }
 
     if (authors.length === 0) return false
 
-    this.markSyncing(authors)
+    this.markSyncing(authors, kinds)
 
     // this prevents the sync process from always starting at the same point
     // which can be bad if we're restarting it all the time (closing and reopening the page)
@@ -168,16 +197,26 @@ export class OutboxManager {
     const now = Math.round(Date.now() / 1000)
     const promises: Promise<void>[] = []
     for (let i = 0; i < authors.length; i++) {
-      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) break
+      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
+        for (let j = i; j < authors.length; j++) this.finishSyncing(authors[j], kinds)
+        break
+      }
 
       let pubkey = authors[i]
-      let bounds = this.bounds[pubkey]
+      let bounds = this.bounds[pubkey] || {}
       let syncedUpTo: undefined | number
 
       for (let kind of kinds) {
-        const bound = bounds?.[kind]
-        const newest = bound ? bound[1] : undefined
-        if (!syncedUpTo || (newest && newest < syncedUpTo)) syncedUpTo = newest
+        const newest = bounds?.[kind]?.[1]
+
+        if (!newest) {
+          syncedUpTo = undefined
+          break
+        }
+
+        if (!syncedUpTo || newest < syncedUpTo) {
+          syncedUpTo = newest
+        }
       }
 
       if (syncedUpTo && syncedUpTo > now - 60 * 60 * 2) {
@@ -190,7 +229,7 @@ export class OutboxManager {
           syncedUpTo ? new Date(syncedUpTo * 1000).toLocaleString() : 'never',
           'already',
         )
-        this.finishSyncing(pubkey)
+        this.finishSyncing(pubkey, kinds)
         this.onsyncupdate?.(pubkey, true)
         continue
       }
@@ -202,7 +241,7 @@ export class OutboxManager {
       promises.push(
         sem.acquire().then(async () => {
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-            this.finishSyncing(pubkey)
+            this.finishSyncing(pubkey, kinds)
             this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
@@ -219,7 +258,7 @@ export class OutboxManager {
           }
 
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-            this.finishSyncing(pubkey)
+            this.finishSyncing(pubkey, kinds)
             this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
@@ -239,14 +278,14 @@ export class OutboxManager {
             ).flat()
           } catch (err) {
             console.warn('failed to query events for', pubkey, 'at', relays, '=>', err)
-            this.finishSyncing(pubkey)
+            this.finishSyncing(pubkey, kinds)
             this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
           }
 
           if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-            this.finishSyncing(pubkey)
+            this.finishSyncing(pubkey, kinds)
             this.onsyncupdate?.(pubkey, false)
             sem.release()
             return
@@ -267,6 +306,16 @@ export class OutboxManager {
             // we also will not update bounds (since this was likely an error)
             let added = await Promise.all(
               events.map(async event => {
+                // update bound (or not)
+                const bound = bounds[event.kind]
+                if (bound) {
+                  // we had a bound before, should we update it?
+                  if (bound[0] > event.created_at) bound[0] = event.created_at
+                } else {
+                  // didn't have anything before, but now we have all of these
+                  bounds[event.kind] = [now - 1, now]
+                }
+
                 const deletion = event.kind === EventDeletion
 
                 const isNew = await this.store.saveEvent(event, {
@@ -279,16 +328,6 @@ export class OutboxManager {
                   this.performDeletions(event)
                 }
 
-                // update bound (or not)
-                const bound = bounds[event.kind]
-                if (bound) {
-                  // we had a bound before, should we update it?
-                  if (bound[0] > event.created_at) bound[0] = event.created_at
-                } else {
-                  // didn't have anything before, but now we have all of these
-                  bounds[event.kind] = [now - 1, now]
-                }
-
                 return isNew
               }),
             )
@@ -299,13 +338,18 @@ export class OutboxManager {
 
             // update stored bound bounds for this person since they're caught up to now
             for (let kind of kinds) {
-              bounds[kind][1] = now
-              await this.setBound(pubkey, kind, bounds[kind])
+              let bound = bounds[kind]
+              if (bound) bound[1] = now
+              else {
+                bound = [now - 1, now]
+                bounds[kind] = bound
+              }
+              await this.setBound(pubkey, kind, bound)
             }
             this.bounds[pubkey] = bounds
           }
 
-          this.finishSyncing(pubkey)
+          this.finishSyncing(pubkey, kinds)
           this.onsyncupdate?.(pubkey, true)
           sem.release()
         }),
@@ -328,24 +372,36 @@ export class OutboxManager {
     await this.ensureBoundsLoaded()
 
     // do not subscribe live for those that are already subscribed permanently
-    for (let i = 0; i < authors.length; i++) {
-      const author = authors[i]
+    for (let a = 0; a < authors.length; a++) {
+      let skipAuthor = true
 
-      if (this.permanentlyLive.has(author)) {
+      for (let k = 0; k < kinds.length; k++) {
+        const author = authors[a]
+        const kind = kinds[k]
+        const key = `${author}:${kind}`
+
+        if (!this.permanentlyLive.has(key)) {
+          if (opts.signal === undefined) {
+            // mark others as permanently syncing
+            this.permanentlyLive.add(key)
+          }
+
+          skipAuthor = false
+        }
+      }
+
+      if (skipAuthor) {
         // swap-delete
-        authors[i] = authors[authors.length - 1]
+        authors[a] = authors[authors.length - 1]
         authors.length = authors.length - 1
-        i--
-      } else if (opts.signal === undefined) {
-        // mark others as permanently syncing
-        this.permanentlyLive.add(author)
+        a--
       }
     }
 
     if (authors.length === 0) return
 
     // wait for these authors to finish syncing
-    await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
+    await Promise.all(authors.map(author => this.waitForSyncingToFinish(author, kinds)))
     console.debug('listening live', authors)
 
     const declaration = await outboxFilterRelayBatch(
@@ -400,22 +456,23 @@ export class OutboxManager {
     await this.ensureBoundsLoaded()
 
     // wait for these authors to finish syncing
-    await Promise.all(authors.map(author => this.waitForSyncingToFinish(author)))
-
-    this.markSyncing(authors)
+    await Promise.all(authors.map(author => this.waitForSyncingToFinish(author, kinds)))
 
     // (same as sync(), but not as important)
     shuffle(authors)
 
     // from all our authors check which ones need a new page fetch
     for (let i = 0; i < authors.length; i++) {
-      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) break
+      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
+        for (let j = i; j < authors.length; j++) this.finishSyncing(authors[j], kinds)
+        break
+      }
       let pubkey = authors[i]
 
       const sem = getSemaphore('outbox-sync', 15) // do it only 15 pubkeys at a time
       await sem.acquire().then(async () => {
         if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-          this.finishSyncing(pubkey)
+          this.finishSyncing(pubkey, kinds)
           this.onbeforeupdate?.(pubkey, false)
           sem.release()
           return
@@ -426,7 +483,7 @@ export class OutboxManager {
           // this should never happen because we set the bounds for everybody
           // (on the first fetch if they don't have one)
           console.error('pagination on pubkey without a bound', pubkey)
-          this.finishSyncing(pubkey)
+          this.finishSyncing(pubkey, kinds)
           this.onbeforeupdate?.(pubkey, false)
           sem.release()
           return
@@ -448,7 +505,7 @@ export class OutboxManager {
           }
         }
         if (satisfied) {
-          this.finishSyncing(pubkey)
+          this.finishSyncing(pubkey, kinds)
           this.onbeforeupdate?.(pubkey, true)
           sem.release()
           return
@@ -460,6 +517,8 @@ export class OutboxManager {
           .map(r => r.url)
 
         if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
+          this.finishSyncing(pubkey, kinds)
+          this.onbeforeupdate?.(pubkey, false)
           sem.release()
           return
         }
@@ -483,7 +542,7 @@ export class OutboxManager {
           ).flat()
         } catch (err) {
           console.warn('failed to query before events for', pubkey, 'at', relays, '=>', err)
-          this.finishSyncing(pubkey)
+          this.finishSyncing(pubkey, kinds)
           this.onbeforeupdate?.(pubkey, false)
           sem.release()
           return
@@ -494,6 +553,17 @@ export class OutboxManager {
         let boundsToUpdate: Set<number> = new Set()
         await Promise.all(
           events.map(async event => {
+            // update bound (or not)
+            let bound = bounds[event.kind]
+            if (!bound) {
+              bound = [event.created_at + 1, until || event.created_at + 1]
+              bounds[event.kind] = bound
+            }
+            if (bound[0] > event.created_at) {
+              bounds[event.kind][0] = event.created_at
+              boundsToUpdate.add(event.kind)
+            }
+
             const deletion = event.kind === EventDeletion
 
             const isNew = await this.store.saveEvent(event, {
@@ -506,13 +576,6 @@ export class OutboxManager {
               this.performDeletions(event)
             }
 
-            // update bound (or not)
-            const bound = bounds[event.kind]
-            if (bound[0] > event.created_at) {
-              bounds[event.kind][0] = event.created_at
-              boundsToUpdate.add(event.kind)
-            }
-
             return isNew
           }),
         )
@@ -522,7 +585,7 @@ export class OutboxManager {
           await this.setBound(pubkey, kind, bounds[kind])
         }
 
-        this.finishSyncing(pubkey)
+        this.finishSyncing(pubkey, kinds)
         this.onbeforeupdate?.(pubkey, true)
 
         sem.release()
