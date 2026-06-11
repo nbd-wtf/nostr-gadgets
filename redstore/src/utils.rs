@@ -52,6 +52,9 @@ impl From<&js_sys::Object> for Querier {
             if let Ok(value) = js_sys::Reflect::get(filter, &key) {
                 let key_string = key.as_string().expect("object key is not a string?");
                 let key_str = key_string.as_str();
+                if value.is_undefined() {
+                    continue;
+                }
                 match key_str {
                     "ids" => {
                         let array = js_sys::Array::from(&value);
@@ -153,10 +156,9 @@ impl IndexableEvent {
                 .unwrap() as u8;
 
             let value = tag.swap_remove(1);
-            if letter == 100
-                && (30000..40000).contains(&kind) {
-                    dtag = Some(value.clone())
-                }
+            if letter == 100 && (30000..40000).contains(&kind) {
+                dtag = Some(value.clone())
+            }
 
             tags.push((letter, value));
         }
