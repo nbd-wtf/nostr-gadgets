@@ -47,6 +47,13 @@ export type MutedEntity = {
  * Results will be cached in memory, so it's safe to call it infinite times in a row with the same pubkey.
  *
  * It is also safe to call it with multiple different pubkeys, requests to the same relay will be batched together.
+ *
+ * @param refreshStyle controls cache behavior:
+ *   - `true`: force re-fetch from relays, use cached value as placeholder
+ *   - `false`: use cached only, never fetch
+ *   - `NostrEvent`: use this event directly (bypass fetch), save it to cache
+ *   - `null`: clear cache for this pubkey, return empty
+ *   - `undefined`: default — use cached if fresh (<2 days), fetch if stale
  */
 export type ListFetcher<I> = (
   pubkey: string,
