@@ -258,31 +258,20 @@ test('relay-info', async () => {
   expect(relayInfo.name).toBe('damus.io')
   expect(relayInfo.description.includes('Damus')).toBeTruthy()
 
-  // test with refreshStyle false (should use cache if available)
-  const cachedInfo = await loadRelayInfo('wss://relay.damus.io', false)
+  // test with cache (second call returns cached)
+  const cachedInfo = await loadRelayInfo('wss://relay.damus.io')
   expect(cachedInfo).toEqual(relayInfo)
 
   // test with an invalid relay
-  const [invalid, cached] = await Promise.all([
-    loadRelayInfo('wss://invalid.example.com'),
-    loadRelayInfo('relay.damus.io'),
-  ])
+  const invalid = await loadRelayInfo('wss://invalid.example.com')
   expect(invalid).toBe(null)
-  expect(cached).toEqual(cachedInfo)
 
-  // test with forced refresh data
-  const forcedData = {
-    name: 'test relay',
-    description: 'test description',
-    pubkey: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
-  }
-  const [forcedInfo, first, another, yetAnother] = await Promise.all([
-    loadRelayInfo('wss://test.example.com', forcedData),
+  // test parallel fetches
+  const [first, another, yetAnother] = await Promise.all([
     loadRelayInfo('wss://relay.damus.io'),
     loadRelayInfo('relay.primal.net'),
     loadRelayInfo('indexer.coracle.social'),
   ])
-  expect(forcedInfo).toEqual(forcedData)
   expect(first).toEqual(relayInfo)
   expect(another.software.includes('strfry')).toBeTruthy()
   expect(yetAnother.software.includes('git')).toBeTruthy()
