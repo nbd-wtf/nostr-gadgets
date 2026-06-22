@@ -10,7 +10,6 @@
     "./wot": "./wot.ts",
     "./utils": "./utils.ts",
     "./outbox": "./outbox.ts",
-    "./defaults": "./defaults.ts",
     "./redstore": "./redstore/index.ts",
     "./redstore/redstore-worker": "./redstore/redstore-worker.ts",
     "./defaults": "./defaults.ts",
