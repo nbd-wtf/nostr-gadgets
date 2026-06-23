@@ -165,7 +165,7 @@ impl Redstore {
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
-        let spec: Querier = (&filter).into();
+        let spec: Querier = (&filter).try_into()?;
         let events = self.query_internal(&read_txn, spec)?;
         let array = js_sys::Array::new_with_length(events.len() as u32);
         for (
@@ -745,7 +745,7 @@ impl Redstore {
                 timestamp: _,
             } in &self.query_internal(
                 &write_txn,
-                (&js_sys::Object::from(filters_arr.get(f))).into(),
+                (&js_sys::Object::from(filters_arr.get(f))).try_into()?,
             )? {
                 // parse the event JSON to get the event structure
                 let indexable_event: IndexableEvent = serde_json::from_slice(json)

@@ -42,15 +42,19 @@ impl Default for Querier {
     }
 }
 
-impl From<&js_sys::Object> for Querier {
-    fn from(filter: &js_sys::Object) -> Self {
+impl TryFrom<&js_sys::Object> for Querier {
+    type Error = JsValue;
+
+    fn try_from(filter: &js_sys::Object) -> Result<Self> {
         let mut querier = Querier::default();
 
         let keys = js_sys::Object::keys(filter);
         for i in 0..keys.length() {
             let key = keys.get(i);
             if let Ok(value) = js_sys::Reflect::get(filter, &key) {
-                let key_string = key.as_string().expect("object key is not a string?");
+                let key_string = key
+                    .as_string()
+                    .ok_or_else(|| JsValue::from_str("object key is not a string"))?;
                 let key_str = key_string.as_str();
                 if value.is_undefined() {
                     continue;
@@ -62,7 +66,9 @@ impl From<&js_sys::Object> for Querier {
                             .ids
                             .insert(Vec::with_capacity(array.length() as usize));
                         for i in 0..array.length() {
-                            ids.push(array.get(i).as_string().expect("ids must be strings"));
+                            ids.push(array.get(i).as_string().ok_or_else(|| {
+                                JsValue::from_str("ids must be strings")
+                            })?);
                         }
                         break; // break here because if we have ids we don't care about anything else
                     }
@@ -73,7 +79,12 @@ impl From<&js_sys::Object> for Querier {
                             .insert(Vec::with_capacity(array.length() as usize));
                         for i in 0..array.length() {
                             authors
-                                .push(array.get(i).as_string().expect("authors must be strings"));
+                                .push(
+                                    array
+                                        .get(i)
+                                        .as_string()
+                                        .ok_or_else(|| JsValue::from_str("authors must be strings"))?,
+                                );
                         }
                     }
                     "kinds" => {
@@ -83,18 +94,34 @@ impl From<&js_sys::Object> for Querier {
                             .insert(Vec::with_capacity(array.length() as usize));
                         for i in 0..array.length() {
                             kinds
-                                .push(array.get(i).as_f64().expect("kinds must be numbers") as u16);
+                                .push(
+                                    array
+                                        .get(i)
+                                        .as_f64()
+                                        .ok_or_else(|| JsValue::from_str("kinds must be numbers"))?
+                                        as u16,
+                                );
                         }
                     }
                     "since" => {
-                        querier.since =
-                            Some(value.as_f64().expect("since must be a number") as u32);
+                        querier.since = Some(
+                            value
+                                .as_f64()
+                                .ok_or_else(|| JsValue::from_str("since must be a number"))?
+                                as u32,
+                        );
                     }
                     "until" => {
-                        querier.until = value.as_f64().expect("until must be a number") as u32;
+                        querier.until = value
+                            .as_f64()
+                            .ok_or_else(|| JsValue::from_str("until must be a number"))?
+                            as u32;
                     }
                     "limit" => {
-                        querier.limit = value.as_f64().expect("limit must be a number") as usize;
+                        querier.limit = value
+                            .as_f64()
+                            .ok_or_else(|| JsValue::from_str("limit must be a number"))?
+                            as usize;
                     }
                     "#d" => {
                         let array = js_sys::Array::from(&value);
@@ -102,7 +129,12 @@ impl From<&js_sys::Object> for Querier {
                             .dtags
                             .insert(Vec::with_capacity(array.length() as usize));
                         for i in 0..array.length() {
-                            dtags.push(array.get(i).as_string().expect("d-tags must be strings"));
+                            dtags.push(
+                                array
+                                    .get(i)
+                                    .as_string()
+                                    .ok_or_else(|| JsValue::from_str("d-tags must be strings"))?,
+                            );
                         }
                     }
                     _ => {
@@ -111,9 +143,17 @@ impl From<&js_sys::Object> for Querier {
                             if let Some(letter) = name.bytes().next() {
                                 let mut values = Vec::with_capacity(array.length() as usize);
                                 for i in 0..array.length() {
-                                    if let Some(item) = array.get(i).as_string() {
-                                        values.push(item);
-                                    }
+                                    values.push(
+                                        array
+                                            .get(i)
+                                            .as_string()
+                                            .ok_or_else(|| {
+                                                JsValue::from_str(&format!(
+                                                    "tag #{} values must be strings",
+                                                    name
+                                                ))
+                                            })?,
+                                    );
                                 }
                                 querier.tags.push((letter, values));
                             }
@@ -123,7 +163,7 @@ impl From<&js_sys::Object> for Querier {
             }
         }
 
-        querier
+        Ok(querier)
     }
 }
 
