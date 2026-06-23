@@ -108,11 +108,15 @@ impl From<&js_sys::Object> for Querier {
                     _ => {
                         if let Some(name) = key_str.strip_prefix("#") {
                             let array = js_sys::Array::from(&value);
-                            let mut values = Vec::with_capacity(array.length() as usize);
-                            for i in 0..array.length() {
-                                values.push(array.get(i).as_string().unwrap());
+                            if let Some(letter) = name.bytes().next() {
+                                let mut values = Vec::with_capacity(array.length() as usize);
+                                for i in 0..array.length() {
+                                    if let Some(item) = array.get(i).as_string() {
+                                        values.push(item);
+                                    }
+                                }
+                                querier.tags.push((letter, values));
                             }
-                            querier.tags.push((name.bytes().next().unwrap(), values));
                         }
                     }
                 }
@@ -195,8 +199,9 @@ impl<'de> Deserialize<'de> for IndexableEvent {
         for mut tag in temp.tags.into_iter() {
             if tag.len() >= 2 {
                 let name = &tag[0];
-                if name.len() == 1 {
-                    let letter = name.bytes().next().unwrap();
+                if name.len() == 1
+                    && let Some(letter) = name.bytes().next()
+                {
                     let value = tag.swap_remove(1);
                     if letter == 100 {
                         // 'd' tag - only extract for addressable events (kind 30000-40000)
