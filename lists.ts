@@ -248,6 +248,157 @@ export const loadPins: ListFetcher<string> = makeListFetcher<string>(
   }),
 )
 
+/**
+ * A ListFetcher for kind:10006 blocked relays list
+ */
+export const loadBlockedRelays: ListFetcher<string> = makeListFetcher<string>(
+  10006,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'relay') {
+      return tag[1]
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10007 search relays list
+ */
+export const loadSearchRelays: ListFetcher<string> = makeListFetcher<string>(
+  10007,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'relay') {
+      return tag[1]
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10008 profile badges list
+ */
+export const loadProfileBadges: ListFetcher<string | AddressPointer> = makeListFetcher<string | AddressPointer>(
+  10008,
+  [],
+  itemsFromTags<string | AddressPointer>((tag: string[]): string | AddressPointer | undefined => {
+    if (tag.length >= 2) {
+      if (tag[0] === 'a') {
+        const spl = tag[1].split(':')
+        if (!isHex32(spl[1])) return undefined
+        return {
+          identifier: spl.slice(2).join(':'),
+          pubkey: spl[1],
+          kind: parseInt(spl[0]),
+          relays: tag[2] ? [tag[2]] : [],
+        }
+      } else if (tag[0] === 'e' && isHex32(tag[1])) {
+        return tag[1]
+      }
+    }
+  }),
+)
+
+export type SimpleGroupItem = {
+  groupId: string
+  relay: string
+  name?: string
+}
+
+/**
+ * A ListFetcher for kind:10009 simple groups list
+ */
+export const loadSimpleGroups: ListFetcher<SimpleGroupItem> = makeListFetcher<SimpleGroupItem>(
+  10009,
+  [],
+  itemsFromTags<SimpleGroupItem>((tag: string[]): SimpleGroupItem | undefined => {
+    if (tag.length >= 3 && tag[0] === 'group') {
+      return { groupId: tag[1], relay: tag[2], name: tag[3] || undefined }
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10017 git authors list
+ */
+export const loadGitAuthors: ListFetcher<string> = makeListFetcher<string>(
+  10017,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
+      return tag[1]
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10018 git repositories list
+ */
+export const loadGitRepositories: ListFetcher<string> = makeListFetcher<string>(
+  10018,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'a' && tag[1]) {
+      return tag[1]
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10020 media follows list
+ */
+export const loadMediaFollows: ListFetcher<string> = makeListFetcher<string>(
+  10020,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
+      return tag[1]
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10050 DM relays list
+ */
+export const loadDMRelays: ListFetcher<string> = makeListFetcher<string>(
+  10050,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'relay') {
+      return tag[1]
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10054 favorite podcasts list
+ */
+export const loadFavoritePodcasts: ListFetcher<string> = makeListFetcher<string>(
+  10054,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2) {
+      if (tag[0] === 'p' && isHex32(tag[1])) {
+        return tag[1]
+      } else if (tag[0] === 'url') {
+        return tag[1]
+      }
+    }
+  }),
+)
+
+/**
+ * A ListFetcher for kind:10064 authored podcasts list
+ */
+export const loadAuthoredPodcasts: ListFetcher<string> = makeListFetcher<string>(
+  10064,
+  [],
+  itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
+      return tag[1]
+    }
+  }),
+)
+
 export function itemsFromTags<I>(
   tagProcessor: (tag: string[]) => I | undefined,
 ): (event: NostrEvent | undefined) => I[] {
