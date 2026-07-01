@@ -28,7 +28,7 @@ const sk5 = hexToBytes('4e91489c0cc70387fa217ec7b40e47af6e52abe7ba2d5e784d11dadd
 
 describe('redstore', () => {
   test('basic', async () => {
-    const store = new RedEventStore(null, TEST_DB)
+    const store = new RedEventStore(null, TEST_DB, null)
     await store.init()
 
     // try just these two events to start things up
@@ -114,7 +114,7 @@ describe('redstore', () => {
   })
 
   test('uniq', async () => {
-    const store = new RedEventStore(null, TEST_DB)
+    const store = new RedEventStore(null, TEST_DB, null)
     await store.init()
 
     const event = finalizeEvent(
@@ -135,7 +135,7 @@ describe('redstore', () => {
   })
 
   test('more', async () => {
-    const store = new RedEventStore(null, TEST_DB)
+    const store = new RedEventStore(null, TEST_DB, null)
     await store.init()
 
     // add a ton of events and query them in weird ways
@@ -312,7 +312,7 @@ describe('redstore', () => {
   })
 
   test('replacing', async () => {
-    const store = new RedEventStore(null, TEST_DB)
+    const store = new RedEventStore(null, TEST_DB, null)
     await store.init()
 
     // test replacing
@@ -445,7 +445,7 @@ describe('redstore', () => {
   })
 
   test('deletion', async () => {
-    const store = new RedEventStore(null, TEST_DB)
+    const store = new RedEventStore(null, TEST_DB, null)
     await store.init()
 
     const skB = hexToBytes('0a0869ac5240c995729cdb73626cf393b08759fca883c2e9646ba176f30ad82c')
@@ -490,7 +490,7 @@ describe('redstore', () => {
     // use a unique timestamp-based database name to avoid conflicts
     const TEST_DB_DTAG = '_.test.dtag.' + Date.now() + '.db'
 
-    const store = new RedEventStore(null, TEST_DB_DTAG)
+    const store = new RedEventStore(null, TEST_DB_DTAG, null)
     await store.init()
 
     // create kind:30166 events with different "d" tags

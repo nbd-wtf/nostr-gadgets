@@ -2,6 +2,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/pure'
 import { hexToBytes, utf8Decoder, utf8Encoder } from '@nostr/tools/utils'
+import jsr from '../jsr.json' with { type: 'json' }
 
 export class DatabaseError extends Error {
   constructor(message: string) {
@@ -25,9 +26,13 @@ export class RedEventStore {
    * @param dbName - OPFS database file name (default: '@gadgets-redstore')
    * @param wasmUrl - optional wasm URL. omit to auto-resolve from JS path.
    */
-  constructor(worker: Worker | null, dbName: string = '@gadgets-redstore', wasmUrl?: string) {
+  constructor(worker: Worker | null, dbName: string = '@gadgets-redstore', wasmUrl?: string | null) {
     this.name = dbName
-    this.#wasmUrl = wasmUrl
+    this.#wasmUrl =
+      wasmUrl === null
+        ? undefined
+        : wasmUrl ||
+          `https://github.com/nbd-wtf/nostr-gadgets/releases/download/v${jsr.version}/gadgets_redstore_bg.wasm`
     this.worker =
       worker ||
       new Worker(new URL('./redstore-worker.js', import.meta.url), {
