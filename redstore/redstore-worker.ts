@@ -90,7 +90,7 @@ self.addEventListener('message', async event => {
   if (method === 'init') {
     fileName = data.fileName
     try {
-      await init()
+      await init(data.wasmUrl)
       const opfsRoot = await navigator.storage.getDirectory()
       const fileHandle = await opfsRoot.getFileHandle(data.fileName, { create: true })
 

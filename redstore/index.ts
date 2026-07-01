@@ -14,17 +14,20 @@ export class RedEventStore {
   #initialized: undefined | Promise<boolean>
   #fullyInitialized: boolean = false
   #manuallyClosed: boolean = false
+  #wasmUrl: string | undefined
   private worker: Worker
   private name: string
   private requests: Record<string, any> = {}
   private serial = 1
 
   /**
-   * creates a new event store instance.
-   * @param dbName - name of the indexedDB database (default: '@nostr/gadgets/events')
+   * @param worker - Worker instance or null (creates one internally)
+   * @param dbName - OPFS database file name (default: '@gadgets-redstore')
+   * @param wasmUrl - optional wasm URL. omit to auto-resolve from JS path.
    */
-  constructor(worker: Worker | null, dbName: string = '@gadgets-redstore') {
+  constructor(worker: Worker | null, dbName: string = '@gadgets-redstore', wasmUrl?: string) {
     this.name = dbName
+    this.#wasmUrl = wasmUrl
     this.worker =
       worker ||
       new Worker(new URL('./redstore-worker.js', import.meta.url), {
@@ -63,7 +66,7 @@ export class RedEventStore {
       this.#manuallyClosed = false
     } else if (this.#initialized) return this.#initialized
 
-    this.#initialized = this.call('init', { fileName: this.name })
+    this.#initialized = this.call('init', { fileName: this.name, wasmUrl: this.#wasmUrl })
     this.#initialized.then(() => {
       this.#fullyInitialized = true
     })

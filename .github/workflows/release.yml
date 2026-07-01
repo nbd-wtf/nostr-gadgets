@@ -1,0 +1,21 @@
+name: release-assets
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - name: build redstore wasm
+        run: wasm-pack build --target web --out-dir pkg --release
+        working-directory: redstore
+      - name: upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: redstore/pkg/*.wasm
