@@ -31,8 +31,7 @@ export class RedEventStore {
     this.#wasmUrl =
       wasmUrl === null
         ? undefined
-        : wasmUrl ||
-          `https://github.com/nbd-wtf/nostr-gadgets/releases/download/v${jsr.version}/gadgets_redstore_bg.wasm`
+        : wasmUrl || `https://cdn.jsdelivr.net/gh/nbd-wtf/nostr-gadgets@v${jsr.version}/gadgets_redstore_bg.wasm`
     this.worker =
       worker ||
       new Worker(new URL('./redstore-worker.js', import.meta.url), {
