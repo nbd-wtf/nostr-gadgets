@@ -98,7 +98,7 @@ export const loadWikiRelays: ListFetcher<string> = makeListFetcher<string>(
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'relay') {
-      return tag[1]
+      return normalizeURL(tag[1])
     }
   }),
 )
@@ -256,7 +256,7 @@ export const loadBlockedRelays: ListFetcher<string> = makeListFetcher<string>(
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'relay') {
-      return tag[1]
+      return normalizeURL(tag[1])
     }
   }),
 )
@@ -269,7 +269,7 @@ export const loadSearchRelays: ListFetcher<string> = makeListFetcher<string>(
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'relay') {
-      return tag[1]
+      return normalizeURL(tag[1])
     }
   }),
 )
@@ -312,7 +312,7 @@ export const loadSimpleGroups: ListFetcher<SimpleGroupItem> = makeListFetcher<Si
   [],
   itemsFromTags<SimpleGroupItem>((tag: string[]): SimpleGroupItem | undefined => {
     if (tag.length >= 3 && tag[0] === 'group') {
-      return { groupId: tag[1], relay: tag[2], name: tag[3] || undefined }
+      return { groupId: tag[1], relay: normalizeURL(tag[2]), name: tag[3] || undefined }
     }
   }),
 )
@@ -364,7 +364,7 @@ export const loadDMRelays: ListFetcher<string> = makeListFetcher<string>(
   [],
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'relay') {
-      return tag[1]
+      return normalizeURL(tag[1])
     }
   }),
 )

@@ -10,6 +10,8 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 import DataLoader from './dataloader'
 
 import { pool, purgatory, replaceableStore } from './global'
+import { normalizeURL } from '@nostr/tools/utils'
+
 import { isHex32 } from './utils'
 import { Emoji, itemsFromTags, loadRelayList } from './lists'
 
@@ -57,7 +59,7 @@ export const loadRelaySets: SetFetcher<string> = makeSetFetcher<string>(
   30002,
   itemsFromTags<string>((tag: string[]): string | undefined => {
     if (tag.length >= 2 && tag[0] === 'relay') {
-      return tag[1]
+      return normalizeURL(tag[1])
     }
   }),
 )
