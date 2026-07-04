@@ -7,7 +7,7 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 
-import { pool, purgatory, replaceableStore } from './global'
+import { pool, label, purgatory, replaceableStore } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
 
@@ -226,7 +226,7 @@ const metadataLoader = new DataLoader<
         }))
 
         let h = pool.subscribeMap(requestMap, {
-          label: `metadata(${requests.length})`,
+          label: `${label ? label + ':' : ''}metadata(${requests.length})`,
           onevent(evt) {
             const nu = nostrUserFromEvent(evt)
             toFetch[evt.pubkey].resolve(nu)

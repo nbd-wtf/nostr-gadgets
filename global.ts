@@ -34,3 +34,15 @@ export let replaceableStore: ReplaceableStore = defaultReplaceableStore
 export function setReplaceableStore(store: ReplaceableStore) {
   replaceableStore = store
 }
+
+/**
+ * label is prepended to all pool subscription labels for debugging.
+ */
+export let label: string = ''
+
+/**
+ * setLabel sets the global label prepended to pool subscription labels.
+ */
+export function setLabel(l: string) {
+  label = l
+}

@@ -8,7 +8,7 @@ import { loadRelayList } from './lists.ts'
 import { RedEventStore } from './redstore/index.ts'
 import { shuffle } from './utils.ts'
 import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
-import { purgatory } from './global.ts'
+import { purgatory, label } from './global.ts'
 
 /**
  * OutboxManager handles the pool, store, and bounds for outbox feeds.
@@ -272,7 +272,7 @@ export class OutboxManager {
                 this.pool.querySync(
                   relays,
                   { kinds, authors: [pubkey], since: syncedUpTo, limit: 200 },
-                  { label: `sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
+                  { label: `${label ? label + ':' : ''}sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
                 ),
               ])
             ).flat()
@@ -416,7 +416,7 @@ export class OutboxManager {
     this.liveSubscriptions.push(...declaration)
 
     const closer = this.pool.subscribeMap(declaration, {
-      label: `live-${this.label}`,
+      label: `${label ? label + ':' : ''}live-${this.label}`,
       onevent: async event => {
         const deletion = event.kind === EventDeletion
 
@@ -536,7 +536,7 @@ export class OutboxManager {
                   until: until || undefined,
                   limit: 200,
                 },
-                { label: `page-${pubkey.substring(0, 6)}` },
+                { label: `${label ? label + ':' : ''}page-${pubkey.substring(0, 6)}` },
               ),
             ])
           ).flat()

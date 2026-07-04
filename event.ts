@@ -9,7 +9,7 @@ import { AddressPointer, EventPointer, decode } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 import { isReplaceableKind, isAddressableKind } from '@nostr/tools/kinds'
 
-import { pool } from './global'
+import { pool, label } from './global'
 import { ARBITRARY_IDS_RELAYS, BIG_RELAYS_DO_NOT_USE_EVER } from './defaults'
 import { isHex32 } from './utils'
 import { loadRelayList } from './lists'
@@ -119,7 +119,7 @@ export async function loadEvent(
 
   const normalizedHints = relayHints.map(normalizeURL)
   if (normalizedHints.length) {
-    const event = await pool.get(normalizedHints, filter, { label: 'load-event-1' })
+    const event = await pool.get(normalizedHints, filter, { label: `${label ? label + ':' : ''}load-event-1` })
     if (event) {
       store?.saveEvent(event, {
         lastAttempt: now_,
@@ -135,7 +135,7 @@ export async function loadEvent(
       .filter(r => r.write && !normalizedHints.includes(r.url))
       .map(r => r.url)
     if (authorRelaysUrls.length) {
-      const event = await pool.get(authorRelaysUrls, filter, { label: 'load-event-2' })
+      const event = await pool.get(authorRelaysUrls, filter, { label: `${label ? label + ':' : ''}load-event-2` })
       if (event) {
         store?.saveEvent(event, {
           lastAttempt: now_,
@@ -148,7 +148,7 @@ export async function loadEvent(
 
   const bigRelays = BIG_RELAYS.filter(br => !(normalizedHints.includes(br) || authorRelaysUrls.includes(br)))
   if (bigRelays.length) {
-    const event = await pool.get(bigRelays, filter, { label: 'load-event-3' })
+    const event = await pool.get(bigRelays, filter, { label: `${label ? label + ':' : ''}load-event-3` })
     if (event) {
       store?.saveEvent(event, {
         lastAttempt: now_,

@@ -10,7 +10,7 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { AddressPointer, EventPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 
-import { pool, purgatory, replaceableStore, type ReplaceableStore } from './global'
+import { pool, label, purgatory, replaceableStore, type ReplaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
@@ -515,7 +515,7 @@ export function makeListFetcher<I>(
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
             {
-              label: `kind:${kind}:batch(${Object.keys(toFetch).length})`,
+              label: `${label ? label + ':' : ''}kind:${kind}:batch(${Object.keys(toFetch).length})`,
               onevent(evt) {
                 const { resolve, resolved } = toFetch[evt.pubkey]
                 if (resolved) return

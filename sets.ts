@@ -9,7 +9,7 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 
 import DataLoader from './dataloader'
 
-import { pool, purgatory, replaceableStore } from './global'
+import { pool, label, purgatory, replaceableStore } from './global'
 import { normalizeURL } from '@nostr/tools/utils'
 
 import { isHex32 } from './utils'
@@ -167,7 +167,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
             {
-              label: `kind:${kind}:batch(${Object.keys(toFetch).length})`,
+              label: `${label ? label + ':' : ''}kind:${kind}:batch(${Object.keys(toFetch).length})`,
               onevent(evt) {
                 const { resolve, resolved } = toFetch[evt.pubkey]
                 if (resolved) return
