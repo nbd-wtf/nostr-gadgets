@@ -6,6 +6,7 @@
     "./lists": "./lists.ts",
     "./sets": "./sets.ts",
     "./metadata": "./metadata.ts",
+    "./event": "./event.ts",
     "./hints": "./hints.ts",
     "./wot": "./wot.ts",
     "./utils": "./utils.ts",

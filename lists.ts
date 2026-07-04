@@ -10,10 +10,11 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { AddressPointer, EventPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 
-import { pool, purgatory, replaceableStore } from './global'
+import { pool, purgatory, replaceableStore, type ReplaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
+import { loadEvent } from './event'
 
 let serial = 0
 
@@ -601,4 +602,55 @@ export function makeListFetcher<I>(
 
 function randomPick<L>(list: L[]): L {
   return list[serial++ % list.length]
+}
+
+export type ResolvedPointerItem = {
+  pointer: AddressPointer
+  event: NostrEvent | null
+}
+
+export async function resolveListPointers<I>(
+  items: I[],
+  isPointer: (item: I) => boolean,
+  store: ReplaceableStore = replaceableStore,
+): Promise<Array<Exclude<I, AddressPointer> | ResolvedPointerItem>> {
+  return Promise.all(
+    items.map(async (item): Promise<Exclude<I, AddressPointer> | ResolvedPointerItem> => {
+      if (isPointer(item)) {
+        const event = await loadEvent(item as unknown as AddressPointer, store)
+        return { pointer: item as unknown as AddressPointer, event: event ?? null }
+      }
+      return item as Exclude<I, AddressPointer>
+    }),
+  )
+}
+
+export async function fetchFavoriteRelaysWithSets(
+  pubkey: string,
+  hints?: string[],
+  refreshStyle?: boolean | NostrEvent | null,
+  store: ReplaceableStore = replaceableStore,
+): Promise<Array<string | ResolvedPointerItem>> {
+  const { items } = await loadFavoriteRelays(pubkey, hints, refreshStyle)
+  return resolveListPointers<string | AddressPointer>(items, item => typeof item !== 'string', store)
+}
+
+export async function fetchEmojisWithSets(
+  pubkey: string,
+  hints?: string[],
+  refreshStyle?: boolean | NostrEvent | null,
+  store: ReplaceableStore = replaceableStore,
+): Promise<Array<Emoji | ResolvedPointerItem>> {
+  const { items } = await loadEmojis(pubkey, hints, refreshStyle)
+  return resolveListPointers<Emoji | AddressPointer>(items, item => 'kind' in item, store)
+}
+
+export async function fetchProfileBadgesWithSets(
+  pubkey: string,
+  hints?: string[],
+  refreshStyle?: boolean | NostrEvent | null,
+  store: ReplaceableStore = replaceableStore,
+): Promise<Array<string | ResolvedPointerItem>> {
+  const { items } = await loadProfileBadges(pubkey, hints, refreshStyle)
+  return resolveListPointers<string | AddressPointer>(items, item => typeof item !== 'string', store)
 }
