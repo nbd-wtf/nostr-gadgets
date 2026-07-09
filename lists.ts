@@ -10,11 +10,12 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { AddressPointer, EventPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 
-import { pool, label, purgatory, replaceableStore, type ReplaceableStore } from './global'
+import { pool, label, purgatory, replaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
 import { loadEvent } from './event'
+import { RedEventStore } from './redstore'
 
 let serial = 0
 
@@ -604,53 +605,66 @@ function randomPick<L>(list: L[]): L {
   return list[serial++ % list.length]
 }
 
-export type ResolvedPointerItem = {
+export type ResolvedPointerItem<I> = {
   pointer: AddressPointer
   event: NostrEvent | null
-}
-
-export async function resolveListPointers<I>(
-  items: I[],
-  isPointer: (item: I) => boolean,
-  store: ReplaceableStore = replaceableStore,
-): Promise<Array<Exclude<I, AddressPointer> | ResolvedPointerItem>> {
-  return Promise.all(
-    items.map(async (item): Promise<Exclude<I, AddressPointer> | ResolvedPointerItem> => {
-      if (isPointer(item)) {
-        const event = await loadEvent(item as unknown as AddressPointer, store)
-        return { pointer: item as unknown as AddressPointer, event: event ?? null }
-      }
-      return item as Exclude<I, AddressPointer>
-    }),
-  )
+  items: I[]
 }
 
 export async function fetchFavoriteRelaysWithSets(
   pubkey: string,
   hints?: string[],
   refreshStyle?: boolean | NostrEvent | null,
-  store: ReplaceableStore = replaceableStore,
-): Promise<Array<string | ResolvedPointerItem>> {
+  store?: RedEventStore,
+): Promise<Array<string | ResolvedPointerItem<string>>> {
   const { items } = await loadFavoriteRelays(pubkey, hints, refreshStyle)
-  return resolveListPointers<string | AddressPointer>(items, item => typeof item !== 'string', store)
+
+  const process = itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length < 2 || tag[0] !== 'relay') return undefined
+    return normalizeURL(tag[1])
+  })
+
+  return await Promise.all(
+    items.map(async i => {
+      if (typeof i !== 'string' && 'identifier' in i) {
+        const event = await loadEvent(i, store)
+        return {
+          pointer: i,
+          event: event ?? null,
+          items: event ? process(event) : [],
+        }
+      }
+
+      return i
+    }),
+  )
 }
 
 export async function fetchEmojisWithSets(
   pubkey: string,
   hints?: string[],
   refreshStyle?: boolean | NostrEvent | null,
-  store: ReplaceableStore = replaceableStore,
-): Promise<Array<Emoji | ResolvedPointerItem>> {
+  store?: RedEventStore,
+): Promise<Array<Emoji | ResolvedPointerItem<Emoji>>> {
   const { items } = await loadEmojis(pubkey, hints, refreshStyle)
-  return resolveListPointers<Emoji | AddressPointer>(items, item => 'kind' in item, store)
-}
 
-export async function fetchProfileBadgesWithSets(
-  pubkey: string,
-  hints?: string[],
-  refreshStyle?: boolean | NostrEvent | null,
-  store: ReplaceableStore = replaceableStore,
-): Promise<Array<string | ResolvedPointerItem>> {
-  const { items } = await loadProfileBadges(pubkey, hints, refreshStyle)
-  return resolveListPointers<string | AddressPointer>(items, item => typeof item !== 'string', store)
+  const process = itemsFromTags<Emoji>((tag: string[]): Emoji | undefined => {
+    if (tag.length < 3 || tag[0] !== 'emoji') return undefined
+    return { shortcode: tag[1], url: tag[2] }
+  })
+
+  return await Promise.all(
+    items.map(async i => {
+      if ('identifier' in i) {
+        const event = await loadEvent(i, store)
+        return {
+          pointer: i,
+          event: event ?? null,
+          items: event ? process(event) : [],
+        }
+      }
+
+      return i
+    }),
+  )
 }
