@@ -39,7 +39,7 @@ describe('replaceables_redstore', () => {
       if (db.name === TEST_DB_NAME) await RedEventStore.delete(db.name)
     }
 
-    setReplaceableStore(new RedEventStore(null, TEST_DB_NAME))
+    setReplaceableStore(new RedEventStore(null, TEST_DB_NAME, null))
   })
 
   testReplaceables()
