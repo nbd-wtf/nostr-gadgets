@@ -87,6 +87,8 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
             req: Request & { index: number }
             resolve: (result: SetResult<I>) => void
             resolved: boolean
+            since: number // it will be 0 if we are force-updating
+            result?: SetResult<I>
           }
         } = {}
         let now = Math.round(Date.now() / 1000)
@@ -115,23 +117,30 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
 
           if (Object.keys(result).length === 0) {
             // we don't have anything for this key, fill in with empty object
-            if (req.forceUpdate !== false) {
+            if (req.forceUpdate === false) return {}
+            else
               return new Promise(resolve => {
-                toFetch[req.target] = { req, resolve, resolved: false }
+                toFetch[req.target] = {
+                  req,
+                  resolve,
+                  resolved: false,
+                  since: req.forceUpdate === true ? 0 : lastAttempt,
+                }
               })
-            } else {
-              return {}
-            }
           } else if (req.forceUpdate || !lastAttempt || lastAttempt < now - 60 * 60 * 24 * 2) {
             // we have something but it's old (2 days), so we will use it but still try to fetch new versions
-            if (req.forceUpdate !== false) {
+            if (req.forceUpdate === false) return result
+            else
               return new Promise(resolve => {
                 resolve(result)
-                toFetch[req.target] = { req, resolve, resolved: true }
+                toFetch[req.target] = {
+                  req,
+                  resolve,
+                  resolved: true,
+                  result,
+                  since: req.forceUpdate === true ? 0 : lastAttempt,
+                }
               })
-            } else {
-              return result
-            }
           } else {
             // this one is so good we won't try to fetch it again
             return result
@@ -141,9 +150,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
         // resolve immediately (pending reqs will return a promise thus resolve later)
         resolve(results)
 
-        if (Object.keys(toFetch).length === 0) {
-          return
-        }
+        if (Object.keys(toFetch).length === 0) return
 
         const filterByRelay: { [url: string]: Filter } = {}
         for (const {
@@ -161,61 +168,74 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           }
         }
 
+        // set since on each relay filter: minimum lastAttempt across targets for each relay
+        for (const filter of Object.values(filterByRelay)) {
+          let minSince: number = 0
+          for (const author of filter.authors || []) {
+            const entry = toFetch[author]
+            if (minSince === undefined || entry.since < minSince) minSince = entry.since
+          }
+
+          if (minSince > 0) {
+            filter.since = minSince
+          }
+        }
+
         try {
           let handle: SubCloser | undefined
-          const eventsToSave: NostrEvent[] = []
+          const savesToAwait: Promise<boolean>[] = []
+          const pubkeysThatReceivedEvents: Set<string> = new Set()
+
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
             {
               label: `${label ? label + ':' : ''}kind:${kind}:batch(${Object.keys(toFetch).length})`,
               onevent(evt) {
-                const { resolve, resolved } = toFetch[evt.pubkey]
-                if (resolved) return
+                const entry = toFetch[evt.pubkey]
+                if (!entry) return
 
+                // merge into existing result
                 const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
-                const result = {}
-                const existing = result[dTag]
+                entry.result = entry.result || {}
 
-                // only update if this is a newer event for this d tag
+                const existing = entry.result[dTag]
                 if (!existing || existing.event.created_at < evt.created_at) {
-                  result[dTag] = {
+                  entry.result[dTag] = {
                     event: evt,
                     items: process(evt),
                   }
-                  eventsToSave.push(evt)
+                  savesToAwait.push(replaceableStore.saveEvent(evt, { lastAttempt: now }))
+                  pubkeysThatReceivedEvents.add(evt.pubkey)
                 }
-                resolve(result)
-                toFetch[evt.pubkey].resolved = true
               },
               oneose() {
                 handle?.close()
               },
               async onclose() {
-                // save fetched events to store (this also updates lastAttempt on the bundle)
-                for (const evt of eventsToSave) {
-                  replaceableStore.saveEvent(evt, { lastAttempt: now })
-                }
-
-                // resolve promises for targets that didn't receive any events with their existing result
-                for (const { req, resolve, resolved } of Object.values(toFetch)) {
+                for (const { req, resolve, resolved, result } of Object.values(toFetch)) {
                   if (resolved) continue
 
-                  resolve({})
+                  // resolve fresh fetches with accumulated result (or empty)
+                  resolve(result || {})
 
                   // for pubkeys that didn't receive any events, update lastAttempt so we don't keep retrying
-                  replaceableStore.saveEvent(
-                    {
-                      id: '0'.repeat(64),
-                      pubkey: req.target,
-                      kind: kind,
-                      sig: '0'.repeat(128),
-                      tags: [],
-                      created_at: 0,
-                      content: '',
-                    },
-                    { lastAttempt: now },
-                  )
+                  if (!pubkeysThatReceivedEvents.has(req.target)) {
+                    replaceableStore.saveEvent(
+                      {
+                        id: '0'.repeat(64),
+                        pubkey: req.target,
+                        kind: kind,
+                        sig: '0'.repeat(128),
+                        tags: [],
+                        created_at: 0,
+                        content: '',
+                      },
+                      { lastAttempt: now },
+                    )
+                  }
                 }
+
+                await Promise.all(savesToAwait)
               },
             },
           )
