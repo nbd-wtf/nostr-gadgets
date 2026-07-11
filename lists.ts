@@ -16,6 +16,7 @@ import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
 import { loadEvent } from './event'
 import { RedEventStore } from './redstore'
+import { ResolvedSet } from './sets'
 
 let serial = 0
 
@@ -605,18 +606,12 @@ function randomPick<L>(list: L[]): L {
   return list[serial++ % list.length]
 }
 
-export type ResolvedPointerItem<I> = {
-  pointer: AddressPointer
-  event: NostrEvent | null
-  items: I[]
-}
-
 export async function fetchFavoriteRelaysWithSets(
   pubkey: string,
   hints?: string[],
   refreshStyle?: boolean | NostrEvent | null,
   store?: RedEventStore,
-): Promise<Array<string | ResolvedPointerItem<string>>> {
+): Promise<Array<string | ResolvedSet<string>>> {
   const { items } = await loadFavoriteRelays(pubkey, hints, refreshStyle)
 
   const process = itemsFromTags<string>((tag: string[]): string | undefined => {
@@ -632,6 +627,10 @@ export async function fetchFavoriteRelaysWithSets(
           pointer: i,
           event: event ?? null,
           items: event ? process(event) : [],
+          title: event
+            ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
+            : '',
+          image: event?.tags.find(t => t[0] === 'image')?.[1],
         }
       }
 
@@ -645,7 +644,7 @@ export async function fetchEmojisWithSets(
   hints?: string[],
   refreshStyle?: boolean | NostrEvent | null,
   store?: RedEventStore,
-): Promise<Array<Emoji | ResolvedPointerItem<Emoji>>> {
+): Promise<Array<Emoji | ResolvedSet<Emoji>>> {
   const { items } = await loadEmojis(pubkey, hints, refreshStyle)
 
   const process = itemsFromTags<Emoji>((tag: string[]): Emoji | undefined => {
@@ -661,6 +660,10 @@ export async function fetchEmojisWithSets(
           pointer: i,
           event: event ?? null,
           items: event ? process(event) : [],
+          title: event
+            ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
+            : '',
+          image: event?.tags.find(t => t[0] === 'image')?.[1],
         }
       }
 

@@ -11,9 +11,18 @@ import DataLoader from './dataloader'
 
 import { pool, label, purgatory, replaceableStore } from './global'
 import { normalizeURL } from '@nostr/tools/utils'
+import { AddressPointer } from '@nostr/tools/nip19'
 
 import { isHex32 } from './utils'
 import { Emoji, itemsFromTags, loadRelayList } from './lists'
+
+export type ResolvedSet<I> = {
+  pointer: AddressPointer
+  event: NostrEvent | null
+  items: I[]
+  title: string
+  image?: string
+}
 
 /**
  * A SetFetcher is a function that can be called to return a map of items indexed by d-tag,
@@ -22,10 +31,7 @@ import { Emoji, itemsFromTags, loadRelayList } from './lists'
 export type SetFetcher<I> = (pubkey: string, hints?: string[], forceUpdate?: boolean) => Promise<SetResult<I>>
 
 export type SetResult<I> = {
-  [dTag: string]: {
-    event: NostrEvent
-    items: I[]
-  }
+  [dTag: string]: ResolvedSet<I>
 }
 
 /**
@@ -107,10 +113,13 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
           for (const evt of events) {
             const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
             const existing = result[dTag]
-            if (!existing || existing.event.created_at < evt.created_at) {
+            if (!existing || existing.event!.created_at < evt.created_at) {
               result[dTag] = {
+                pointer: { identifier: dTag, pubkey: evt.pubkey, kind },
                 event: evt,
                 items: process(evt),
+                title: (evt.tags.find(t => t[0] === 'title')?.[1] ?? dTag) || '',
+                image: evt.tags.find(t => t[0] === 'image')?.[1],
               }
             }
           }
@@ -199,10 +208,13 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
                 entry.result = entry.result || {}
 
                 const existing = entry.result[dTag]
-                if (!existing || existing.event.created_at < evt.created_at) {
+                if (!existing || existing.event!.created_at < evt.created_at) {
                   entry.result[dTag] = {
+                    pointer: { identifier: dTag, pubkey: evt.pubkey, kind },
                     event: evt,
                     items: process(evt),
+                    title: (evt.tags.find(t => t[0] === 'title')?.[1] ?? dTag) || '',
+                    image: evt.tags.find(t => t[0] === 'image')?.[1],
                   }
                   savesToAwait.push(replaceableStore.saveEvent(evt, { lastAttempt: now }))
                   pubkeysThatReceivedEvents.add(evt.pubkey)
