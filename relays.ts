@@ -17,8 +17,28 @@ export type RelayInfoDocument = {
   self?: string
   contact?: string
   supported_nips?: number[]
+  supported_methods?: string[]
   software?: string
   version?: string
+}
+
+export async function supportedMethods(url: string): Promise<string[] | null> {
+  const httpUrl = normalizeURL(url).replace('wss://', 'https://').replace('ws://', 'http://')
+  try {
+    const res = await fetch(httpUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/nostr+json+rpc' },
+      body: JSON.stringify({ method: 'supportedmethods', params: [] }),
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!res.ok) return null
+    const json = await res.json()
+    if (json.error) return null
+    if (!Array.isArray(json.result)) return null
+    return json.result as string[]
+  } catch {
+    return null
+  }
 }
 
 const cache = new LRUCache<string, RelayInfoDocument | null>(2000)
@@ -29,7 +49,7 @@ export async function loadRelayInfo(url: string): Promise<RelayInfoDocument | nu
   if (cached !== undefined) return cached
 
   try {
-    const doc = await fetchRelayInformation(norm)
+    const [doc, methods] = await Promise.all([fetchRelayInformation(norm), supportedMethods(norm)])
     if (!doc || typeof doc !== 'object') throw new Error('invalid response')
     const info: RelayInfoDocument = {
       url: norm,
@@ -48,6 +68,7 @@ export async function loadRelayInfo(url: string): Promise<RelayInfoDocument | nu
       software: doc.software,
       version: doc.version,
       supported_nips: doc.supported_nips,
+      supported_methods: methods ?? undefined,
     }
     cache.set(norm, info)
     return info
