@@ -631,6 +631,7 @@ export async function fetchFavoriteRelaysWithSets(
             ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
             : '',
           image: event?.tags.find(t => t[0] === 'image')?.[1],
+          description: event?.tags.find(t => t[0] === 'description')?.[1],
         }
       }
 
@@ -664,6 +665,7 @@ export async function fetchEmojisWithSets(
             ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
             : '',
           image: event?.tags.find(t => t[0] === 'image')?.[1],
+          description: event?.tags.find(t => t[0] === 'description')?.[1],
         }
       }
 

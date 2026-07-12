@@ -22,6 +22,7 @@ export type ResolvedSet<I> = {
   items: I[]
   title: string
   image?: string
+  description?: string
 }
 
 /**
@@ -120,6 +121,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
                 items: process(evt),
                 title: (evt.tags.find(t => t[0] === 'title')?.[1] ?? dTag) || '',
                 image: evt.tags.find(t => t[0] === 'image')?.[1],
+                description: evt.tags.find(t => t[0] === 'description')?.[1],
               }
             }
           }
@@ -215,6 +217,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
                     items: process(evt),
                     title: (evt.tags.find(t => t[0] === 'title')?.[1] ?? dTag) || '',
                     image: evt.tags.find(t => t[0] === 'image')?.[1],
+                    description: evt.tags.find(t => t[0] === 'description')?.[1],
                   }
                   savesToAwait.push(replaceableStore.saveEvent(evt, { lastAttempt: now }))
                   pubkeysThatReceivedEvents.add(evt.pubkey)
