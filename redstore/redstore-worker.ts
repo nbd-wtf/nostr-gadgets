@@ -2,49 +2,63 @@ import init, { Redstore } from './pkg/gadgets_redstore.js'
 
 let syncHandle: any
 let db: Redstore | null = null
-const pendingRequests: Map<number, { resolve: Function; reject: Function }> = new Map()
+const pendingRequests: Map<number, { resolve: Function; reject: Function; method: string; data: any }> = new Map()
 var serial = 1
 const random = Math.round(Math.random() * 1000000)
 
 // leader election state
 let fileName: string | null = null
+let wasmUrl: string | null = null
 let lastLeaderHeartbeat: number = 0
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null
 let checkLeaderInterval: ReturnType<typeof setInterval> | null = null
 let takeoverInProgress = false
 
 const HEARTBEAT_INTERVAL = 10000 // leader broadcasts every 10 seconds
-const CHECK_LEADER_INTERVAL = 15000 // non-leaders check every 15 seconds
-const HEARTBEAT_STALE_THRESHOLD = 13000 // heartbeat considered stale after 13 seconds
+const CHECK_LEADER_INTERVAL = 5000 // non-leaders check every 5 seconds
+const HEARTBEAT_STALE_THRESHOLD = 12000 // heartbeat considered stale after 12 seconds
 
 const bc = new BroadcastChannel('calls')
 function broadcast(msg: any) {
-  console.debug('&> bc', msg)
   bc.postMessage(msg)
 }
+
+// re-run any requests that were forwarded to a leader that disappeared.
+// called after a successful takeover so the page sees results without retrying.
+function processPendingRequestsAsNewLeader() {
+  for (const [proxyId, req] of pendingRequests) {
+    try {
+      const result = command(req.method, req.data)
+      req.resolve(result)
+    } catch (error) {
+      req.reject(error instanceof Error ? error : new Error(String(error)))
+    }
+    pendingRequests.delete(proxyId)
+  }
+}
+
+// fail any in-flight requests — used when the database is being torn down.
+function rejectAllPendingRequests(error: Error) {
+  for (const [, req] of pendingRequests) {
+    req.reject(error)
+  }
+  pendingRequests.clear()
+}
+
 bc.addEventListener('message', async event => {
-  console.debug('&< bc', event.data)
   const [type, proxyId, ...re] = event.data
 
   switch (type) {
     case 'call': {
-      // handle only if we're the main worker
+      // handle only if we're the leader
       if (!db) return
 
-      if (re[0] === 'close') {
-        clearIntervals()
-        db!.close()
-        syncHandle.close()
-        db = null
-        broadcast(['response', proxyId, true, true])
-        broadcast(['close'])
-        bc.close()
-        return
+      try {
+        const result = command(re[0], re[1])
+        broadcast(['response', proxyId, true, result])
+      } catch (error) {
+        broadcast(['response', proxyId, false, String(error)])
       }
-
-      const result = command(re[0], re[1])
-      broadcast(['response', proxyId, true, result])
-
       break
     }
     case 'response': {
@@ -60,17 +74,16 @@ bc.addEventListener('message', async event => {
       break
     }
     case 'heartbeat': {
-      // update last heartbeat timestamp if we're not the leader
+      // followers track leader liveness
       if (!db) {
         lastLeaderHeartbeat = Date.now()
-        console.debug('& received heartbeat from leader')
       }
       break
     }
     case 'close': {
-      // leader announced it's closing, try to take over immediately
+      // leader announced it's closing → try to take over (pending requests
+      // will be re-processed locally after the takeover completes)
       if (!db) {
-        console.log('& leader closed, attempting immediate takeover...')
         attemptLeadershipTakeover()
       }
       break
@@ -79,53 +92,72 @@ bc.addEventListener('message', async event => {
 })
 
 function sendToPage(msg: any) {
-  console.debug('~> page', msg)
   self.postMessage(msg)
 }
 
 self.addEventListener('message', async event => {
-  console.debug('~< page', event.data)
   const [id, method, data] = event.data
 
   if (method === 'init') {
     fileName = data.fileName
+    wasmUrl = data.wasmUrl
+    let gotFile = false
     try {
-      await init(data.wasmUrl)
       const opfsRoot = await navigator.storage.getDirectory()
       const fileHandle = await opfsRoot.getFileHandle(data.fileName, { create: true })
 
       // @ts-ignore
       syncHandle = await fileHandle.createSyncAccessHandle()
+      gotFile = true
+
+      // only load the wasm after we hold the file — followers stay light
+      await init(data.wasmUrl)
       db = new Redstore(syncHandle)
       startLeaderHeartbeat()
       sendToPage([id, true, true])
     } catch (error) {
-      // someone else already has the file
-      console.log("~ we didn't get the file:", error)
-      startCheckingLeader()
-      sendToPage([id, true, false])
+      if (gotFile) {
+        // we held the file but failed afterwards (e.g. wasm init); release it
+        if (syncHandle) {
+          try {
+            syncHandle.close()
+          } catch {}
+          syncHandle = null
+        }
+        sendToPage([id, false, String(error)])
+      } else {
+        // file lock → another worker is the leader, we become a follower
+        startCheckingLeader()
+        sendToPage([id, true, false])
+      }
     }
+  } else if (method === 'close') {
+    // close is handled locally by every worker: the leader releases the file
+    // and tells others; followers just clean up their own state.
+    clearIntervals()
+    if (db) {
+      try {
+        db.close()
+      } catch {}
+      try {
+        syncHandle.close()
+      } catch {}
+      db = null
+      broadcast(['close'])
+    }
+    rejectAllPendingRequests(new Error('database was closed'))
+    sendToPage([id, true, true])
+    bc.close()
   } else {
     try {
       if (db) {
-        // handle directly if we're the main worker
-        if (method === 'close') {
-          clearIntervals()
-          db!.close()
-          syncHandle.close()
-          db = null
-          sendToPage([id, true, true])
-          broadcast(['close'])
-          bc.close()
-        } else {
-          const result = command(method, data)
-          sendToPage([id, true, result])
-        }
+        const result = command(method, data)
+        sendToPage([id, true, result])
       } else {
-        // forward to main worker
+        // follower: forward call to the leader
         const result = await new Promise((resolve, reject) => {
           const proxyId = serial++ + random
-          pendingRequests.set(proxyId, { resolve, reject })
+          pendingRequests.set(proxyId, { resolve, reject, method, data })
           broadcast(['call', proxyId, method, data])
         })
         sendToPage([id, true, result])
@@ -141,34 +173,36 @@ function startLeaderHeartbeat() {
 
   // broadcast initial heartbeat immediately
   broadcast(['heartbeat'])
-  console.debug('& started leader heartbeat')
 
   // set up recurring heartbeat
   heartbeatInterval = setInterval(() => {
     broadcast(['heartbeat'])
-    console.debug('& sent heartbeat')
   }, HEARTBEAT_INTERVAL)
 }
 
 function startCheckingLeader() {
   clearIntervals()
 
-  // Initialize last heartbeat to now (assume leader just sent one)
+  // assume the leader is alive; will be corrected by the first heartbeat we hear
   lastLeaderHeartbeat = Date.now()
-  console.debug('& started checking for leader')
 
-  // Set up recurring check
   checkLeaderInterval = setInterval(() => {
     if (db) {
-      // We became the leader, stop checking
+      // we became the leader ourselves; stop checking
       if (checkLeaderInterval) clearInterval(checkLeaderInterval)
       checkLeaderInterval = null
       return
     }
 
+    if (takeoverInProgress) {
+      // a takeover is already running; let it finish before doing anything
+      return
+    }
+
     const timeSinceLastHeartbeat = Date.now() - lastLeaderHeartbeat
     if (timeSinceLastHeartbeat > HEARTBEAT_STALE_THRESHOLD) {
-      console.log('& leader heartbeat stale, attempting takeover...')
+      // leader looks dead — try to take over; in-flight requests will be
+      // re-processed locally after the takeover completes
       attemptLeadershipTakeover()
     }
   }, CHECK_LEADER_INTERVAL)
@@ -176,12 +210,10 @@ function startCheckingLeader() {
 
 async function attemptLeadershipTakeover() {
   if (!fileName) {
-    console.error('& cannot attempt takeover: no stored filename')
     return
   }
 
   if (takeoverInProgress) {
-    console.debug('& takeover already in progress, skipping')
     return
   }
 
@@ -192,14 +224,16 @@ async function attemptLeadershipTakeover() {
 
     // @ts-ignore
     syncHandle = await fileHandle.createSyncAccessHandle()
-    db = new Redstore(syncHandle)
 
-    console.log('& successfully took over as leader')
+    // we may have been a follower all along and never loaded the wasm
+    await init(wasmUrl!)
+    db = new Redstore(syncHandle)
     startLeaderHeartbeat()
+    // re-process any requests that were forwarded to the old leader; if the
+    // takeover fails, pending requests stay pending until the next attempt.
+    processPendingRequestsAsNewLeader()
   } catch (error) {
-    // another worker beat us to it or leader recovered
-    console.log('& takeover failed, another worker is leader:', error)
-    // reset heartbeat timestamp since someone else is now leader
+    // either the previous leader recovered, or another follower beat us to it
     lastLeaderHeartbeat = Date.now()
   } finally {
     takeoverInProgress = false
