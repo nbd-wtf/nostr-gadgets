@@ -202,52 +202,31 @@ describe('purgatory', async () => {
   test('cross-session', async () => {
     const label = '@nostr/gadgets/purgatory/test'
     window.localStorage.removeItem(label)
-    const invalidRelayUrl = 'wss://relay.example2.com'
-    const now = Math.round(Date.now() / 1000)
-
-    window.localStorage.setItem(
-      label,
-      JSON.stringify({
-        lastSave: now - 60 * 100, // 100 minutes ago
-        [normalizeURL(invalidRelayUrl)]: { failures: 1, lastAttempt: now - 60 * 105 /* 105 minutes */ },
-      }),
-    )
-
+    const relayUrl = normalizeURL('wss://relay.example2.com')
     const p = new Purgatory(label)
-    p.startTime = now - 60 * 3 // 3 minutes ago
 
-    // - a relay was failed, so it should be on purgatory for 15 minutes
-    // - 5 minutes later we closed the browser
-    // - 97 minutes afterwards we opened it again
-    // - now it's been opened for 3 minutes, the relay should still fail to connect
-    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+    // 2 failures = 4 min penalty. After 4 min, decays to 1 failure.
+    p.state[relayUrl] = { failures: 2, lastAttempt: Math.round(Date.now() / 1000) - 60 * 3 }
+    expect(p.allowConnectingToRelay(relayUrl, ['read', [{ kinds: [1] }]])).toBe(false)
 
-    // - try again, but this time pretend we've been open for 6 minutes
-    p.startTime = now - 60 * 6
-    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+    // after 4 min, penalty expired → decay to 1 failure
+    p.state[relayUrl].lastAttempt = Math.round(Date.now() / 1000) - 60 * 5
+    expect(p.allowConnectingToRelay(relayUrl, ['read', [{ kinds: [1] }]])).toBe(true)
+    expect(p.state[relayUrl].failures).toEqual(1)
 
-    // - try again, but this time pretend we've been open for 9 minutes
-    p.startTime = now - 60 * 9
-    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
+    // 1 failure = 2 min penalty, after penalty → cleared entirely
+    p.state[relayUrl].lastAttempt = Math.round(Date.now() / 1000) - 60 * 3
+    expect(p.allowConnectingToRelay(relayUrl, ['read', [{ kinds: [1] }]])).toBe(true)
+    expect(p.state[relayUrl]).toBeUndefined()
 
-    // - try again, but this time pretend we've been open for 11 minutes
-    // except this time it should work
-    p.startTime = now - 60 * 11
-    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(true)
+    // max cap: 6 failures capped at 10 min, still blocked at 8 min
+    p.state[relayUrl] = { failures: 6, lastAttempt: Math.round(Date.now() / 1000) - 60 * 8 }
+    expect(p.allowConnectingToRelay(relayUrl, ['read', [{ kinds: [1] }]])).toBe(false)
 
-    // but if the number of failures is higher then it shouldn't
-    p.state[normalizeURL(invalidRelayUrl)].failures++
-    p.startTime = now - 60 * 11
-    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
-
-    // - try again, but this time pretend we've been open for 20 minutes
-    p.startTime = now - 60 * 20
-    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(false)
-
-    // - try again, but this time pretend we've been open for 26 minutes
-    // and then it should work again
-    p.startTime = now - 60 * 26
-    expect(p.allowConnectingToRelay(normalizeURL(invalidRelayUrl), ['read', [{ kinds: [1] }]])).toBe(true)
+    // after 10 min, allowed + decays to 5 failures
+    p.state[relayUrl].lastAttempt = Math.round(Date.now() / 1000) - 60 * 11
+    expect(p.allowConnectingToRelay(relayUrl, ['read', [{ kinds: [1] }]])).toBe(true)
+    expect(p.state[relayUrl].failures).toEqual(5)
   })
 })
 

@@ -43,9 +43,16 @@ export class Purgatory {
     const relay = this.state[url]
     if (!relay) return true
 
-    const purgeTime = relay.failures * 15 * 60 // 15 minutes for each failure
+    const now = Math.round(Date.now() / 1000)
+    const purgeTime = Math.min(relay.failures * 2 * 60, 10 * 60)
 
-    if (relay.lastAttempt + purgeTime < Math.round(Date.now() / 1000)) {
+    if (relay.lastAttempt + purgeTime < now) {
+      if (relay.failures > 1) {
+        relay.failures--
+        relay.lastAttempt = now
+      } else {
+        delete this.state[url]
+      }
       return true
     }
 
