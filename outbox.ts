@@ -169,6 +169,7 @@ export class OutboxManager {
     authors: string[],
     kinds: number[],
     opts: {
+      numberOfRelaysPerUser?: number
       signal: AbortSignal
     },
   ): Promise<boolean> {
@@ -249,7 +250,7 @@ export class OutboxManager {
 
           let relays = (await loadRelayList(pubkey)).items
             .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', [{ kinds }]]))
-            .slice(0, 4)
+            .slice(0, opts.numberOfRelaysPerUser || 3)
             .map(r => r.url)
 
           if (relays.length === 0) {
@@ -365,6 +366,8 @@ export class OutboxManager {
     authors: string[],
     kinds: number[],
     opts: {
+      numberOfRelaysPerUser?: number
+
       // this should only be undefined if you want the live() subscription to last forever
       signal: AbortSignal | undefined
     },
@@ -410,7 +413,7 @@ export class OutboxManager {
         kinds,
         since: Math.round(Date.now() / 1000) - 60 * 60 * 2, // since 2 hours ago
       },
-      { fallbackRelays: this.defaultRelaysForConfusedPeople },
+      { fallbackRelays: this.defaultRelaysForConfusedPeople, numberOfRelaysPerUser: opts.numberOfRelaysPerUser },
     )
 
     this.liveSubscriptions.push(...declaration)
@@ -450,6 +453,7 @@ export class OutboxManager {
     kinds: number[],
     ts: number,
     opts: {
+      numberOfRelaysPerUser?: number
       signal: AbortSignal
     },
   ) {
@@ -513,7 +517,7 @@ export class OutboxManager {
 
         let relays = (await loadRelayList(pubkey)).items
           .filter(r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', [{ kinds }]]))
-          .slice(0, 4)
+          .slice(0, opts.numberOfRelaysPerUser || 3)
           .map(r => r.url)
 
         if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
@@ -659,7 +663,7 @@ export class OutboxManager {
 export async function outboxFilterRelayBatch(
   pubkeys: string[],
   baseFilters: Filter | Filter[],
-  opts?: { fallbackRelays?: string[] },
+  opts?: { fallbackRelays?: string[]; numberOfRelaysPerUser?: number },
 ): Promise<{ url: string; filter: Filter }[]> {
   baseFilters = Array.isArray(baseFilters) ? baseFilters : [baseFilters]
   const fallbackRelays = (opts?.fallbackRelays || []).map(url => ({ url, write: true }))
@@ -669,7 +673,8 @@ export async function outboxFilterRelayBatch(
   type Count = { count: number }
   const relayCounts: { [url: string]: Count } = {}
   const relaysByPubKey: { [pubkey: string]: { [url: string]: Count } } = {}
-  const numberOfRelaysPerUser = pubkeys.length < 100 ? 4 : pubkeys.length < 800 ? 3 : pubkeys.length < 1200 ? 2 : 1
+  const numberOfRelaysPerUser =
+    opts?.numberOfRelaysPerUser || pubkeys.length < 100 ? 4 : pubkeys.length < 800 ? 3 : pubkeys.length < 1200 ? 2 : 1
 
   // get the most popular relays among the list of followed people
   // (because browsers are stupid and doesn't allow too many relay connections)
