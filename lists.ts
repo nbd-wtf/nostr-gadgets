@@ -14,8 +14,6 @@ import { pool, label, purgatory, replaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
-import { loadEvent } from './event'
-import { RedEventStore } from './redstore'
 import { ResolvedSet } from './sets'
 
 let serial = 0
@@ -610,7 +608,6 @@ export async function fetchFavoriteRelaysWithSets(
   pubkey: string,
   hints?: string[],
   refreshStyle?: boolean | NostrEvent | null,
-  store?: RedEventStore,
 ): Promise<Array<string | ResolvedSet<string>>> {
   const { items } = await loadFavoriteRelays(pubkey, hints, refreshStyle)
 
@@ -619,32 +616,36 @@ export async function fetchFavoriteRelaysWithSets(
     return normalizeURL(tag[1])
   })
 
-  return await Promise.all(
-    items.map(async i => {
-      if (typeof i !== 'string' && 'identifier' in i) {
-        const event = await loadEvent(i, store)
-        return {
-          pointer: i,
-          event: event ?? null,
-          items: event ? process(event) : [],
-          title: event
-            ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
-            : '',
-          image: event?.tags.find(t => t[0] === 'image')?.[1],
-          description: event?.tags.find(t => t[0] === 'description')?.[1],
-        }
-      }
+  const addressItems = items.filter((i): i is AddressPointer => typeof i !== 'string' && 'identifier' in i)
+  const stored = (await replaceableStore.loadReplaceables(addressItems.map(i => [i.kind, i.pubkey, i.identifier]))) as [
+    number,
+    NostrEvent | undefined,
+  ][]
 
-      return i
-    }),
-  )
+  const resolved = new Map(addressItems.map((i, idx) => [i.identifier + i.pubkey + i.kind, stored[idx][1]]))
+
+  return items.map(i => {
+    if (typeof i !== 'string' && 'identifier' in i) {
+      const event = resolved.get(i.identifier + i.pubkey + i.kind) ?? null
+      return {
+        pointer: i,
+        event,
+        items: event ? process(event) : [],
+        title: event
+          ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
+          : '',
+        image: event?.tags.find(t => t[0] === 'image')?.[1],
+        description: event?.tags.find(t => t[0] === 'description')?.[1],
+      }
+    }
+    return i
+  })
 }
 
 export async function fetchEmojisWithSets(
   pubkey: string,
   hints?: string[],
   refreshStyle?: boolean | NostrEvent | null,
-  store?: RedEventStore,
 ): Promise<Array<Emoji | ResolvedSet<Emoji>>> {
   const { items } = await loadEmojis(pubkey, hints, refreshStyle)
 
@@ -653,23 +654,30 @@ export async function fetchEmojisWithSets(
     return { shortcode: tag[1], url: tag[2] }
   })
 
-  return await Promise.all(
-    items.map(async i => {
-      if ('identifier' in i) {
-        const event = await loadEvent(i, store)
-        return {
-          pointer: i,
-          event: event ?? null,
-          items: event ? process(event) : [],
-          title: event
-            ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
-            : '',
-          image: event?.tags.find(t => t[0] === 'image')?.[1],
-          description: event?.tags.find(t => t[0] === 'description')?.[1],
-        }
-      }
+  const addressItems = items.filter((i): i is AddressPointer => 'identifier' in i)
+  const stored = (await replaceableStore.loadReplaceables(addressItems.map(i => [i.kind, i.pubkey, i.identifier]))) as [
+    number,
+    NostrEvent | undefined,
+  ][]
 
-      return i
-    }),
-  )
+  const resolved = new Map(addressItems.map((i, idx) => [i.identifier + i.pubkey + i.kind, stored[idx][1]]))
+
+  return items.map(i => {
+    if ('identifier' in i) {
+      const event = resolved.get(i.identifier + i.pubkey + i.kind) ?? null
+      return {
+        pointer: i,
+        event,
+        items: event ? process(event) : [],
+        title: event
+          ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
+          : '',
+        image: event?.tags.find(t => t[0] === 'image')?.[1],
+        description: event?.tags.find(t => t[0] === 'description')?.[1],
+      }
+    }
+    return i
+  })
+}
+
 }
