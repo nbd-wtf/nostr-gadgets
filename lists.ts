@@ -105,6 +105,26 @@ export const loadWikiRelays: ListFetcher<string> = makeListFetcher<string>(
 )
 
 /**
+ * A ListFetcher for kind:10011 "favorite follow sets" list
+ */
+export const loadFavoriteFollowSets: ListFetcher<AddressPointer> = makeListFetcher<AddressPointer>(
+  10011,
+  [],
+  itemsFromTags<AddressPointer>((tag: string[]): AddressPointer | undefined => {
+    if (tag.length >= 2 && tag[0] === 'a') {
+      const spl = tag[1].split(':')
+      if (!isHex32(spl[1]) || spl[0] !== '30000') return undefined
+      return {
+        identifier: spl.slice(2).join(':'),
+        pubkey: spl[1],
+        kind: parseInt(spl[0]),
+        relays: tag[2] ? [tag[2]] : [],
+      }
+    }
+  }),
+)
+
+/**
  * A ListFetcher for kind:10012 "favorite relays" list
  */
 export const loadFavoriteRelays: ListFetcher<string | AddressPointer> = makeListFetcher<string | AddressPointer>(
@@ -680,4 +700,35 @@ export async function fetchEmojisWithSets(
   })
 }
 
+export async function fetchFavoriteFollowSetsWithSets(
+  pubkey: string,
+  hints?: string[],
+  refreshStyle?: boolean | NostrEvent | null,
+): Promise<Array<ResolvedSet<string>>> {
+  const { items } = await loadFavoriteFollowSets(pubkey, hints, refreshStyle)
+
+  const process = itemsFromTags<string>((tag: string[]): string | undefined => {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
+      return tag[1]
+    }
+  })
+
+  const stored = (await replaceableStore.loadReplaceables(items.map(i => [i.kind, i.pubkey, i.identifier]))) as [
+    number,
+    NostrEvent | undefined,
+  ][]
+
+  return items.map((i, idx) => {
+    const event = stored[idx][1] ?? null
+    return {
+      pointer: i,
+      event,
+      items: event ? process(event) : [],
+      title: event
+        ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
+        : '',
+      image: event?.tags.find(t => t[0] === 'image')?.[1],
+      description: event?.tags.find(t => t[0] === 'description')?.[1],
+    }
+  })
 }
