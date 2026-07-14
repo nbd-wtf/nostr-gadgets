@@ -624,6 +624,161 @@ function randomPick<L>(list: L[]): L {
   return list[serial++ % list.length]
 }
 
+async function loadAddressableSets<I>(
+  addressItems: AddressPointer[],
+  process: (event: NostrEvent | undefined) => I[],
+  refreshStyle: boolean | NostrEvent | null | undefined,
+): Promise<Map<string, ResolvedSet<I>>> {
+  if (addressItems.length === 0) return new Map()
+
+  const now = Math.round(Date.now() / 1000)
+  const TWO_DAYS = 60 * 60 * 24 * 2
+
+  const stored = (await replaceableStore.loadReplaceables(addressItems.map(i => [i.kind, i.pubkey, i.identifier]))) as [
+    number | undefined,
+    NostrEvent | undefined,
+  ][]
+
+  const buildResolved = (item: AddressPointer, event: NostrEvent | null): ResolvedSet<I> => ({
+    pointer: item,
+    event,
+    items: event ? process(event) : [],
+    title: event ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '') : '',
+    image: event?.tags.find(t => t[0] === 'image')?.[1],
+    description: event?.tags.find(t => t[0] === 'description')?.[1],
+  })
+
+  const keyOf = (i: AddressPointer) => i.identifier + i.pubkey + i.kind
+  const resolved = new Map<string, ResolvedSet<I>>()
+  const toFetch: { item: AddressPointer; hasStored: boolean }[] = []
+
+  for (let idx = 0; idx < addressItems.length; idx++) {
+    const item = addressItems[idx]
+    const [lastAttempt, storedEvent] = stored[idx]
+    const key = keyOf(item)
+
+    const fetchIt = refreshStyle === true || (refreshStyle !== false && (!lastAttempt || lastAttempt < now - TWO_DAYS))
+    if (storedEvent) {
+      resolved.set(key, buildResolved(item, storedEvent))
+      if (fetchIt) toFetch.push({ item, hasStored: true })
+    } else {
+      if (fetchIt) toFetch.push({ item, hasStored: false })
+      else resolved.set(key, buildResolved(item, null))
+    }
+  }
+
+  if (toFetch.length === 0) return resolved
+
+  // group by kind+author
+  const groups = new Map<string, { kind: number; pubkey: string; items: typeof toFetch }>()
+  for (const f of toFetch) {
+    const k = f.item.kind + ':' + f.item.pubkey
+    let g = groups.get(k)
+    if (!g) {
+      g = { kind: f.item.kind, pubkey: f.item.pubkey, items: [] }
+      groups.set(k, g)
+    }
+    g.items.push(f)
+  }
+
+  // fetch each group from relays
+  const waitPromises: Promise<void>[] = []
+  for (const g of groups.values()) {
+    const promise = (async () => {
+      const sample = g.items[0].item
+      const rl = await loadRelayList(g.pubkey, sample.relays || [], refreshStyle as any)
+      const relays = [
+        ...(sample.relays || []),
+        ...rl.items
+          .filter(({ write, url }) => write && purgatory.allowConnectingToRelay(url, ['read', [{ kinds: [g.kind] }]]))
+          .map(({ url }) => url)
+          .slice(0, 3),
+      ].slice(0, 4)
+
+      const dTags = [...new Set(g.items.map(f => f.item.identifier))]
+      const filter: Filter = { kinds: [g.kind], authors: [g.pubkey], '#d': dTags }
+
+      return new Promise<void>(resolveGroup => {
+        try {
+          const savesToAwait: Promise<boolean>[] = []
+          pool.subscribeManyEose(relays, filter, {
+            label: `${label ? label + ':' : ''}kind:${g.kind}:${g.pubkey.slice(0, 8)}(${g.items.length})`,
+            onevent(evt) {
+              if (evt.pubkey !== g.pubkey) return
+              const dTag = evt.tags.find(t => t[0] === 'd')?.[1] || ''
+              const item = g.items.find(f => f.item.identifier === dTag)?.item
+              if (!item) return
+
+              const key = keyOf(item)
+              const existing = resolved.get(key)
+              if (!existing || !existing.event || existing.event.created_at < evt.created_at) {
+                resolved.set(key, buildResolved(item, evt))
+                savesToAwait.push(replaceableStore.saveEvent(evt, { lastAttempt: now }))
+              }
+            },
+            async onclose() {
+              for (const f of g.items) {
+                const key = keyOf(f.item)
+                if (resolved.has(key)) continue
+
+                // resolve this as empty
+                resolved.set(key, buildResolved(f.item, null))
+
+                // mark as attempted so we don't refetch for a while
+                replaceableStore.saveEvent(
+                  {
+                    id: '0'.repeat(64),
+                    pubkey: g.pubkey,
+                    kind: g.kind,
+                    sig: '0'.repeat(128),
+                    tags: [],
+                    created_at: 0,
+                    content: '',
+                  },
+                  { lastAttempt: now },
+                )
+              }
+              await Promise.all(savesToAwait)
+              resolveGroup()
+            },
+          })
+        } catch (err) {
+          for (const f of g.items) {
+            const key = keyOf(f.item)
+            if (!resolved.has(key)) resolved.set(key, buildResolved(f.item, null))
+
+            replaceableStore.saveEvent(
+              {
+                id: '0'.repeat(64),
+                pubkey: g.pubkey,
+                kind: g.kind,
+                sig: '0'.repeat(128),
+                tags: [],
+                created_at: 0,
+                content: '',
+              },
+              { lastAttempt: now },
+            )
+          }
+          resolveGroup()
+        }
+      })
+    })()
+
+    // only wait if at least one item has no stored data — otherwise the resolved
+    // map already has everything and the background fetch just refreshes the store
+    if (g.items.some(i => !i.hasStored)) {
+      waitPromises.push(promise)
+    }
+  }
+
+  if (waitPromises.length > 0) {
+    await Promise.all(waitPromises)
+  }
+
+  return resolved
+}
+
 export async function fetchFavoriteRelaysWithSets(
   pubkey: string,
   hints?: string[],
@@ -637,26 +792,11 @@ export async function fetchFavoriteRelaysWithSets(
   })
 
   const addressItems = items.filter((i): i is AddressPointer => typeof i !== 'string' && 'identifier' in i)
-  const stored = (await replaceableStore.loadReplaceables(addressItems.map(i => [i.kind, i.pubkey, i.identifier]))) as [
-    number,
-    NostrEvent | undefined,
-  ][]
-
-  const resolved = new Map(addressItems.map((i, idx) => [i.identifier + i.pubkey + i.kind, stored[idx][1]]))
+  const resolved = await loadAddressableSets(addressItems, process, refreshStyle)
 
   return items.map(i => {
     if (typeof i !== 'string' && 'identifier' in i) {
-      const event = resolved.get(i.identifier + i.pubkey + i.kind) ?? null
-      return {
-        pointer: i,
-        event,
-        items: event ? process(event) : [],
-        title: event
-          ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
-          : '',
-        image: event?.tags.find(t => t[0] === 'image')?.[1],
-        description: event?.tags.find(t => t[0] === 'description')?.[1],
-      }
+      return resolved.get(i.identifier + i.pubkey + i.kind)!
     }
     return i
   })
@@ -675,26 +815,11 @@ export async function fetchEmojisWithSets(
   })
 
   const addressItems = items.filter((i): i is AddressPointer => 'identifier' in i)
-  const stored = (await replaceableStore.loadReplaceables(addressItems.map(i => [i.kind, i.pubkey, i.identifier]))) as [
-    number,
-    NostrEvent | undefined,
-  ][]
-
-  const resolved = new Map(addressItems.map((i, idx) => [i.identifier + i.pubkey + i.kind, stored[idx][1]]))
+  const resolved = await loadAddressableSets(addressItems, process, refreshStyle)
 
   return items.map(i => {
     if ('identifier' in i) {
-      const event = resolved.get(i.identifier + i.pubkey + i.kind) ?? null
-      return {
-        pointer: i,
-        event,
-        items: event ? process(event) : [],
-        title: event
-          ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
-          : '',
-        image: event?.tags.find(t => t[0] === 'image')?.[1],
-        description: event?.tags.find(t => t[0] === 'description')?.[1],
-      }
+      return resolved.get(i.identifier + i.pubkey + i.kind)!
     }
     return i
   })
@@ -713,22 +838,7 @@ export async function fetchFavoriteFollowSetsWithSets(
     }
   })
 
-  const stored = (await replaceableStore.loadReplaceables(items.map(i => [i.kind, i.pubkey, i.identifier]))) as [
-    number,
-    NostrEvent | undefined,
-  ][]
+  const resolved = await loadAddressableSets(items, process, refreshStyle)
 
-  return items.map((i, idx) => {
-    const event = stored[idx][1] ?? null
-    return {
-      pointer: i,
-      event,
-      items: event ? process(event) : [],
-      title: event
-        ? (event.tags.find(t => t[0] === 'title')?.[1] ?? event.tags.find(t => t[0] === 'd')?.[1] ?? '')
-        : '',
-      image: event?.tags.find(t => t[0] === 'image')?.[1],
-      description: event?.tags.find(t => t[0] === 'description')?.[1],
-    }
-  })
+  return items.map(i => resolved.get(i.identifier + i.pubkey + i.kind)!)
 }
