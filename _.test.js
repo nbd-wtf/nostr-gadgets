@@ -230,6 +230,19 @@ describe('purgatory', async () => {
   })
 })
 
+test('relay-info-favicons', async () => {
+  const withFavicon = await loadRelayInfo('wss://relays.land/spatianostra')
+  expect(withFavicon?.icon).toBeTruthy()
+  expect(withFavicon?.icon.endsWith('/favicon.ico')).toBe(true)
+
+  const noFavicon = await loadRelayInfo('wss://fiatjaf.com')
+  expect(noFavicon?.icon).toBeFalsy()
+
+  const customIcon = await loadRelayInfo('wss://nostr21.com')
+  expect(customIcon?.icon).toBeTruthy()
+  expect(customIcon?.icon.endsWith('/favicon.ico')).toBe(false)
+})
+
 test('relay-info', async () => {
   // test with a valid relay
   const relayInfo = await loadRelayInfo('relay.damus.io')

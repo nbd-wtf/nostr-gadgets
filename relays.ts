@@ -43,6 +43,18 @@ export async function supportedMethods(url: string): Promise<string[] | null> {
 
 const cache = new LRUCache<string, RelayInfoDocument | null>(2000)
 
+async function favicon(url: string): Promise<string | undefined> {
+  const httpUrl = normalizeURL(url).replace('wss://', 'https://').replace('ws://', 'http://')
+  const u = new URL(httpUrl)
+  const fav = `${u.protocol}//${u.hostname}/favicon.ico`
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => resolve(fav)
+    img.onerror = () => resolve(undefined)
+    img.src = fav
+  })
+}
+
 export async function loadRelayInfo(url: string): Promise<RelayInfoDocument | null> {
   const norm = normalizeURL(url)
   const cached = cache.get(norm)
@@ -61,7 +73,7 @@ export async function loadRelayInfo(url: string): Promise<RelayInfoDocument | nu
         .replace(/\/$/, ''),
       name: doc.name,
       description: doc.description,
-      icon: doc.icon,
+      icon: doc.icon || (await favicon(norm)),
       contact: doc.contact,
       self: (doc as any).self,
       pubkey: doc.pubkey,
