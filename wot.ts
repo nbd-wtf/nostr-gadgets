@@ -4,8 +4,7 @@
  */
 
 import { createStore, get, set, UseStore } from 'idb-keyval'
-import { loadFollowsList, loadMuteList, loadRelayList } from './lists'
-import { purgatory } from './global'
+import { loadFollowsList, loadMuteList } from './lists'
 
 var store: UseStore
 
@@ -43,31 +42,4 @@ export async function loadWoT(pubkey: string): Promise<Set<string>> {
   } else {
     return new Set(res.pubkeys)
   }
-}
-
-/**
- * Returns the top famous relays among the given pubkeys
- **/
-export async function globalism(pubkeys: string[]): Promise<string[]> {
-  const list: [number, string][] = []
-  const rls = await Promise.all(pubkeys.map(pk => loadRelayList(pk)))
-  for (let i = 0; i < rls.length; i++) {
-    for (let j = 0; j < rls[i].items.length; j++) {
-      try {
-        const url = rls[i].items[j].url
-        const allowed = purgatory.allowConnectingToRelay(url, ['read', [{}]])
-        if (!allowed) continue
-        let curr = list.find(rs => rs[1] === url)
-        if (!curr) {
-          curr = [0, url]
-          list.push(curr)
-        }
-        curr[0] += 20 / rls[i].items.length
-      } catch (_err) {
-        /***/
-      }
-    }
-  }
-  list.sort(([a], [b]) => b - a)
-  return list.map(rs => rs[1])
 }

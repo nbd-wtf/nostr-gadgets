@@ -1,4 +1,6 @@
 import type { NostrEvent } from '@nostr/tools/pure'
+import { loadRelayList } from './lists'
+import { purgatory } from './global'
 
 /**
  * Gets the value of the first tag with the given name -- or returns a default value.
@@ -62,6 +64,10 @@ export function appendUnique<I>(target: I[], ...newItem: I[]) {
   }
 }
 
+export function getNumberOfRelaysPerUser(totalPubkeys: number): number {
+  return totalPubkeys < 100 ? 4 : totalPubkeys < 800 ? 3 : totalPubkeys < 1200 ? 2 : 1
+}
+
 export function shuffle<I>(arr: I[]) {
   for (let i = 0; i < arr.length; i++) {
     let prev = Math.round(Math.random() * i)
@@ -69,4 +75,31 @@ export function shuffle<I>(arr: I[]) {
     arr[i] = arr[prev]
     arr[prev] = tmp
   }
+}
+
+/**
+ * Returns the top famous relays among the given pubkeys
+ **/
+export async function globalism(pubkeys: string[]): Promise<string[]> {
+  const list: [number, string][] = []
+  const rls = await Promise.all(pubkeys.map(pk => loadRelayList(pk)))
+  for (let i = 0; i < rls.length; i++) {
+    for (let j = 0; j < rls[i].items.length; j++) {
+      try {
+        const url = rls[i].items[j].url
+        const allowed = purgatory.allowConnectingToRelay(url, ['read', [{}]])
+        if (!allowed) continue
+        let curr = list.find(rs => rs[1] === url)
+        if (!curr) {
+          curr = [0, url]
+          list.push(curr)
+        }
+        curr[0] += 20 / rls[i].items.length
+      } catch (_err) {
+        /***/
+      }
+    }
+  }
+  list.sort(([a], [b]) => b - a)
+  return list.map(rs => rs[1])
 }
