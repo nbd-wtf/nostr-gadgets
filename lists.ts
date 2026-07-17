@@ -105,10 +105,10 @@ export const loadWikiRelays: ListFetcher<string> = makeListFetcher<string>(
 )
 
 /**
- * A ListFetcher for kind:10011 "favorite follow sets" list
+ * A ListFetcher for kind:10021 "favorite follow sets" list
  */
 export const loadFavoriteFollowSets: ListFetcher<AddressPointer> = makeListFetcher<AddressPointer>(
-  10011,
+  10021,
   [],
   itemsFromTags<AddressPointer>((tag: string[]): AddressPointer | undefined => {
     if (tag.length >= 2 && tag[0] === 'a') {
