@@ -10,7 +10,7 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { AddressPointer, EventPointer } from '@nostr/tools/nip19'
 import { normalizeURL } from '@nostr/tools/utils'
 
-import { pool, label, purgatory, replaceableStore } from './global'
+import { pool, label, filterPurgatory, relayPicker, replaceableStore } from './global'
 
 import { METADATA_QUERY_RELAYS, RELAYLIST_RELAYS } from './defaults'
 import { identity, isHex32 } from './utils'
@@ -605,12 +605,7 @@ export function makeListFetcher<I>(
       return await dataloader.load(req)
     } else {
       const rl = await loadRelayList(pubkey, hints, refreshStyle)
-      relays.push(
-        ...rl.items
-          .filter(({ write, url }) => write && purgatory.allowConnectingToRelay(url, ['read', [{ kinds: [kind] }]]))
-          .map(({ url }) => url)
-          .slice(0, 3),
-      )
+      relays.push(...relayPicker(filterPurgatory(rl.items, kind), kind))
 
       const req = { target: pubkey, relays, refreshStyle, defaultItems }
       if (refreshStyle) dataloader.clear(req)
@@ -687,13 +682,7 @@ async function loadAddressableSets<I>(
     const promise = (async () => {
       const sample = g.items[0].item
       const rl = await loadRelayList(g.pubkey, sample.relays || [], refreshStyle as any)
-      const relays = [
-        ...(sample.relays || []),
-        ...rl.items
-          .filter(({ write, url }) => write && purgatory.allowConnectingToRelay(url, ['read', [{ kinds: [g.kind] }]]))
-          .map(({ url }) => url)
-          .slice(0, 3),
-      ].slice(0, 4)
+      const relays = [...(sample.relays || []), ...relayPicker(filterPurgatory(rl.items, g.kind), g.kind)].slice(0, 4)
 
       const dTags = [...new Set(g.items.map(f => f.item.identifier))]
       const filter: Filter = { kinds: [g.kind], authors: [g.pubkey], '#d': dTags }

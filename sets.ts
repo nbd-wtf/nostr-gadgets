@@ -9,7 +9,7 @@ import type { SubCloser } from '@nostr/tools/abstract-pool'
 
 import DataLoader from './dataloader'
 
-import { pool, label, purgatory, replaceableStore } from './global'
+import { pool, label, filterPurgatory, relayPicker, replaceableStore } from './global'
 import { normalizeURL } from '@nostr/tools/utils'
 import { AddressPointer } from '@nostr/tools/nip19'
 
@@ -267,12 +267,7 @@ export function makeSetFetcher<I>(kind: number, process: (event: NostrEvent) => 
     let relays: string[] = hints
 
     const rl = await loadRelayList(pubkey, hints)
-    relays.push(
-      ...rl.items
-        .filter(({ write, url }) => write && purgatory.allowConnectingToRelay(url, ['read', [{ kinds: [kind] }]]))
-        .map(({ url }) => url)
-        .slice(0, 3),
-    )
+    relays.push(...relayPicker(filterPurgatory(rl.items, kind), kind))
 
     const req = { target: pubkey, relays, forceUpdate }
 

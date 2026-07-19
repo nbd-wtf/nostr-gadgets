@@ -46,3 +46,24 @@ export let label: string = ''
 export function setLabel(l: string) {
   label = l
 }
+
+export type RelayPicker = (items: Array<{ url: string; write: boolean }>, kind: number | number[]) => string[]
+
+export function filterPurgatory(
+  items: Array<{ url: string; write: boolean }>,
+  kind: number | number[],
+): Array<{ url: string; write: boolean }> {
+  const kinds = Array.isArray(kind) ? kind : [kind]
+  return items.filter(({ write, url }) => write && purgatory.allowConnectingToRelay(url, ['read', [{ kinds }]]))
+}
+
+export let relayPicker: RelayPicker = (items, kind) => {
+  return items
+    .filter(({ write }) => write)
+    .map(({ url }) => url)
+    .slice(0, 2)
+}
+
+export function setRelayPicker(rp: RelayPicker) {
+  relayPicker = rp
+}

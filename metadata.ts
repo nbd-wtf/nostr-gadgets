@@ -7,7 +7,7 @@ import DataLoader from './dataloader'
 import type { NostrEvent } from '@nostr/tools/pure'
 import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 
-import { pool, label, purgatory, replaceableStore } from './global'
+import { pool, label, filterPurgatory, relayPicker, replaceableStore } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
 
@@ -191,13 +191,8 @@ const metadataLoader = new DataLoader<
           try {
             // add relays from their relay list (up to 2 write-enabled relays)
             const { items } = await loadRelayList(pubkey)
-            let gathered = 0
-            for (let j = 0; j < items.length; j++) {
-              if (items[j].write && purgatory.allowConnectingToRelay(items[j].url, ['read', [{ kinds: [0] }]])) {
-                selectedRelays.add(items[j].url)
-                gathered++
-                if (gathered >= 2) break
-              }
+            for (const url of relayPicker(filterPurgatory(items, 0), 0)) {
+              selectedRelays.add(url)
             }
           } catch (err) {
             console.error('Failed to load relay list for', pubkey, err)

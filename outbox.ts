@@ -4,10 +4,10 @@ import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/core'
 import { EventDeletion } from '@nostr/tools/kinds'
 
-import { loadRelayList, RelayItem } from './lists.ts'
+import { loadRelayList } from './lists.ts'
 import { RedEventStore } from './redstore/index.ts'
 import { BIG_RELAYS_DO_NOT_USE_EVER } from './defaults.ts'
-import { purgatory, label } from './global.ts'
+import { label, filterPurgatory, relayPicker } from './global.ts'
 import { shuffle } from './utils.ts'
 
 /**
@@ -169,8 +169,6 @@ export class OutboxManager {
     authors: string[],
     kinds: number[],
     opts: {
-      numberOfRelaysPerUser?: number
-      pickRelays?: (relays: string[]) => string[]
       signal: AbortSignal
     },
   ): Promise<boolean> {
@@ -249,13 +247,8 @@ export class OutboxManager {
             return
           }
 
-          const filtered = (await loadRelayList(pubkey)).items.filter(
-            r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', [{ kinds }]]),
-          )
-          let relays = opts.pickRelays
-            ? opts.pickRelays(filtered.map(r => r.url))
-            : filtered.slice(0, opts.numberOfRelaysPerUser || 3).map(r => r.url)
-
+          const items = (await loadRelayList(pubkey)).items
+          let relays = relayPicker(filterPurgatory(items, kinds), kinds)
           if (relays.length === 0) {
             // someone made a mistake, let's use big relays for them
             relays = this.defaultRelaysForConfusedPeople
@@ -369,9 +362,6 @@ export class OutboxManager {
     authors: string[],
     kinds: number[],
     opts: {
-      numberOfRelaysPerUser?: number
-      pickRelays?: (relays: RelayItem[]) => string[]
-
       // this should only be undefined if you want the live() subscription to last forever
       signal: AbortSignal | undefined
     },
@@ -419,8 +409,6 @@ export class OutboxManager {
       },
       {
         fallbackRelays: this.defaultRelaysForConfusedPeople,
-        numberOfRelaysPerUser: opts.numberOfRelaysPerUser,
-        pickRelays: opts.pickRelays,
       },
     )
 
@@ -461,8 +449,6 @@ export class OutboxManager {
     kinds: number[],
     ts: number,
     opts: {
-      numberOfRelaysPerUser?: number
-      pickRelays?: (relays: RelayItem[]) => string[]
       signal: AbortSignal
     },
   ) {
@@ -524,13 +510,8 @@ export class OutboxManager {
           return
         }
 
-        const filtered = (await loadRelayList(pubkey)).items.filter(
-          r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', [{ kinds }]]),
-        )
-        let relays = opts.pickRelays
-          ? opts.pickRelays(filtered)
-          : filtered.slice(0, opts.numberOfRelaysPerUser || 3).map(r => r.url)
-
+        const items = (await loadRelayList(pubkey)).items
+        let relays = relayPicker(filterPurgatory(items, kinds), kinds)
         if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
           this.finishSyncing(pubkey, kinds)
           this.onbeforeupdate?.(pubkey, false)
@@ -676,8 +657,6 @@ export async function outboxFilterRelayBatch(
   baseFilters: Filter | Filter[],
   opts?: {
     fallbackRelays?: string[]
-    numberOfRelaysPerUser?: number
-    pickRelays?: (relays: RelayItem[]) => string[]
   },
 ): Promise<{ url: string; filter: Filter }[]> {
   baseFilters = Array.isArray(baseFilters) ? baseFilters : [baseFilters]
@@ -691,13 +670,9 @@ export async function outboxFilterRelayBatch(
 
   for (let i = 0; i < pubkeys.length; i++) {
     const pubkey = pubkeys[i]
-    const items = (await loadRelayList(pubkey)).items.filter(
-      r => r.write && purgatory.allowConnectingToRelay(r.url, ['read', baseFilters]),
-    )
-    let selectedUrls = opts?.pickRelays
-      ? opts.pickRelays(items)
-      : items.slice(0, opts?.numberOfRelaysPerUser || 3).map(r => r.url)
-
+    const rawItems = (await loadRelayList(pubkey)).items
+    const allKinds = baseFilters.flatMap(f => f.kinds || [])
+    let selectedUrls = relayPicker(filterPurgatory(rawItems, allKinds), allKinds)
     if (selectedUrls.length === 0) {
       selectedUrls = fallbackRelays.map(r => r.url)
     }
