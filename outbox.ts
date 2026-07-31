@@ -1,4 +1,5 @@
 import { getSemaphore } from '@henrygd/semaphore'
+import type { SubCloser } from '@nostr/tools/abstract-pool'
 import { SimplePool } from '@nostr/tools/pool'
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/core'
@@ -397,11 +398,33 @@ export class OutboxManager {
 
     if (authors.length === 0) return
 
+    if (opts.signal?.aborted || this.nuclearAbort.signal.aborted) return
+
+    let closer: SubCloser | undefined
+    let declaration: { url: string; filter: Filter }[] | undefined
+    let aborted = false
+
+    // register abort handlers before any await so an abort during the
+    // awaits below doesn't get missed (which would leak the subscription)
+    const closeSubscription = () => {
+      aborted = true
+      closer?.close()
+      if (declaration) {
+        this.liveSubscriptions = this.liveSubscriptions.filter(sub => !declaration!.includes(sub))
+      }
+    }
+
+    if (opts.signal) {
+      opts.signal.addEventListener('abort', closeSubscription, { once: true })
+    }
+    this.nuclearAbort.signal.addEventListener('abort', closeSubscription, { once: true })
+
     // wait for these authors to finish syncing
     await Promise.all(authors.map(author => this.waitForSyncingToFinish(author, kinds)))
+    if (aborted) return
     console.debug('listening live', authors)
 
-    const declaration = await outboxFilterRelayBatch(
+    declaration = await outboxFilterRelayBatch(
       authors,
       {
         kinds,
@@ -411,10 +434,11 @@ export class OutboxManager {
         fallbackRelays: this.defaultRelaysForConfusedPeople,
       },
     )
+    if (aborted) return
 
     this.liveSubscriptions.push(...declaration)
 
-    const closer = this.pool.subscribeMap(declaration, {
+    closer = this.pool.subscribeMap(declaration, {
       label: `${label ? label + ':' : ''}live-${this.label}`,
       onevent: async event => {
         const deletion = event.kind === EventDeletion
@@ -433,15 +457,7 @@ export class OutboxManager {
       },
     })
 
-    const closeSubscription = () => {
-      closer.close()
-      this.liveSubscriptions = this.liveSubscriptions.filter(sub => !declaration.includes(sub))
-    }
-
-    if (opts.signal) {
-      opts.signal.addEventListener('abort', closeSubscription, { once: true })
-    }
-    this.nuclearAbort.signal.addEventListener('abort', closeSubscription, { once: true })
+    if (aborted) closer.close()
   }
 
   async before(
