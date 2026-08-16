@@ -333,8 +333,17 @@ export class OutboxManager {
               addedNewEventsOnSync = added.indexOf(true) !== -1
             }
 
-            // update stored bound bounds for this person since they're caught up to now
+            // update stored bounds for this person, but only for kinds that
+            // actually yielded events in this round: stamping a kind we saw
+            // nothing for claims data we never had — if an event of that kind
+            // exists but was missed (partial relay response, truncated limit,
+            // flaky round), a caught-up bound means no future sync will ever
+            // use a `since` old enough to fetch it again. kinds that yielded
+            // nothing keep their absent bound and keep forcing boundless
+            // syncs, which is the safe direction.
+            const yieldedKinds = new Set<number>(events.map(event => event.kind))
             for (let kind of kinds) {
+              if (!yieldedKinds.has(kind)) continue
               let bound = bounds[kind]
               if (bound) bound[1] = now
               else {
