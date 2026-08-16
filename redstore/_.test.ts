@@ -607,4 +607,41 @@ describe('redstore', () => {
 
     await store.close()
   })
+
+  test('multi-kind replaceable query returns every (author,kind) pair', async () => {
+    const store = new RedEventStore(null, TEST_DB, null)
+    await store.init()
+
+    const sk6 = hexToBytes('a9f0e2c1b3d4a5968778695a4b3c2d1e0f1a2b3c4d5e6f708192a3b4c5d6e7f8')
+    const pk = getPublicKey(sk6)
+
+    // one replaceable event per kind, distinct timestamps — every
+    // (author,kind) sub-query exhausts on its first pull, so the newest
+    // event's timestamp must not act as a merge barrier that hides the
+    // older kinds (previously only the newest event was returned)
+    await Promise.all(
+      [
+        { kind: 10002, created_at: 1000, tags: [['r', 'wss://a.example']] },
+        { kind: 10007, created_at: 2000, tags: [['relay', 'wss://s.example']] },
+        { kind: 10050, created_at: 1500, tags: [['relay', 'wss://dm.example']] },
+      ].map(t => store.saveEvent(finalizeEvent({ content: '', ...t }, sk6))),
+    )
+
+    {
+      const results = await store.queryEvents({ authors: [pk], kinds: [10002, 10007] })
+      expect(results.map(e => e.kind).sort()).toEqual([10002, 10007])
+    }
+
+    // more kinds than stored events, with a limit — still all three back
+    {
+      const results = await store.queryEvents({
+        authors: [pk],
+        kinds: [10002, 10006, 10007, 10050],
+        limit: 40,
+      })
+      expect(results.map(e => e.kind).sort()).toEqual([10002, 10007, 10050])
+    }
+
+    await store.close()
+  })
 })
