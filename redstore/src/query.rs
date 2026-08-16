@@ -462,11 +462,20 @@ pub fn execute<T: Transaction>(
         );
 
         // collect all events with this timestamp from all queries
-        // and find the query with the highest timestamp
+        // and find the query with the highest timestamp.
+        // exhausted queries must not contribute: their floor is not a barrier
+        // (nothing below it is coming), and letting them clamp
+        // top_query_timestamp blocks older events from other queries — when
+        // every sub-query exhausts on its first pull (the norm for
+        // replaceable kinds, one event per (author,kind) pair), last_run
+        // then breaks with those events abandoned in the batch, so a
+        // {authors, kinds: [10002, 10007]} query returns only the newest
+        // event.
         let mut top_query_idx = None;
         let mut top_query_timestamp = 0;
         for (idx, query) in plan.queries.iter_mut().enumerate() {
-            if let Some((timestamp, _)) = query.results.iter().last()
+            if !query.exhausted
+                && let Some((timestamp, _)) = query.results.iter().last()
                 && *timestamp > top_query_timestamp
             {
                 top_query_timestamp = *timestamp;
