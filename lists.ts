@@ -514,12 +514,17 @@ export function makeListFetcher<I>(
         for (const {
           req: { target, relays: reqRelays },
         } of Object.values(toFetch)) {
-          const relays = reqRelays.slice(0, Math.min(4, reqRelays.length))
-          do {
-            relays.push(randomPick(hardcodedRelays))
-          } while (relays.length < 3)
+          const relays = (reqRelays || []).slice(0, 4).filter(Boolean)
+          if (hardcodedRelays.length > 0) {
+            do {
+              const pick = randomPick(hardcodedRelays)
+              if (!pick) break
+              relays.push(pick)
+            } while (relays.length < 3)
+          }
           for (let j = 0; j < relays.length; j++) {
             const url = relays[j]
+            if (!url) continue
             let filter = filterByRelay[url]
             if (!filter) {
               filter = { kinds: [kind], authors: [] }
@@ -597,7 +602,7 @@ export function makeListFetcher<I>(
       dataloader._cacheMap.delete(pubkey)
       return { items: defaultItems || [], event: null, [isFresh]: true }
     }
-    let relays: string[] = hints
+    let relays: string[] = [...hints]
 
     if (kind === 10002) {
       const req = { target: pubkey, relays, refreshStyle, defaultItems }
