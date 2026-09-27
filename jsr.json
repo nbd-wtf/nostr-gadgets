@@ -1,11 +1,12 @@
 {
   "name": "@nostr/gadgets",
-  "version": "0.20.14",
+  "version": "0.20.15",
   "exports": {
     "./global": "./global.ts",
     "./lists": "./lists.ts",
     "./sets": "./sets.ts",
     "./metadata": "./metadata.ts",
+    "./describe": "./describe.ts",
     "./event": "./event.ts",
     "./hints": "./hints.ts",
     "./wot": "./wot.ts",
