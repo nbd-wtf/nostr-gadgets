@@ -542,11 +542,15 @@ export function makeListFetcher<I>(
             {
               label: `${label ? label + ':' : ''}kind:${kind}:batch(${Object.keys(toFetch).length})`,
               onevent(evt) {
-                const { resolve, resolved } = toFetch[evt.pubkey]
-                if (resolved) return
+                const entry = toFetch[evt.pubkey]
+                if (!entry) return
 
-                resolve({ event: evt, items: process(evt), [isFresh]: true })
-                toFetch[evt.pubkey].resolved = true
+                if (!entry.resolved) {
+                  entry.resolve({ event: evt, items: process(evt), [isFresh]: true })
+                  entry.resolved = true
+                }
+                // a stale stored list was already handed out (resolved from the start):
+                // save what came anyway, the store keeps the newest
                 replaceableStore.saveEvent(evt, { lastAttempt: now })
               },
               oneose() {
