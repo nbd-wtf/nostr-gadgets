@@ -264,16 +264,11 @@ export class OutboxManager {
 
           let events: NostrEvent[]
           try {
-            events = (
-              await Promise.race([
-                new Promise<NostrEvent[]>((_, reject) => setTimeout(() => reject(new Error('<timeout>')), 45000)),
-                this.pool.querySync(
-                  relays,
-                  { kinds, authors: [pubkey], since: syncedUpTo, limit: 200 },
-                  { label: `${label ? label + ':' : ''}sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
-                ),
-              ])
-            ).flat()
+            events = await this.pool.querySync(
+              relays,
+              { kinds, authors: [pubkey], since: syncedUpTo, limit: 200 },
+              { label: `${label ? label + ':' : ''}sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
+            )
           } catch (err) {
             console.warn('failed to query events for', pubkey, 'at', relays, '=>', err)
             this.finishSyncing(pubkey, kinds)
@@ -546,21 +541,16 @@ export class OutboxManager {
 
         let events: NostrEvent[]
         try {
-          events = (
-            await Promise.race([
-              new Promise<NostrEvent[]>((_, rej) => setTimeout(rej, 5000)),
-              this.pool.querySync(
-                relays,
-                {
-                  kinds,
-                  authors: [pubkey],
-                  until: until || undefined,
-                  limit: 200,
-                },
-                { label: `${label ? label + ':' : ''}page-${pubkey.substring(0, 6)}` },
-              ),
-            ])
-          ).flat()
+          events = await this.pool.querySync(
+            relays,
+            {
+              kinds,
+              authors: [pubkey],
+              until: until || undefined,
+              limit: 200,
+            },
+            { label: `${label ? label + ':' : ''}page-${pubkey.substring(0, 6)}`, maxWait: 5000 },
+          )
         } catch (err) {
           console.warn('failed to query before events for', pubkey, 'at', relays, '=>', err)
           this.finishSyncing(pubkey, kinds)
