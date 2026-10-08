@@ -536,7 +536,7 @@ export function makeListFetcher<I>(
 
         try {
           let handle: SubCloser | undefined
-          // eslint-disable-next-line prefer-const
+
           handle = pool.subscribeMap(
             Object.entries(filterByRelay).map(([url, filter]) => ({ url, filter })),
             {

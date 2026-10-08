@@ -10,6 +10,7 @@ import { decode, npubEncode, ProfilePointer } from '@nostr/tools/nip19'
 import { pool, label, filterPurgatory, relayPicker, replaceableStore } from './global'
 import { METADATA_QUERY_RELAYS } from './defaults'
 import { loadRelayList } from './lists'
+import { SubCloser } from '@nostr/tools/abstract-pool'
 
 let next = 0
 
@@ -215,12 +216,13 @@ const metadataLoader = new DataLoader<
       )
 
       try {
+        let handle: SubCloser | undefined
         const requestMap = Object.entries(pubkeysByRelay).map(([relay, pubkeys]) => ({
           url: relay,
           filter: { kinds: [0], authors: pubkeys },
         }))
 
-        let h = pool.subscribeMap(requestMap, {
+        handle = pool.subscribeMap(requestMap, {
           label: `${label ? label + ':' : ''}metadata(${requests.length})`,
           onevent(evt) {
             const nu = nostrUserFromEvent(evt)
@@ -229,8 +231,9 @@ const metadataLoader = new DataLoader<
             replaceableStore.saveEvent(evt, { lastAttempt: now })
           },
           oneose() {
-            h.close()
-
+            handle?.close?.()
+          },
+          onclose() {
             // resolve promises for pubkeys that didn't receive any events with their placeholder data
             for (const { req, resolve, resolved } of Object.values(toFetch)) {
               if (resolved) continue
