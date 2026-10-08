@@ -111,7 +111,7 @@ self.addEventListener('message', async event => {
       gotFile = true
 
       // only load the wasm after we hold the file — followers stay light
-      await init(data.wasmUrl)
+      await init({ module_or_path: data.wasmUrl })
       db = new Redstore(syncHandle)
       startLeaderHeartbeat()
       sendToPage([id, true, true])
@@ -226,7 +226,7 @@ async function attemptLeadershipTakeover() {
     syncHandle = await fileHandle.createSyncAccessHandle()
 
     // we may have been a follower all along and never loaded the wasm
-    await init(wasmUrl!)
+    await init({ module_or_path: wasmUrl! })
     db = new Redstore(syncHandle)
     startLeaderHeartbeat()
     // re-process any requests that were forwarded to the old leader; if the

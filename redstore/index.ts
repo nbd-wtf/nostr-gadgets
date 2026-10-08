@@ -35,7 +35,7 @@ export class RedEventStore {
           `https://cdn.jsdelivr.net/gh/nbd-wtf/nostr-gadgets@v${jsr.version}-redstorewasm/gadgets_redstore_bg.wasm`
     this.worker =
       worker ||
-      new Worker(new URL('./redstore-worker.js', import.meta.url), {
+      new Worker(new URL('./redstore-worker.ts', import.meta.url), {
         type: 'module',
       })
 
