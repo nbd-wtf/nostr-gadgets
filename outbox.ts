@@ -1,5 +1,6 @@
 import { getSemaphore } from '@henrygd/semaphore'
 import type { SubCloser } from '@nostr/tools/abstract-pool'
+import type { AbstractRelay } from '@nostr/tools/abstract-relay'
 import { SimplePool } from '@nostr/tools/pool'
 import { Filter } from '@nostr/tools/filter'
 import { NostrEvent } from '@nostr/tools/core'
@@ -58,10 +59,6 @@ export class OutboxManager {
     this.ondeletions = opts?.ondeletions
     this.defaultRelaysForConfusedPeople = opts?.defaultRelaysForConfusedPeople || this.defaultRelaysForConfusedPeople
     this.storeRelaysSeenOn = opts?.storeRelaysSeenOn || false
-    this.setup()
-  }
-
-  setup() {
     this.nuclearAbort = new AbortController()
     this.liveSubscriptions = []
     this.currentlySyncing = new Map()
@@ -70,7 +67,6 @@ export class OutboxManager {
 
   close() {
     this.nuclearAbort.abort('<OutboxManager closed>')
-    this.setup()
   }
 
   private async ensureBoundsLoaded() {
@@ -237,124 +233,98 @@ export class OutboxManager {
 
       console.debug(`${i + 1}/${authors.length} syncing`, pubkey)
 
-      // do it only 16 filters at a time because of relay limits
       const sem = getSemaphore('outbox-sync', 16)
       promises.push(
-        sem.acquire().then(async () => {
-          if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-            this.finishSyncing(pubkey, kinds)
-            this.onsyncupdate?.(pubkey, false)
-            sem.release()
-            return
-          }
-
-          const items = (await loadRelayList(pubkey)).items
-          let relays = relayPicker(filterPurgatory(items, kinds), kinds)
-          if (relays.length === 0) {
-            // someone made a mistake, let's use big relays for them
-            relays = this.defaultRelaysForConfusedPeople
-          }
-
-          if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-            this.finishSyncing(pubkey, kinds)
-            this.onsyncupdate?.(pubkey, false)
-            sem.release()
-            return
-          }
-
-          let events: NostrEvent[]
+        (async () => {
+          await sem.acquire()
+          let success = false
           try {
-            events = await this.pool.querySync(
+            if (this.nuclearAbort.signal.aborted || opts.signal.aborted) return
+
+            const items = (await loadRelayList(pubkey)).items
+            let relays = relayPicker(filterPurgatory(items, kinds), kinds)
+            if (relays.length === 0) {
+              // someone made a mistake, let's use big relays for them
+              relays = this.defaultRelaysForConfusedPeople
+            }
+
+            if (this.nuclearAbort.signal.aborted || opts.signal.aborted) return
+
+            const fetchedAt = Math.round(Date.now() / 1000)
+            const { events, seenOn, coveredDownTo } = await this.fetchFromRelays(
               relays,
-              { kinds, authors: [pubkey], since: syncedUpTo, limit: 200 },
-              { label: `${label ? label + ':' : ''}sync-${pubkey.substring(0, 6)}`, maxWait: 4000 },
-            )
-          } catch (err) {
-            console.warn('failed to query events for', pubkey, 'at', relays, '=>', err)
-            this.finishSyncing(pubkey, kinds)
-            this.onsyncupdate?.(pubkey, false)
-            sem.release()
-            return
-          }
-
-          if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-            this.finishSyncing(pubkey, kinds)
-            this.onsyncupdate?.(pubkey, false)
-            sem.release()
-            return
-          }
-
-          console.debug(
-            `${i + 1}/${authors.length} events downloaded`,
-            pubkey,
-            relays,
-            'synced up to:',
-            syncedUpTo ? new Date(syncedUpTo * 1000).toLocaleString() : syncedUpTo,
-            `got ${events.length} events`,
-            events,
-          )
-
-          if (events.length) {
-            // if we didn't get any events we won't have any new events necessarily
-            // we also will not update bounds (since this was likely an error)
-            let added = await Promise.all(
-              events.map(async event => {
-                // update bound (or not)
-                const bound = bounds[event.kind]
-                if (bound) {
-                  // we had a bound before, should we update it?
-                  if (bound[0] > event.created_at) bound[0] = event.created_at
-                } else {
-                  // didn't have anything before, but now we have all of these
-                  bounds[event.kind] = [now - 1, now]
-                }
-
-                const deletion = event.kind === EventDeletion
-
-                const isNew = await this.store.saveEvent(event, {
-                  seenOn: this.storeRelaysSeenOn
-                    ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-                    : undefined,
-                })
-
-                if (isNew && deletion) {
-                  this.performDeletions(event)
-                }
-
-                return isNew
-              }),
+              { kinds, authors: [pubkey], since: syncedUpTo },
+              {
+                label: `${label ? label + ':' : ''}sync-${pubkey.substring(0, 6)}`,
+                maxWait: 4000,
+                signal: opts.signal,
+                maxPages: syncedUpTo ? 12 : 1,
+                pageLimit: 500,
+              },
             )
 
-            if (!addedNewEventsOnSync) {
-              addedNewEventsOnSync = added.indexOf(true) !== -1
-            }
+            if (this.nuclearAbort.signal.aborted || opts.signal.aborted) return
 
-            // update stored bounds for this person, but only for kinds that
-            // actually yielded events in this round: stamping a kind we saw
-            // nothing for claims data we never had — if an event of that kind
-            // exists but was missed (partial relay response, truncated limit,
-            // flaky round), a caught-up bound means no future sync will ever
-            // use a `since` old enough to fetch it again. kinds that yielded
-            // nothing keep their absent bound and keep forcing boundless
-            // syncs, which is the safe direction.
-            const yieldedKinds = new Set<number>(events.map(event => event.kind))
-            for (let kind of kinds) {
-              if (!yieldedKinds.has(kind)) continue
-              let bound = bounds[kind]
-              if (bound) bound[1] = now
-              else {
-                bound = [now - 1, now]
-                bounds[kind] = bound
+            console.debug(
+              `${i + 1}/${authors.length} events downloaded`,
+              pubkey,
+              relays,
+              'synced up to:',
+              syncedUpTo ? new Date(syncedUpTo * 1000).toLocaleString() : syncedUpTo,
+              'covered down to:',
+              coveredDownTo ? new Date(coveredDownTo * 1000).toLocaleString() : coveredDownTo,
+              `got ${events.size} events`,
+              events,
+            )
+
+            if (events.size) {
+              const added = await this.saveEvents(events, seenOn)
+              if (!addedNewEventsOnSync) {
+                addedNewEventsOnSync = added
               }
-              await this.setBound(pubkey, kind, bound)
-            }
-            this.bounds[pubkey] = bounds
-          }
 
-          this.finishSyncing(pubkey, kinds)
-          this.onsyncupdate?.(pubkey, true)
-          sem.release()
-        }),
+              // update stored bounds for this person, but only for kinds that
+              // actually yielded events in this round: stamping a kind we saw
+              // nothing for claims data we never had — if an event of that kind
+              // exists but was missed (partial relay response, truncated limit,
+              // flaky round), a caught-up bound means no future sync will ever
+              // use a `since` old enough to fetch it again. kinds that yielded
+              // nothing keep their absent bound and keep forcing boundless
+              // syncs, which is the safe direction.
+              //
+              // also only if at least one relay gave us a trustworthy range: if all
+              // relays failed midway we keep the events but don't claim anything.
+              if (coveredDownTo !== undefined) {
+                const yieldedKinds = new Set<number>()
+                for (const event of events.values()) yieldedKinds.add(event.kind)
+                for (let kind of kinds) {
+                  if (!yieldedKinds.has(kind)) continue
+                  let bound = bounds[kind]
+                  if (bound && coveredDownTo <= bound[1]) {
+                    // contiguous with what we had before, so we can just extend it
+                    bound[1] = fetchedAt
+                  } else {
+                    // either we had nothing or there is a gap between what we had before
+                    // and what we got now (relays had more events than we could paginate
+                    // through), so we can only claim the range we just covered
+                    bound = [coveredDownTo, fetchedAt]
+                    bounds[kind] = bound
+                  }
+                  await this.setBound(pubkey, kind, bound)
+                }
+                this.bounds[pubkey] = bounds
+              }
+            }
+
+            success = true
+          } catch (err) {
+            console.warn('failed to sync', pubkey, '=>', err)
+          } finally {
+            this.finishSyncing(pubkey, kinds)
+            this.onsyncupdate?.(pubkey, success)
+            sem.release()
+          }
+        })(),
       )
     }
 
@@ -481,129 +451,209 @@ export class OutboxManager {
     shuffle(authors)
 
     // from all our authors check which ones need a new page fetch
+    const sem = getSemaphore('outbox-sync', 16)
+    const promises: Promise<void>[] = []
     for (let i = 0; i < authors.length; i++) {
-      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-        for (let j = i; j < authors.length; j++) this.finishSyncing(authors[j], kinds)
-        break
-      }
+      if (this.nuclearAbort.signal.aborted || opts.signal.aborted) break
       let pubkey = authors[i]
 
-      const sem = getSemaphore('outbox-sync', 15) // do it only 15 pubkeys at a time
-      await sem.acquire().then(async () => {
-        if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-          this.finishSyncing(pubkey, kinds)
-          this.onbeforeupdate?.(pubkey, false)
-          sem.release()
-          return
-        }
+      promises.push(
+        (async () => {
+          await sem.acquire()
+          let success = false
+          try {
+            if (this.nuclearAbort.signal.aborted || opts.signal.aborted) return
 
-        let bounds = this.bounds[pubkey]
-        if (!bounds) {
-          // this should never happen because we set the bounds for everybody
-          // (on the first fetch if they don't have one)
-          console.error('pagination on pubkey without a bound', pubkey)
-          this.finishSyncing(pubkey, kinds)
-          this.onbeforeupdate?.(pubkey, false)
-          sem.release()
-          return
-        }
+            let bounds = this.bounds[pubkey]
+            if (!bounds) {
+              // this should never happen because we set the bounds for everybody
+              // (on the first fetch if they don't have one)
+              console.error('pagination on pubkey without a bound', pubkey)
+              return
+            }
 
-        // check bounds for every kind we're interested in
-        let until = 0
-        let satisfied = true
-        for (let kind of kinds) {
-          const bound = bounds[kind]
-          let oldest = bound ? bound[0] : undefined
+            // check bounds for every kind we're interested in
+            let until = 0
+            let satisfied = true
+            for (let kind of kinds) {
+              const bound = bounds[kind]
+              let oldest = bound ? bound[0] : undefined
 
-          // we're missing events for at least one kind, we'll have to fetch
-          if (!oldest) {
-            satisfied = false
-          } else if (oldest >= ts) {
-            satisfied = false
-            if (oldest > until) until = oldest
+              // we're missing events for at least one kind, we'll have to fetch
+              if (!oldest) {
+                satisfied = false
+              } else if (oldest >= ts) {
+                satisfied = false
+                if (oldest > until) until = oldest
+              }
+            }
+            if (satisfied) {
+              success = true
+              return
+            }
+
+            const items = (await loadRelayList(pubkey)).items
+            let relays = relayPicker(filterPurgatory(items, kinds), kinds)
+            if (this.nuclearAbort.signal.aborted || opts.signal.aborted) return
+
+            const fetchedAt = Math.round(Date.now() / 1000)
+            const { events, seenOn, coveredDownTo } = await this.fetchFromRelays(
+              relays,
+              { kinds, authors: [pubkey], until: until || undefined },
+              {
+                label: `${label ? label + ':' : ''}page-${pubkey.substring(0, 6)}`,
+                maxWait: 5000,
+                signal: opts.signal,
+                maxPages: 12,
+                pageLimit: 500,
+              },
+            )
+
+            console.debug('paginating to the past', pubkey, relays, until, coveredDownTo, events)
+
+            await this.saveEvents(events, seenOn)
+
+            // update stored bounds for this person, only for kinds that yielded events
+            // and only if the range we just covered touches what we had before
+            if (coveredDownTo !== undefined) {
+              const top = until || fetchedAt
+              const yieldedKinds = new Set<number>()
+              for (const event of events.values()) yieldedKinds.add(event.kind)
+              for (let kind of yieldedKinds) {
+                if (kinds.indexOf(kind) === -1) continue
+                let bound = bounds[kind]
+                if (!bound) {
+                  bound = [coveredDownTo, top]
+                  bounds[kind] = bound
+                } else if (bound[0] <= top && coveredDownTo < bound[0]) {
+                  bound[0] = coveredDownTo
+                } else {
+                  continue
+                }
+                await this.setBound(pubkey, kind, bound)
+              }
+            }
+
+            success = true
+          } catch (err) {
+            console.warn('failed to query before events for', pubkey, '=>', err)
+          } finally {
+            this.onbeforeupdate?.(pubkey, success)
+            sem.release()
           }
-        }
-        if (satisfied) {
-          this.finishSyncing(pubkey, kinds)
-          this.onbeforeupdate?.(pubkey, true)
-          sem.release()
-          return
-        }
-
-        const items = (await loadRelayList(pubkey)).items
-        let relays = relayPicker(filterPurgatory(items, kinds), kinds)
-        if (this.nuclearAbort.signal.aborted || opts.signal.aborted) {
-          this.finishSyncing(pubkey, kinds)
-          this.onbeforeupdate?.(pubkey, false)
-          sem.release()
-          return
-        }
-
-        let events: NostrEvent[]
-        try {
-          events = await this.pool.querySync(
-            relays,
-            {
-              kinds,
-              authors: [pubkey],
-              until: until || undefined,
-              limit: 200,
-            },
-            { label: `${label ? label + ':' : ''}page-${pubkey.substring(0, 6)}`, maxWait: 5000 },
-          )
-        } catch (err) {
-          console.warn('failed to query before events for', pubkey, 'at', relays, '=>', err)
-          this.finishSyncing(pubkey, kinds)
-          this.onbeforeupdate?.(pubkey, false)
-          sem.release()
-          return
-        }
-
-        console.debug('paginating to the past', pubkey, relays, until, events)
-
-        let boundsToUpdate: Set<number> = new Set()
-        await Promise.all(
-          events.map(async event => {
-            // update bound (or not)
-            let bound = bounds[event.kind]
-            if (!bound) {
-              bound = [event.created_at + 1, until || event.created_at + 1]
-              bounds[event.kind] = bound
-            }
-            if (bound[0] > event.created_at) {
-              bounds[event.kind][0] = event.created_at
-              boundsToUpdate.add(event.kind)
-            }
-
-            const deletion = event.kind === EventDeletion
-
-            const isNew = await this.store.saveEvent(event, {
-              seenOn: this.storeRelaysSeenOn
-                ? Array.from(this.pool.seenOn.get(event.id) || []).map(relay => relay.url)
-                : undefined,
-            })
-
-            if (isNew && deletion) {
-              this.performDeletions(event)
-            }
-
-            return isNew
-          }),
-        )
-
-        // update stored bound bounds for this person
-        for (let kind of boundsToUpdate.values()) {
-          await this.setBound(pubkey, kind, bounds[kind])
-        }
-
-        this.finishSyncing(pubkey, kinds)
-        this.onbeforeupdate?.(pubkey, true)
-
-        sem.release()
-      })
+        })(),
+      )
     }
 
+    await Promise.all(promises)
     console.debug('before done')
+  }
+
+  /**
+   * Queries each relay separately for the given filter, paginating backwards on each relay
+   * until it returns nothing else (or opts.maxPages). When `since` isn't given it stops after
+   * getting opts.pageLimit events from that relay.
+   *
+   * Returns all the events found and `coveredDownTo`: the timestamp down to which (and up to
+   * `until` or now) we can be sure we have every event, considering only the relays that
+   * answered successfully. It's undefined if no relay gave us a trustworthy range.
+   */
+  private async fetchFromRelays(
+    relays: string[],
+    filter: Filter,
+    opts: { label: string; maxWait: number; signal: AbortSignal; maxPages: number; pageLimit: number },
+  ): Promise<{
+    events: Map<string, NostrEvent>
+    seenOn: Map<string, string[]> | undefined
+    coveredDownTo: number | undefined
+  }> {
+    const signal = AbortSignal.any([opts.signal, this.nuclearAbort.signal])
+    const events = new Map<string, NostrEvent>()
+    const seenOn = this.storeRelaysSeenOn ? new Map<string, string[]>() : undefined
+
+    // shared by all relays and pages so we don't decode the same event twice
+    const alreadyHaveEvent = (id: string) => events.has(id)
+
+    const coverages = await Promise.all(
+      relays.map(async (url): Promise<number | undefined> => {
+        let relay: AbstractRelay
+        try {
+          relay = await this.pool.ensureRelay(url, { connectionTimeout: opts.maxWait })
+        } catch (err) {
+          console.warn('failed to connect to', url, '=>', err)
+          return undefined
+        }
+
+        let downTo: number | undefined
+        let until = filter.until
+        let total = 0
+        for (let p = 0; p < opts.maxPages; p++) {
+          if (signal.aborted) return undefined
+
+          const page = await fetchPage(
+            relay,
+            { ...filter, until, limit: opts.pageLimit },
+            { events, seenOn, alreadyHaveEvent, label: opts.label, maxWait: opts.maxWait, signal },
+          )
+
+          // a failed page (timeout, CLOSED, disconnection) means we can't trust this relay
+          if (!page) return undefined
+
+          // only an empty response means the relay is really exhausted: a short page may just
+          // mean the relay is capping our limit silently, so we always ask again to make sure.
+          // (when we don't have a `since`, this means the relay has no older events at all)
+          if (page.count === 0) return filter.since ?? 0
+
+          // got events, but none we could decode (all invalid), so we can't learn anything from them
+          if (page.oldest === Infinity) return downTo
+
+          if (until !== undefined && page.oldest >= until) {
+            // `until` is inclusive so we get the events from the oldest second again, but if
+            // that's all we got then there is nothing older
+            if (page.count < opts.pageLimit) return filter.since ?? 0
+
+            // more than PAGE_LIMIT events in the same second or the relay is ignoring `until`
+            return downTo
+          }
+
+          // there are probably more events in this range we didn't get.
+          // we may have gotten only part of the events from the oldest second, so exclude it
+          downTo = page.oldest + 1
+          total += page.count
+
+          // without `since` we only want about one page worth of events
+          if (filter.since === undefined && total >= opts.pageLimit) return downTo
+
+          until = page.oldest
+        }
+
+        // reached MAX_PAGES, we can only claim what we've covered so far
+        return downTo
+      }),
+    )
+
+    let coveredDownTo: number | undefined
+    for (const c of coverages) {
+      if (c !== undefined && (coveredDownTo === undefined || c > coveredDownTo)) coveredDownTo = c
+    }
+
+    return { events, seenOn, coveredDownTo }
+  }
+
+  /**
+   * Saves events to the store, performing deletions as needed. Returns true if any was new.
+   */
+  private async saveEvents(events: Map<string, NostrEvent>, seenOn: Map<string, string[]> | undefined) {
+    const added = await Promise.all(
+      Array.from(events.values()).map(async event => {
+        const isNew = await this.store.saveEvent(event, { seenOn: seenOn?.get(event.id) })
+        if (isNew && event.kind === EventDeletion) {
+          this.performDeletions(event)
+        }
+        return isNew
+      }),
+    )
+    return added.indexOf(true) !== -1
   }
 
   /**
@@ -729,4 +779,82 @@ export async function outboxFilterRelayBatch(
   }
 
   return declaration
+}
+
+/**
+ * Fetches a single page from a relay. Returns undefined if the relay didn't send an EOSE
+ * in time or closed the subscription, otherwise returns the number of events the relay sent
+ * (including those we already had) and the oldest created_at among them.
+ */
+function fetchPage(
+  relay: AbstractRelay,
+  filter: Filter,
+  opts: {
+    events: Map<string, NostrEvent>
+    seenOn: Map<string, string[]> | undefined
+    alreadyHaveEvent: (id: string) => boolean
+    label: string
+    maxWait: number
+    signal: AbortSignal
+  },
+): Promise<undefined | { count: number; oldest: number }> {
+  return new Promise(resolve => {
+    const ids: string[] = []
+    let done = false
+
+    const finish = (ok: boolean) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      opts.signal.removeEventListener('abort', onabort)
+
+      if (!ok) {
+        resolve(undefined)
+        return
+      }
+
+      // events we already had (from other relays or pages) were not decoded again,
+      // but they're all in the shared map (invalid events are not and will be ignored)
+      let oldest = Infinity
+      for (let i = 0; i < ids.length; i++) {
+        const event = opts.events.get(ids[i])
+        if (event && event.created_at < oldest) oldest = event.created_at
+      }
+      resolve({ count: ids.length, oldest })
+    }
+
+    const sub = relay.subscribe([filter], {
+      label: opts.label,
+      // our own timer below should fire first so we can tell a timeout from a real EOSE
+      eoseTimeout: opts.maxWait + 1000,
+      alreadyHaveEvent: opts.alreadyHaveEvent,
+      receivedEvent: (_, id) => {
+        ids.push(id)
+        if (opts.seenOn) {
+          const list = opts.seenOn.get(id)
+          if (list) list.push(relay.url)
+          else opts.seenOn.set(id, [relay.url])
+        }
+      },
+      onevent: event => {
+        opts.events.set(event.id, event)
+      },
+      oneose: () => {
+        finish(true)
+        sub.close()
+      },
+      onclose: () => finish(false),
+    })
+
+    const timer = setTimeout(() => {
+      finish(false)
+      sub.close('<timeout>')
+    }, opts.maxWait)
+
+    const onabort = () => {
+      finish(false)
+      sub.close('<aborted>')
+    }
+    opts.signal.addEventListener('abort', onabort, { once: true })
+  })
 }
