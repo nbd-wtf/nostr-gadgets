@@ -141,6 +141,12 @@ impl TryFrom<&js_sys::Object> for Querier {
                         if let Some(name) = key_str.strip_prefix("#") {
                             let array = js_sys::Array::from(&value);
                             if let Some(letter) = name.bytes().next() {
+                                if !letter.is_ascii() {
+                                    return Err(JsValue::from_str(&format!(
+                                        "tag #{} is not ascii",
+                                        name
+                                    )));
+                                }
                                 let mut values = Vec::with_capacity(array.length() as usize);
                                 for i in 0..array.length() {
                                     values.push(
@@ -192,12 +198,8 @@ impl IndexableEvent {
                 continue;
             }
 
-            let letter = tag[0]
-                .chars()
-                .next()
-                .expect("very weird tag")
-                .as_ascii()
-                .unwrap() as u8;
+            // a 1-byte utf-8 string is always ascii
+            let letter = tag[0].as_bytes()[0];
 
             let value = tag.swap_remove(1);
             if letter == 100 && (30000..40000).contains(&kind) {

@@ -1,5 +1,3 @@
-#![feature(ascii_char)]
-
 use std::io::{self};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};

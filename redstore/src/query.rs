@@ -385,7 +385,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             for (letter, values) in &spec.tags {
                 bf_letters.push(*letter);
                 for value in values {
-                    let full = format!("{}=>{}", letter, value);
+                    let full = format!("{}=>{}", *letter as char, value);
                     bf.insert(&full);
                 }
             }
@@ -397,11 +397,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             for (letter, values) in &spec.tags {
                 bf_letters.push(*letter);
                 for value in values {
-                    let full = format!(
-                        "{}=>{}",
-                        letter.as_ascii().expect("filter tag not ascii").as_str(),
-                        value
-                    );
+                    let full = format!("{}=>{}", *letter as char, value);
                     #[cfg(debug_assertions)]
                     web_sys::console::log_1(&js_sys::JsString::from(format!("bf ins: {}", full)));
                     bf.insert(&full);
