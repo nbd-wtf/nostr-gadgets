@@ -77,7 +77,6 @@ pub struct Plan {
 #[derive(Debug)]
 pub struct Query {
     pub table_name: &'static str,
-    pub full_scan: bool,
     pub curr_key: Vec<u8>,
     pub results: Vec<(u32, u32)>, // (timestamp, serial)
     pub exhausted: bool,
@@ -112,9 +111,8 @@ impl Query {
             let key_bytes = key.value();
             let key_len = key_bytes.len();
 
-            if !self.full_scan
-                && (key_len != self.curr_key.len()
-                    || key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8])
+            if key_len != self.curr_key.len()
+                || key_bytes[0..key_len - 8] != self.curr_key[0..key_len - 8]
             {
                 #[cfg(debug_assertions)]
                 web_sys::console::log_7(
@@ -203,7 +201,6 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
                 start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
                 queries.push(Query {
                     table_name: "index_pubkey_dtag",
-                    full_scan: false,
                     curr_key: start_key,
                     results: Vec::new(),
                     exhausted: false,
@@ -214,52 +211,39 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
         // remove here so we don't use it in extra_authors/extra_tags later
         spec.authors.take();
         spec.dtags.take();
-    } else if spec.dtags.is_some() && spec.authors.is_none() {
-        // d-tags without authors are hard because we can't easily use the index_pubkey_dtag
-        if let Some(kinds) = spec.kinds.take() {
-            // for d tag queries with kinds we'll scan through index_pubkey_kind
-            // (only addressable kinds are valid
-            // because in this case we can reasonably expect to not to have to scan too much)
-            if !kinds.iter().all(|kind| *kind >= 30_000 && *kind < 40_000) {
-                // return nothing
-                return Ok(Plan {
-                    queries,
-                    since: spec.since.unwrap_or(0),
-                    extra_kinds: Vec::new(),
-                    extra_authors: None,
-                    extra_tags: None,
-                });
-            }
-            for kind in kinds {
-                let mut start_key = vec![0u8; 10];
-                start_key[0..2].copy_from_slice(&kind.to_be_bytes());
-                start_key[2..6].copy_from_slice(&spec.until.to_be_bytes());
-                start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
-                queries.push(Query {
-                    table_name: "index_kind",
-                    full_scan: false,
-                    curr_key: start_key,
-                    results: Vec::new(),
-                    exhausted: false,
-                });
-            }
-        } else {
-            // we don't have kinds, so let's scan through all the addressable events
-            // do a full scan on index_pubkey_dtag and filter by d tag
-            let mut start_key = vec![0xffu8; 24];
-            start_key[16..20].copy_from_slice(&spec.until.to_be_bytes());
-            start_key[20..24].copy_from_slice(&MAX_U32_BYTES);
+    } else if let Some(dtags) = spec.dtags.take() {
+        // d-tags without authors can't use index_pubkey_dtag, but 'd' tags are also in index_tag
+        // (kinds, if any, are applied later as extra_kinds)
+        if let Some(kinds) = &spec.kinds
+            && !kinds.iter().all(|kind| *kind >= 30_000 && *kind < 40_000)
+        {
+            // only addressable kinds are valid, return nothing
+            return Ok(Plan {
+                queries,
+                since: spec.since.unwrap_or(0),
+                extra_kinds: Vec::new(),
+                extra_authors: None,
+                extra_tags: None,
+            });
+        }
+        for dtag in dtags {
+            let mut start_key = vec![0u8; 17];
+            start_key[0] = b'd';
+
+            let mut hasher = Sha256::new();
+            hasher.update(dtag.as_bytes());
+            let hash = hasher.finalize();
+
+            start_key[1..9].copy_from_slice(&hash[0..8]);
+            start_key[9..13].copy_from_slice(&spec.until.to_be_bytes());
+            start_key[13..17].copy_from_slice(&MAX_U32_BYTES);
             queries.push(Query {
-                table_name: "index_pubkey_dtag",
-                full_scan: true,
+                table_name: "index_tag",
                 curr_key: start_key,
                 results: Vec::new(),
                 exhausted: false,
             });
         }
-
-        // remove here so we don't use it in extra_authors later
-        spec.authors.take();
     } else if let Some((letter, values)) = spec.tags.pop() {
         // use index_tag for tag queries
         for value in values {
@@ -275,7 +259,6 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             start_key[13..17].copy_from_slice(&MAX_U32_BYTES);
             queries.push(Query {
                 table_name: "index_tag",
-                full_scan: false,
                 curr_key: start_key,
                 results: Vec::new(),
                 exhausted: false,
@@ -296,7 +279,6 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
                 start_key[14..18].copy_from_slice(&MAX_U32_BYTES);
                 queries.push(Query {
                     table_name: "index_pubkey_kind",
-                    full_scan: false,
                     curr_key: start_key,
                     results: Vec::new(),
                     exhausted: false,
@@ -318,7 +300,6 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
 
             queries.push(Query {
                 table_name: "index_pubkey",
-                full_scan: false,
                 curr_key: start_key,
                 results: Vec::new(),
                 exhausted: false,
@@ -333,7 +314,6 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
             start_key[6..10].copy_from_slice(&MAX_U32_BYTES);
             queries.push(Query {
                 table_name: "index_kind",
-                full_scan: false,
                 curr_key: start_key,
                 results: Vec::new(),
                 exhausted: false,
@@ -346,7 +326,6 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
         start_key[4..8].copy_from_slice(&MAX_U32_BYTES);
         queries.push(Query {
             table_name: "index_nothing",
-            full_scan: false,
             curr_key: start_key,
             results: Vec::new(),
             exhausted: false,

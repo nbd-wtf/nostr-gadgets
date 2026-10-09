@@ -226,4 +226,63 @@ describe('redstore multi-tab', () => {
       }
     })
   })
+
+  describe('separate databases', () => {
+    const DB1 = '_.test.multitab.sep1.' + Date.now() + '.db'
+    const DB2 = '_.test.multitab.sep2.' + Date.now() + '.db'
+    const leader1 = new RedEventStore(null, DB1, null)
+    const follower1 = new RedEventStore(null, DB1, null)
+    const leader2 = new RedEventStore(null, DB2, null)
+
+    afterAll(async () => {
+      for (const store of [follower1, leader1, leader2]) {
+        try {
+          await store.close()
+        } catch {}
+      }
+      for (const name of [DB1, DB2]) {
+        try {
+          await RedEventStore.delete(name)
+        } catch {}
+      }
+    })
+
+    test("a follower's calls are only answered by its own database", async () => {
+      expect(await leader1.init()).toBe(true)
+      expect(await follower1.init()).toBe(false)
+      expect(await leader2.init()).toBe(true)
+
+      const event = finalizeEvent({ kind: 1, created_at: 1000, content: 'only in db2', tags: [] }, generateSecretKey())
+      expect(await leader2.saveEvent(event)).toBe(true)
+
+      for (let i = 0; i < 5; i++) {
+        expect(await follower1.queryEvents({ ids: [event.id] })).toHaveLength(0)
+      }
+    })
+  })
+
+  describe('reopening', () => {
+    const DB = '_.test.multitab.reopen.' + Date.now() + '.db'
+    const store = new RedEventStore(null, DB, null)
+
+    afterAll(async () => {
+      try {
+        await store.close()
+      } catch {}
+      try {
+        await RedEventStore.delete(DB)
+      } catch {}
+    })
+
+    test('init(true) after close() works', async () => {
+      expect(await store.init()).toBe(true)
+      const event = finalizeEvent({ kind: 1, created_at: 1000, content: 'persisted', tags: [] }, generateSecretKey())
+      expect(await store.saveEvent(event)).toBe(true)
+      await store.close()
+
+      expect(await store.init(true)).toBe(true)
+      const results = await store.queryEvents({ ids: [event.id] })
+      expect(results.map(e => e.content)).toEqual(['persisted'])
+    })
+  })
 })

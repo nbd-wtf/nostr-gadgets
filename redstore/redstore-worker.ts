@@ -18,9 +18,15 @@ const HEARTBEAT_INTERVAL = 10000 // leader broadcasts every 10 seconds
 const CHECK_LEADER_INTERVAL = 5000 // non-leaders check every 5 seconds
 const HEARTBEAT_STALE_THRESHOLD = 12000 // heartbeat considered stale after 12 seconds
 
-const bc = new BroadcastChannel('calls')
+// one channel per database file, opened on init and closed on close
+let bc: BroadcastChannel | null = null
+function openChannel(name: string) {
+  bc?.close()
+  bc = new BroadcastChannel(`@gadgets-redstore/calls:${name}`)
+  bc.addEventListener('message', handleChannelMessage)
+}
 function broadcast(msg: any) {
-  bc.postMessage(msg)
+  bc?.postMessage(msg)
 }
 
 // re-run any requests that were forwarded to a leader that disappeared.
@@ -45,7 +51,7 @@ function rejectAllPendingRequests(error: Error) {
   pendingRequests.clear()
 }
 
-bc.addEventListener('message', async event => {
+function handleChannelMessage(event: MessageEvent) {
   const [type, proxyId, ...re] = event.data
 
   switch (type) {
@@ -89,7 +95,7 @@ bc.addEventListener('message', async event => {
       break
     }
   }
-})
+}
 
 function sendToPage(msg: any) {
   self.postMessage(msg)
@@ -101,6 +107,7 @@ self.addEventListener('message', async event => {
   if (method === 'init') {
     fileName = data.fileName
     wasmUrl = data.wasmUrl
+    openChannel(data.fileName)
     let gotFile = false
     try {
       const opfsRoot = await navigator.storage.getDirectory()
@@ -147,7 +154,8 @@ self.addEventListener('message', async event => {
     }
     rejectAllPendingRequests(new Error('database was closed'))
     sendToPage([id, true, true])
-    bc.close()
+    bc?.close()
+    bc = null
   } else {
     try {
       if (db) {

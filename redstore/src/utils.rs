@@ -59,7 +59,7 @@ impl Default for Querier {
             dtags: None,
             tags: Vec::new(),
             since: None,
-            until: (js_sys::Date::now() / 1000.0) as u32,
+            until: u32::MAX,
             limit: 250,
         }
     }

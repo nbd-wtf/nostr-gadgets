@@ -644,4 +644,65 @@ describe('redstore', () => {
 
     await store.close()
   })
+
+  test('events slightly in the future are queried and replaced', async () => {
+    const store = new RedEventStore(null, '_.test.future.' + Date.now() + '.db', null)
+    await store.init()
+
+    const pk = getPublicKey(sk1)
+    const now = Math.floor(Date.now() / 1000)
+
+    expect(await store.saveEvent(finalizeEvent({ kind: 0, created_at: now + 60, content: 'a', tags: [] }, sk1))).toBe(
+      true,
+    )
+    expect(await store.saveEvent(finalizeEvent({ kind: 0, created_at: now + 120, content: 'b', tags: [] }, sk1))).toBe(
+      true,
+    )
+
+    const results = await store.queryEvents({ authors: [pk], kinds: [0] })
+    expect(results.map(e => e.content)).toEqual(['b'])
+
+    expect(await store.deleteEventsFilters([{ authors: [pk] }])).toHaveLength(1)
+    expect(await store.queryEvents({ authors: [pk] })).toHaveLength(0)
+
+    await store.close()
+  })
+
+  test('loadReplaceables with an empty d-tag', async () => {
+    const store = new RedEventStore(null, '_.test.emptyd.' + Date.now() + '.db', null)
+    await store.init()
+
+    const pk = getPublicKey(sk2)
+    await store.saveEvent(finalizeEvent({ kind: 30023, created_at: 1000, content: 'empty', tags: [['d', '']] }, sk2))
+    await store.saveEvent(finalizeEvent({ kind: 30023, created_at: 1001, content: 'x', tags: [['d', 'x']] }, sk2))
+
+    const [[, single], [, bundle]] = await store.loadReplaceables([
+      [30023, pk, ''],
+      [30023, pk],
+    ])
+    expect((single as NostrEvent).content).toEqual('empty')
+    expect((bundle as NostrEvent[]).map(e => e.content).sort()).toEqual(['empty', 'x'])
+
+    await store.close()
+  })
+
+  test('d-tag query without authors or kinds respects since, until and order', async () => {
+    const store = new RedEventStore(null, '_.test.dtagtime.' + Date.now() + '.db', null)
+    await store.init()
+
+    const signers = [sk1, sk2, sk3, sk4]
+    const timestamps = [100, 300, 200, 250]
+    const dtags = ['same', 'same', 'same', 'other']
+    for (let i = 0; i < signers.length; i++) {
+      await store.saveEvent(
+        finalizeEvent({ kind: 30166, created_at: timestamps[i], content: '', tags: [['d', dtags[i]]] }, signers[i]),
+      )
+    }
+
+    expect((await store.queryEvents({ '#d': ['same'] })).map(e => e.created_at)).toEqual([300, 200, 100])
+    expect((await store.queryEvents({ '#d': ['same'], since: 150 })).map(e => e.created_at)).toEqual([300, 200])
+    expect((await store.queryEvents({ '#d': ['same'], until: 250, limit: 1 })).map(e => e.created_at)).toEqual([200])
+
+    await store.close()
+  })
 })

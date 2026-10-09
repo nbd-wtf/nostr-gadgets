@@ -249,8 +249,9 @@ export class RedEventStore {
       binQuery[offset] = (specs[i][0] >> 8) & 0xff
       binQuery[offset + 1] = specs[i][0] & 0xff
       binQuery.set(hexToBytes(specs[i][1].slice(48, 64)), offset + 2)
-      if (specs[i][2]) {
-        const dtaghash = sha256(utf8Encoder.encode(specs[i][2]!))
+      // an empty d-tag is still a d-tag (only a missing one means "bundle")
+      if (specs[i][2] !== undefined) {
+        const dtaghash = sha256(utf8Encoder.encode(specs[i][2]))
         binQuery.set(dtaghash.slice(0, 8), offset + 10)
       }
     }
