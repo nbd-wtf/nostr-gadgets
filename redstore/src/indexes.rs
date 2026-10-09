@@ -1,7 +1,7 @@
 use redb::TableDefinition;
 use sha2::{Digest, Sha256};
 
-use crate::utils::{IndexableEvent, parse_hex_into};
+use crate::utils::{IndexableEvent, Result, parse_hex_suffix_into};
 
 pub const EVENTS: TableDefinition<u32, &[u8]> = TableDefinition::new("events");
 pub const INDEX_ID: TableDefinition<&[u8], u32> = TableDefinition::new("index_id");
@@ -26,14 +26,14 @@ pub struct IndexEntry {
     pub key: Vec<u8>,
 }
 
-pub fn compute_indexes(indexable_event: &IndexableEvent, serial: u32) -> Vec<IndexEntry> {
+pub fn compute_indexes(indexable_event: &IndexableEvent, serial: u32) -> Result<Vec<IndexEntry>> {
     let mut indexes = Vec::new();
     let timestamp = indexable_event.timestamp;
 
     // index_id: [8-bytes-at-the-end-of-id] => [u32 serial]
     // (this is different from the rest)
     let mut id_key = vec![0u8; 8];
-    parse_hex_into(&indexable_event.id[48..64], &mut id_key[0..8]).expect("invalid hex id");
+    parse_hex_suffix_into(&indexable_event.id, &mut id_key[0..8])?;
     indexes.push(IndexEntry {
         table_name: "index_id",
         key: id_key,
@@ -60,8 +60,7 @@ pub fn compute_indexes(indexable_event: &IndexableEvent, serial: u32) -> Vec<Ind
 
     // index_pubkey: [8-bytes-at-the-end-of-pubkey][4-bytes-of-the-timestamp][4-bytes-serial]
     let mut pubkey_key = vec![0u8; 16];
-    parse_hex_into(&indexable_event.pubkey[48..64], &mut pubkey_key[0..8])
-        .expect("invalid hex pubkey");
+    parse_hex_suffix_into(&indexable_event.pubkey, &mut pubkey_key[0..8])?;
     pubkey_key[8..12].copy_from_slice(&timestamp.to_be_bytes());
     pubkey_key[12..16].copy_from_slice(&serial.to_be_bytes());
     indexes.push(IndexEntry {
@@ -115,5 +114,5 @@ pub fn compute_indexes(indexable_event: &IndexableEvent, serial: u32) -> Vec<Ind
         });
     }
 
-    indexes
+    Ok(indexes)
 }

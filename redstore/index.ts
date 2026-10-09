@@ -333,7 +333,7 @@ export class RedEventStore {
           const file = await (entry as FileSystemFileHandle).getFile()
           result.push({ name: base + name, size: file.size, lastModified: file.lastModified })
         } else {
-          walkDir(entry as FileSystemDirectoryHandle, name + '/')
+          await walkDir(entry as FileSystemDirectoryHandle, base + name + '/')
         }
       }
     }

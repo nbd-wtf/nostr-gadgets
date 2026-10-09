@@ -1,4 +1,5 @@
 use std::io::{self};
+#[cfg(debug_assertions)]
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +10,9 @@ use web_sys::FileSystemSyncAccessHandle;
 
 use crate::indexes::*;
 use crate::query::{Plan, Query, Transaction, execute, prepare};
-use crate::utils::{IndexableEvent, MAX_U32_BYTES, Querier, Result, extract_id, parse_hex_into};
+use crate::utils::{
+    IndexableEvent, MAX_U32_BYTES, Querier, Result, extract_id, parse_hex_suffix_into,
+};
 
 mod indexes;
 mod query;
@@ -59,6 +62,15 @@ impl StorageBackend for WasmBackend {
                 .read_with_u8_array_and_options(&mut out[bytes_read..], &options)
                 .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
 
+            if read_result <= 0.0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "read returned 0 bytes at offset {}",
+                        offset + bytes_read as u64
+                    ),
+                ));
+            }
             bytes_read += read_result as usize;
         }
         Ok(())
@@ -83,6 +95,15 @@ impl StorageBackend for WasmBackend {
                 .write_with_u8_array_and_options(&data[bytes_written..], &options)
                 .map_err(|e| std::io::Error::other(format!("{:?}", e)))?;
 
+            if written <= 0.0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    format!(
+                        "write returned 0 bytes at offset {}",
+                        offset + bytes_written as u64
+                    ),
+                ));
+            }
             bytes_written += written as usize;
         }
         Ok(())
@@ -198,13 +219,19 @@ impl Redstore {
             .begin_read()
             .map_err(|e| JsValue::from_str(&format!("transaction error: {:?}", e)))?;
 
+        if specs.len() % 18 != 0 {
+            return Err(JsValue::from_str(&format!(
+                "load_replaceables specs length must be a multiple of 18, got {}",
+                specs.len()
+            )));
+        }
+
         let results = js_sys::Array::new_with_length(specs.len() as u32 / 18);
 
-        let mut r = 0;
-        #[allow(clippy::explicit_counter_loop)]
-        for i in (0..specs.len()).step_by(18) {
+        for (r, chunk) in specs.chunks_exact(18).enumerate() {
             let result = js_sys::Array::new_with_length(2);
-            let key: [u8; 18] = specs[i..i + 18].try_into().expect("18 is not 18");
+            let mut key = [0u8; 18];
+            key.copy_from_slice(chunk);
 
             #[cfg(debug_assertions)]
             web_sys::console::log_1(&js_sys::JsString::from(format!(
@@ -321,8 +348,7 @@ impl Redstore {
                 )));
             }
 
-            results.set(r, result.into());
-            r += 1;
+            results.set(r as u32, result.into());
         }
 
         Ok(results)
@@ -342,7 +368,7 @@ impl Redstore {
 
             for id in ids {
                 let mut id_key = [0u8; 8];
-                parse_hex_into(&id[48..64], &mut id_key[0..8])
+                parse_hex_suffix_into(&id, &mut id_key[0..8])
                     .map_err(|e| JsValue::from_str(&format!("id is not valid hex: {:?}", e)))?;
 
                 let ids_index = txn
@@ -463,7 +489,7 @@ impl Redstore {
             // check if event id already exists (uniqueness by id)
             {
                 let mut id_key = [0u8; 8];
-                if parse_hex_into(&indexable_event.id[48..64], &mut id_key[0..8]).is_ok() {
+                if parse_hex_suffix_into(&indexable_event.id, &mut id_key[0..8]).is_ok() {
                     let ids_index = write_txn.open_table(INDEX_ID).map_err(|e| {
                         JsValue::from_str(&format!("open index_id for dup check error: {:?}", e))
                     })?;
@@ -492,7 +518,8 @@ impl Redstore {
             let last_attempt = last_attempts
                 .get(i)
                 .as_f64()
-                .expect("last_attempt must be number") as u32;
+                .ok_or_else(|| JsValue::from_str("last_attempt must be a number"))?
+                as u32;
 
             if last_attempt > 0 {
                 // store last attempt if it came
@@ -502,7 +529,7 @@ impl Redstore {
 
                 let mut key = [0u8; 18];
                 key[0..2].copy_from_slice(&indexable_event.kind.to_be_bytes());
-                parse_hex_into(&indexable_event.pubkey[48..64], &mut key[2..10]).map_err(|e| {
+                parse_hex_suffix_into(&indexable_event.pubkey, &mut key[2..10]).map_err(|e| {
                     JsValue::from_str(&format!("invalid pubkey on last_attempt store: {:?}", e))
                 })?;
 
@@ -566,14 +593,15 @@ impl Redstore {
                 } in self.query_internal(&write_txn, rq).map_err(|e| {
                     JsValue::from_str(&format!("pre-replacement query error: {:?}", e))
                 })? {
-                    if timestamp.expect("query result without ids should always have timestamp")
-                        < indexable_event.timestamp
-                    {
+                    let timestamp = timestamp.ok_or_else(|| {
+                        JsValue::from_str("pre-replacement query result without timestamp")
+                    })?;
+                    if timestamp < indexable_event.timestamp {
                         // we have something older stored, delete it
                         #[cfg(debug_assertions)]
                         web_sys::console::log_1(&js_sys::JsString::from(format!(
                             "deleting older replaceable event with timestamp {}",
-                            timestamp.unwrap()
+                            timestamp
                         )));
                         let deletable: IndexableEvent =
                             serde_json::from_slice(&json).map_err(|e| {
@@ -594,7 +622,7 @@ impl Redstore {
                         #[cfg(debug_assertions)]
                         web_sys::console::log_1(&js_sys::JsString::from(format!(
                             "skipping replaceable event: found newer event with timestamp {}",
-                            timestamp.unwrap()
+                            timestamp
                         )));
                         has_better_previous = Some(serial);
                     }
@@ -650,7 +678,7 @@ impl Redstore {
         indexable_event: &IndexableEvent,
         serial: u32,
     ) -> Result<()> {
-        let indexes = compute_indexes(indexable_event, serial);
+        let indexes = compute_indexes(indexable_event, serial)?;
 
         for index in indexes {
             match index.table_name {
@@ -756,10 +784,7 @@ impl Redstore {
                 web_sys::console::log_1(&js_sys::JsString::from(format!("deleted {:?}", &deleted)));
 
                 if let Some(id) = deleted {
-                    result.push(
-                        &js_sys::JsString::from_str(id.as_str())
-                            .expect("js string from deleted id"),
-                    );
+                    result.push(&js_sys::JsString::from(id.as_str()));
                 }
             }
         }
@@ -790,7 +815,7 @@ impl Redstore {
         };
 
         // delete from index tables
-        let indexes = compute_indexes(indexable_event, serial);
+        let indexes = compute_indexes(indexable_event, serial)?;
 
         for index in indexes {
             match index.table_name {
@@ -897,7 +922,7 @@ impl Redstore {
         }
 
         let json = serde_json::to_vec(&serde_json::Value::Object(map))
-            .expect("serialization of serde_json::Value should never fail");
+            .map_err(|e| JsValue::from_str(&format!("bounds serialization error: {:?}", e)))?;
 
         Ok(js_sys::Uint8Array::from(json.as_slice()))
     }
@@ -924,25 +949,19 @@ impl Redstore {
 
             let pubkey = pubkey
                 .as_string()
-                .expect("set_outbox_bound pubkey param must be string");
-            let kind = kind
-                .as_f64()
-                .expect("set_outbox_bound kind param must be a numeric kind")
-                as u32;
+                .ok_or_else(|| JsValue::from_str("set_outbox_bound pubkey param must be string"))?;
+            let kind = kind.as_f64().ok_or_else(|| {
+                JsValue::from_str("set_outbox_bound kind param must be a numeric kind")
+            })? as u32;
+            let bound_start = bound_start.as_f64().ok_or_else(|| {
+                JsValue::from_str("set_outbox_bound bound_start param must be a numeric timestamp")
+            })? as u32;
+            let bound_end = bound_end.as_f64().ok_or_else(|| {
+                JsValue::from_str("set_outbox_bound bound_end param must be a numeric timestamp")
+            })? as u32;
 
             bounds_table
-                .insert(
-                    format!("{}:{}", pubkey, kind),
-                    (
-                        bound_start.as_f64().expect(
-                            "set_outbox_bound bound_start param must be a numeric timestamp",
-                        ) as u32,
-                        bound_end
-                            .as_f64()
-                            .expect("set_outbox_bound bound_end param must be a numeric timestamp")
-                            as u32,
-                    ),
-                )
+                .insert(format!("{}:{}", pubkey, kind), (bound_start, bound_end))
                 .map_err(|e| JsValue::from_str(&format!("bounds set error: {:?}", e)))?;
         }
 

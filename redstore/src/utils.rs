@@ -5,12 +5,35 @@ pub const MAX_U32_BYTES: [u8; 4] = [0xff; 4];
 
 pub type Result<T> = std::result::Result<T, JsValue>;
 
-pub fn parse_hex_into(hex_str: &str, dest: &mut [u8]) -> Result<()> {
-    for i in (0..hex_str.len()).step_by(2) {
-        let byte_str = &hex_str[i..i + 2];
-        let byte = u8::from_str_radix(byte_str, 16)
-            .map_err(|_| JsValue::from_str(&format!("invalid hex: {}", byte_str)))?;
-        dest[i / 2] = byte;
+#[inline]
+fn hex_val(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[inline]
+fn is_hex(bytes: &[u8]) -> bool {
+    bytes.iter().all(|c| hex_val(*c).is_some())
+}
+
+// takes a 64-char hex id or pubkey and parses its last 8 bytes into dest
+pub fn parse_hex_suffix_into(hex_str: &str, dest: &mut [u8]) -> Result<()> {
+    let bytes = hex_str.as_bytes();
+    if bytes.len() != 64 || dest.len() != 8 {
+        return Err(JsValue::from_str(&format!(
+            "expected 64-char hex, got: {}",
+            hex_str
+        )));
+    }
+    for (i, pair) in bytes[48..64].as_chunks::<2>().0.iter().enumerate() {
+        match (hex_val(pair[0]), hex_val(pair[1])) {
+            (Some(hi), Some(lo)) => dest[i] = (hi << 4) | lo,
+            _ => return Err(JsValue::from_str(&format!("invalid hex: {}", hex_str))),
+        }
     }
     Ok(())
 }
@@ -185,6 +208,20 @@ pub struct IndexableEvent {
 
 impl IndexableEvent {
     pub fn from_json_event(event_bytes: &[u8]) -> Result<Self> {
+        // the extract_* functions below rely on this exact layout
+        if event_bytes.len() < 305
+            || !event_bytes.starts_with(b"{\"pubkey\":\"")
+            || !is_hex(&event_bytes[11..75])
+            || &event_bytes[75..83] != b"\",\"id\":\""
+            || !is_hex(&event_bytes[83..147])
+            || &event_bytes[147..156] != b"\",\"kind\":"
+            || !event_bytes[156].is_ascii_digit()
+        {
+            return Err(JsValue::from_str(
+                "event json is not in the expected format",
+            ));
+        }
+
         let kind = extract_kind(event_bytes);
 
         let extracted_tags = extract_tags(event_bytes)?;
@@ -302,11 +339,13 @@ pub fn extract_kind(event_json: &[u8]) -> u16 {
 
 #[inline]
 pub fn extract_tags(event_json: &[u8]) -> Result<Vec<Vec<String>>> {
-    if let Some(tags_start) = event_json[305..]
-        .iter()
-        .position(|c| *c == 34 /* '"' */)
+    if let Some(tags_start) = event_json
+        .get(305..)
+        .and_then(|rest| rest.iter().position(|c| *c == 34 /* '"' */))
         .map(|pos| pos + 305 + 9)
-        && let Some(tags_end) = event_json[tags_start..]
+        && let Some(tags_end) = event_json
+            .get(tags_start..)
+            .unwrap_or_default()
             .iter()
             .enumerate()
             .position(|(i, c)| {
@@ -316,8 +355,9 @@ pub fn extract_tags(event_json: &[u8]) -> Result<Vec<Vec<String>>> {
                 && event_json[tags_start + i - 2] == 93 // ']'
             })
             .map(|pos| pos + tags_start - 2 + 1 /* we'll match the end of '],"', so we have to go 2 back, but add 1 so we include the ']' */)
+        && let Some(tags_json) = event_json.get(tags_start..tags_end)
         {
-            return serde_json::from_slice::<Vec<Vec<String>>>(&event_json[tags_start..tags_end])
+            return serde_json::from_slice::<Vec<Vec<String>>>(tags_json)
                 .map_err(|e| JsValue::from_str(&format!("invalid tags json extracted: {:?}", e,)));
         }
 
@@ -326,24 +366,30 @@ pub fn extract_tags(event_json: &[u8]) -> Result<Vec<Vec<String>>> {
 
 #[inline]
 pub fn extract_created_at(event_json: &[u8]) -> Result<u32> {
-    if let Some(start) = event_json[169..]
-        .iter()
-        .position(|c| *c == 58 /* ':' */)
+    let Some(start) = event_json
+        .get(169..)
+        .and_then(|rest| rest.iter().position(|c| *c == 58 /* ':' */))
         .map(|pos| pos + 169 + 1)
-    {
-        let mut ts = (event_json[start] - 48) as u32; // the first char is always a number
-        for c in &event_json[start + 1..start + 11] {
-            // then the next may or may not be
-            if (*c >= 48/* '0' */) && (*c <= 57/* '9' */) {
-                ts = ts * 10 + ((*c - 48) as u32)
-            } else {
-                break;
-            }
+    else {
+        return Err(JsValue::from("failed to extract created_at"));
+    };
+
+    let mut ts: u32 = 0;
+    let mut digits = 0;
+    for c in event_json[start..].iter().take(10) {
+        if !c.is_ascii_digit() {
+            break;
         }
-        Ok(ts)
-    } else {
-        Err(JsValue::from("failed to extract created_at"))
+        ts = ts
+            .checked_mul(10)
+            .and_then(|ts| ts.checked_add((*c - 48) as u32))
+            .ok_or_else(|| JsValue::from("created_at out of bounds"))?;
+        digits += 1;
     }
+    if digits == 0 {
+        return Err(JsValue::from("failed to extract created_at"));
+    }
+    Ok(ts)
 }
 
 #[cfg(test)]
@@ -364,5 +410,19 @@ mod tests {
             tags[1][1],
             "f728d9e6e7048358e70930f5ca64b097770d989ccd86854fe618eda9c8a38106"
         );
+    }
+
+    #[test]
+    fn indexable_event_from_preformatted_event() {
+        let evtj = r#"{"pubkey":"c5cdd5737e47f5426c9dea243012112ed62fba7b534788681606f79f5ab9682a","id":"908801a73409d38b1420b70edb21e380afa1a0fbb444d96f164b3f4926e1cc0a","kind":30023,"created_at":1714060747,"sig":"9bfb9a8499ae3ebad287452abd777bad4daf65ed99e63149c3c38e11e54b997577ae18edf5439fd31d21593cea6c153b49549fba9177542c98f81156098f7595","tags":[["d","hello"],["p","f728d9e6e7048358e70930f5ca64b097770d989ccd86854fe618eda9c8a38106"]],"content":"x"}"#.as_bytes();
+        let evt = IndexableEvent::from_json_event(evtj).unwrap();
+        assert_eq!(evt.kind, 30023);
+        assert_eq!(evt.timestamp, 1714060747);
+        assert_eq!(evt.dtag.as_deref(), Some("hello"));
+        assert_eq!(evt.tags.len(), 2);
+
+        let mut dest = [0u8; 8];
+        parse_hex_suffix_into(&evt.id, &mut dest).unwrap();
+        assert_eq!(dest, [0x16, 0x4b, 0x3f, 0x49, 0x26, 0xe1, 0xcc, 0x0a]);
     }
 }

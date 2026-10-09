@@ -5,7 +5,7 @@ use wasm_bindgen::JsValue;
 
 use crate::utils::{
     MAX_U32_BYTES, Querier, Result, extract_kind, extract_pubkey_bytes, extract_tags,
-    parse_hex_into,
+    parse_hex_suffix_into,
 };
 use crate::{QueryResultEvent, indexes::*};
 
@@ -187,7 +187,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
         // use index_pubkey_dtag for combined author+dtag queries
         for author in authors {
             let mut author_bytes = vec![0u8; 8];
-            parse_hex_into(&author[48..64], &mut author_bytes)
+            parse_hex_suffix_into(author, &mut author_bytes)
                 .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
 
             for dtag in dtags {
@@ -285,7 +285,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
         // use index_pubkey_kind for combined author+kind queries
         for author in authors {
             let mut author_bytes = vec![0u8; 8];
-            parse_hex_into(&author[48..64], &mut author_bytes)
+            parse_hex_suffix_into(author, &mut author_bytes)
                 .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
 
             for kind in kinds {
@@ -311,7 +311,7 @@ pub fn prepare(spec: &mut Querier) -> Result<Plan> {
         // use index_pubkey for author-only queries
         for author in authors {
             let mut start_key = vec![0u8; 16];
-            parse_hex_into(&author[48..64], &mut start_key[0..8])
+            parse_hex_suffix_into(&author, &mut start_key[0..8])
                 .map_err(|e| JsValue::from_str(&format!("invalid author hex: {:?}", e)))?;
             start_key[8..12].copy_from_slice(&spec.until.to_be_bytes());
             start_key[12..16].copy_from_slice(&MAX_U32_BYTES);
