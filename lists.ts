@@ -79,6 +79,38 @@ export const loadFollowsList: ListFetcher<string> = makeListFetcher<string>(
 )
 
 /**
+ * Representation of a NIP-02 follow entry: ["p", <pubkey>, <relay>, <petname>].
+ */
+export type FollowItem = {
+  pubkey: string
+  relay?: string
+  petname?: string
+}
+
+/**
+ * Loads the kind:3 follow list (through loadFollowsList, so it shares its cache) and returns the full
+ * NIP-02 entries, including the relay hint and petname when present.
+ */
+export async function fetchContacts(
+  pubkey: string,
+  hints?: string[],
+  refreshStyle?: boolean | NostrEvent | null,
+): Promise<FollowItem[]> {
+  const { event } = await loadFollowsList(pubkey, hints, refreshStyle)
+  if (!event) return []
+
+  return itemsFromTags<FollowItem>((tag: string[]): FollowItem | undefined => {
+    if (tag.length >= 2 && tag[0] === 'p' && isHex32(tag[1])) {
+      let relay: string | undefined
+      try {
+        if (tag[2]) relay = normalizeURL(tag[2])
+      } catch (_) {}
+      return { pubkey: tag[1], relay, petname: tag[3] || undefined }
+    }
+  })(event)
+}
+
+/**
  * A ListFetcher for kind:10101 "good wiki authors" list
  */
 export const loadWikiAuthors: ListFetcher<string> = makeListFetcher<string>(
