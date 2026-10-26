@@ -420,6 +420,26 @@ export const loadAuthoredPodcasts: ListFetcher<string> = makeListFetcher<string>
   }),
 )
 
+/**
+ * A ListFetcher for kind:10992 installed slash commands list (pointers to kind:31992 slash command definitions)
+ */
+export const loadInstalledSlashCommandsList: ListFetcher<AddressPointer> = makeListFetcher<AddressPointer>(
+  10992,
+  [],
+  itemsFromTags<AddressPointer>((tag: string[]): AddressPointer | undefined => {
+    if (tag.length >= 2 && tag[0] === 'a') {
+      const spl = tag[1].split(':')
+      if (!isHex32(spl[1]) || spl[0] !== '31992') return undefined
+      return {
+        identifier: spl.slice(2).join(':'),
+        pubkey: spl[1],
+        kind: 31992,
+        relays: tag[2] ? [tag[2]] : [],
+      }
+    }
+  }),
+)
+
 export function itemsFromTags<I>(
   tagProcessor: (tag: string[]) => I | undefined,
 ): (event: NostrEvent | undefined) => I[] {
@@ -839,4 +859,100 @@ export async function fetchFavoriteFollowSetsWithSets(
   const resolved = await loadAddressableSets(items, process, refreshStyle)
 
   return items.map(i => resolved.get(i.identifier + i.pubkey + i.kind)!)
+}
+
+/**
+ * An argument declared by a kind:31992 slash command definition through an `arg` tag.
+ */
+export type SlashCommandArg = {
+  name: string
+  type: string
+  required: boolean
+  label?: string
+  choices: string[]
+}
+
+/**
+ * A parsed kind:31992 slash command definition.
+ */
+export type SlashCommand = {
+  pointer: AddressPointer
+  event: NostrEvent
+  pubkey: string
+  d: string
+  command: string
+  title?: string
+  description?: string
+  args: SlashCommandArg[]
+  scopes: string[]
+  ignores: string[]
+}
+
+/**
+ * Loads the kind:10992 installed slash commands list and fetches each referenced kind:31992 definition,
+ * returning them parsed. Definitions that couldn't be found or that have no `command` tag are skipped.
+ */
+export async function fetchInstalledSlashCommands(
+  pubkey: string,
+  hints?: string[],
+  refreshStyle?: boolean | NostrEvent | null,
+): Promise<SlashCommand[]> {
+  const { items } = await loadInstalledSlashCommandsList(pubkey, hints, refreshStyle)
+
+  const process = (event: NostrEvent | undefined): Omit<SlashCommand, 'pointer'>[] => {
+    if (!event) return []
+
+    const parsed: Omit<SlashCommand, 'pointer'> = {
+      event,
+      pubkey: event.pubkey,
+      d: '',
+      command: '',
+      args: [],
+      scopes: [],
+      ignores: [],
+    }
+
+    for (const tag of event.tags) {
+      switch (tag[0]) {
+        case 'd':
+          parsed.d = tag[1] ?? ''
+          break
+        case 'command':
+          parsed.command = tag[1] ?? ''
+          break
+        case 'title':
+          parsed.title = tag[1]
+          break
+        case 'description':
+          parsed.description = tag[1]
+          break
+        case 'arg':
+          parsed.args.push({
+            name: tag[1] ?? '',
+            type: tag[2] ?? 'text',
+            required: tag[3] === 'required',
+            label: tag[4],
+            choices: tag.slice(5),
+          })
+          break
+        case 's':
+          if (tag[1]) parsed.scopes.push(tag[1])
+          break
+        case 'ignore':
+          if (tag[1]) parsed.ignores.push(tag[1])
+          break
+      }
+    }
+
+    return parsed.command ? [parsed] : []
+  }
+
+  const resolved = await loadAddressableSets(items, process, refreshStyle)
+
+  const commands: SlashCommand[] = []
+  for (const i of items) {
+    const parsed = resolved.get(i.identifier + i.pubkey + i.kind)?.items[0]
+    if (parsed) commands.push({ pointer: i, ...parsed })
+  }
+  return commands
 }
